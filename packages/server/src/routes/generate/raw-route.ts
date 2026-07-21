@@ -62,7 +62,7 @@ const rawParametersSchema = z
     minP: z.number().min(0).max(1).optional(),
     frequencyPenalty: z.number().min(-2).max(2).optional(),
     presencePenalty: z.number().min(-2).max(2).optional(),
-    reasoningEffort: z.enum(["low", "medium", "high", "xhigh", "maximum"]).nullable().optional(),
+    reasoningEffort: z.enum(["low", "medium", "high", "minimal", "xhigh", "maximum"]).nullable().optional(),
     verbosity: z.enum(["low", "medium", "high"]).nullable().optional(),
     serviceTier: z.enum(["flex", "priority"]).nullable().optional(),
     customParameters: z.record(z.unknown()).optional(),
@@ -104,8 +104,8 @@ function isAbortError(error: unknown): boolean {
 function normalizeReasoningEffort(args: {
   provider: string;
   model: string;
-  reasoningEffort: "low" | "medium" | "high" | "xhigh" | "maximum" | null;
-}): "low" | "medium" | "high" | "xhigh" | "max" | null {
+  reasoningEffort: "low" | "medium" | "high" | "minimal" | "xhigh" | "maximum" | null;
+}): "low" | "medium" | "high" | "minimal" | "xhigh" | "max" | null {
   return resolveProviderReasoningEffort(args);
 }
 
@@ -152,7 +152,7 @@ export async function registerRawRoute(app: FastifyInstance) {
     let minP = 0;
     let frequencyPenalty = 0;
     let presencePenalty = 0;
-    let reasoningEffort: "low" | "medium" | "high" | "xhigh" | "maximum" | null = null;
+    let reasoningEffort: "low" | "medium" | "high" | "minimal" | "xhigh" | "maximum" | null = null;
     let verbosity: "low" | "medium" | "high" | null = null;
     let serviceTier: "flex" | "priority" | null = null;
     let customParameters: Record<string, unknown> = {};

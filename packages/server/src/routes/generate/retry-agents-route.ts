@@ -106,6 +106,7 @@ import {
   resolveActiveCharacterIds,
   resolveBaseUrl,
   resolveRoleplayChatSummary,
+  resolveSummaryPromptSkipIds,
   resolveVisibleGameStateAnchor,
 } from "./generate-route-utils.js";
 import {
@@ -3610,10 +3611,22 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
       const supportsHiddenFromAI =
         chat.mode === "conversation" || chat.mode === "roleplay" || chat.mode === "visual_novel";
       if (supportsHiddenFromAI) {
-        recentMessages = recentMessages.filter((message: any) => !isMessageHiddenFromAI(message));
+        const summaryPromptSkipIds = resolveSummaryPromptSkipIds({
+          chatMode: chat.mode,
+          chatMetadata: chatMeta,
+          messages: recentMessages,
+        });
+        recentMessages = recentMessages.filter(
+          (message: any) => !isMessageHiddenFromAI(message) && !summaryPromptSkipIds.has(message.id),
+        );
         if (preGenerationRecentMessages) {
+          const preGenerationSummaryPromptSkipIds = resolveSummaryPromptSkipIds({
+            chatMode: chat.mode,
+            chatMetadata: chatMeta,
+            messages: preGenerationRecentMessages,
+          });
           preGenerationRecentMessages = preGenerationRecentMessages.filter(
-            (message: any) => !isMessageHiddenFromAI(message),
+            (message: any) => !isMessageHiddenFromAI(message) && !preGenerationSummaryPromptSkipIds.has(message.id),
           );
         }
         if (!forMessageId) {
@@ -3714,6 +3727,36 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
             })
           : null;
       if (preGenerationAgentContext) preGenerationAgentContext.signal = abortController.signal;
+
+      // Inject image gen connection's prompting hint so the illustrator agent
+      // (and any other image-prompt agent) sees it before it runs.
+      // Resolve using the same priority as the illustrator itself:
+      // game/roleplay image connection → agent-specific connection → conversation selfie connection → default.
+      {
+        const illustratorCfg = resolvedAgents.find((a) => a.resolved.type === "illustrator");
+        const retryImgHintCandidates = [
+          typeof chatMeta.gameImageConnectionId === "string" ? chatMeta.gameImageConnectionId.trim() : "",
+          typeof illustratorCfg?.resolved.settings?.imageConnectionId === "string"
+            ? (illustratorCfg.resolved.settings.imageConnectionId as string).trim()
+            : "",
+          typeof chatMeta.imageGenConnectionId === "string" ? chatMeta.imageGenConnectionId.trim() : "",
+        ].filter(Boolean);
+        let retryImgConn = null;
+        for (const id of retryImgHintCandidates) {
+          retryImgConn = await conns.getById(id).catch(() => null);
+          if (retryImgConn) break;
+        }
+        retryImgConn ??= await conns.getDefaultForImageGeneration().catch(() => null);
+        const retryImgHint =
+          retryImgConn && typeof (retryImgConn as any).imagePromptHint === "string"
+            ? ((retryImgConn as any).imagePromptHint as string).trim()
+            : "";
+        if (retryImgHint) {
+          agentContext.memory._imagePromptHint = retryImgHint;
+          if (preGenerationAgentContext) preGenerationAgentContext.memory._imagePromptHint = retryImgHint;
+        }
+      }
+
       if (debugMode) {
         const emitRetryAgentDebug = (event: AgentCallDebugEvent) => {
           sendSseEvent(reply, { type: "agent_debug", data: event });

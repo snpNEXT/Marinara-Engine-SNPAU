@@ -1749,7 +1749,12 @@ export function resolveMacros(template: string, ctx: MacroContext, options: Reso
   result = result.replace(/\{\{lastGenerationType\}\}/gi, ctx.lastGenerationType ?? "");
   result = result.replace(/\{\{idle_duration\}\}/gi, ctx.idleDuration ?? "");
 
-  // ── Date/time ──
+  // ── Agent data ──
+  result = result.replace(/\{\{agent::([\w-]+)\}\}/gi, (_, type) => {
+    return ctx.agentData?.[type] ?? "";
+  });
+
+  // ── Date/time (timezone-aware) ──
   // #3164: formatting the date/time parts constructs Intl.DateTimeFormat — a
   // large share of the pipeline's fixed cost — so build them only when a
   // date/time macro is actually present. `now` is still captured once per

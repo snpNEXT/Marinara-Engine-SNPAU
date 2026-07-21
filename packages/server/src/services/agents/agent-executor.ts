@@ -2117,6 +2117,16 @@ function buildAgentMessages(
   const requiresTerminalUserInstruction =
     finalParts.length > 0 || contextAgentTypes.includes("echo-chamber") || !!outputFormatBlock;
 
+  // Image prompting hint: inject right before the terminal instruction so it has
+  // maximum recency weight when the model generates the image prompt JSON.
+  const lateImagePromptHint =
+    typeof context.memory._imagePromptHint === "string" ? context.memory._imagePromptHint.trim() : "";
+  if (lateImagePromptHint) {
+    finalParts.push(`\n<image_prompt_hint>`);
+    finalParts.push(lateImagePromptHint);
+    finalParts.push(`</image_prompt_hint>`);
+  }
+
   if (requiresTerminalUserInstruction) {
     const instruction = "Now return the requested format(s).";
     finalParts.push(finalParts.length > 0 ? `\n${instruction}` : instruction);
@@ -2325,6 +2335,10 @@ function buildAgentExtras(context: AgentContext, agentTypes: string[] = []): str
     parts.push(`</game_image_instructions>`);
   }
 
+  // Universal image-prompting hint from the image generation connection.
+  // Injected for any agent type that can produce image prompts so the connection owner
+  // can specify exact formatting rules once (tag style, quality tokens, etc.).
+  // NOTE: injected into the final user message in buildAgentMessages for maximum recency.
   if (agentTypes.includes("illustrator") && context.memory._illustratorBackgroundGenerationEnabled === true) {
     parts.push(`<illustrator_background_generation enabled="true">`);
     parts.push(

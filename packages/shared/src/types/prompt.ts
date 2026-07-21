@@ -198,7 +198,7 @@ export interface GenerationParameters {
   frequencyPenalty: number;
   presencePenalty: number;
   /** For reasoning models */
-  reasoningEffort: "low" | "medium" | "high" | "xhigh" | "maximum" | null;
+  reasoningEffort: "low" | "medium" | "high" | "minimal" | "xhigh" | "maximum" | null;
   /** Output verbosity for models that support it (GPT-5+) */
   verbosity: "low" | "medium" | "high" | null;
   /** OpenRouter-only service tier. Null uses the provider/default tier. */
@@ -213,6 +213,8 @@ export interface GenerationParameters {
   enabledParameters?: GenerationParameterSendMap;
   /** Merge consecutive system messages */
   squashSystemMessages: boolean;
+  /** When true, skip merging adjacent same-role messages so each stays a separate API message */
+  disableMessageMerge: boolean;
   /** Show model reasoning/thinking */
   showThoughts: boolean;
   /** Automatically use the model's maximum context window instead of the manual value */

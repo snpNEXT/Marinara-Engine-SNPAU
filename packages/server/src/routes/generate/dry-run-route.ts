@@ -79,6 +79,7 @@ import {
   resolveRegenerationGameStateAnchor,
   resolveProviderTopK,
   resolveRoleplayChatSummary,
+  resolveSummaryPromptSkipIds,
   normalizeServiceTier,
   resolveVisibleGameStateAnchor,
   resolveBaseUrl,
@@ -550,7 +551,8 @@ export async function registerDryRunRoute(app: FastifyInstance) {
     let frequencyPenalty = 0;
     let presencePenalty = 0;
     let showThoughts = true;
-    let reasoningEffort: "low" | "medium" | "high" | "xhigh" | "maximum" | null = null;
+    let disableMessageMerge = false;
+    let reasoningEffort: "low" | "medium" | "high" | "minimal" | "xhigh" | "maximum" | null = null;
     let verbosity: "low" | "medium" | "high" | null = null;
     let serviceTier: "flex" | "priority" | null = null;
     let assistantPrefill = "";
@@ -570,6 +572,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       if (typeof params.frequencyPenalty === "number") frequencyPenalty = params.frequencyPenalty;
       if (typeof params.presencePenalty === "number") presencePenalty = params.presencePenalty;
       if (typeof params.showThoughts === "boolean") showThoughts = params.showThoughts;
+      if (typeof params.disableMessageMerge === "boolean") disableMessageMerge = params.disableMessageMerge;
       if (params.reasoningEffort !== undefined) reasoningEffort = params.reasoningEffort;
       if (params.verbosity !== undefined) verbosity = params.verbosity;
       if (params.serviceTier !== undefined) serviceTier = normalizeServiceTier(params.serviceTier);
@@ -604,8 +607,17 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       }
     }
     const scopedMessages = startIdx > 0 ? allChatMessages.slice(startIdx) : allChatMessages;
+    const summaryPromptSkipIds = supportsHiddenFromAI
+      ? resolveSummaryPromptSkipIds({
+          chatMode,
+          chatMetadata: chatMeta,
+          messages: scopedMessages,
+        })
+      : new Set<string>();
     let chatMessages = supportsHiddenFromAI
-      ? scopedMessages.filter((message: any) => !isMessageHiddenFromAI(message))
+      ? scopedMessages.filter(
+          (message: any) => !isMessageHiddenFromAI(message) && !summaryPromptSkipIds.has(message.id),
+        )
       : scopedMessages;
     const regenerateMessageId =
       typeof body.regenerateMessageId === "string" && body.regenerateMessageId.trim()
@@ -1307,6 +1319,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       frequencyPenalty = assembled.parameters.frequencyPenalty ?? 0;
       presencePenalty = assembled.parameters.presencePenalty ?? 0;
       showThoughts = assembled.parameters.showThoughts ?? true;
+      disableMessageMerge = assembled.parameters.disableMessageMerge ?? false;
       reasoningEffort = assembled.parameters.reasoningEffort ?? null;
       verbosity = assembled.parameters.verbosity ?? null;
       serviceTier = assembled.parameters.serviceTier ?? null;
@@ -1621,7 +1634,9 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       // Append mid-prompt system messages to the last user turn after context fitting.
       // This mirrors /api/generate while keeping prompt/injection blocks protected
       // during history trimming.
-      return mergeAdjacentMessages(appendNonLeadingSystemMessagesToLastUser(messages) as any) as ChatMessage[];
+      // Skip same-role merging when disabled by generation parameters.
+      const appended = appendNonLeadingSystemMessagesToLastUser(messages);
+      return disableMessageMerge ? appended : mergeAdjacentMessages(appended as any) as ChatMessage[];
     };
 
     const fit = fitMessagesForModelAccess({

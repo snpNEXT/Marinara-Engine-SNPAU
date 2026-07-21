@@ -479,8 +479,28 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
     }
   }
 
-  // ── Phase 3: Adjacent same-role merging ──
-  let finalMessages = mergeAdjacentMessages(messages);
+  // ── Phase 2b: Fallback chat summary injection ──
+  // If the preset has no chat_summary marker but a summary exists, append it
+  // to the bottom of the first system message so it's always included.
+  if (!hasChatSummaryMarker && markerCtx.chatSummary) {
+    const wrapped = wrapContent(markerCtx.chatSummary, "Chat Summary", wrapFormat);
+    if (wrapped) {
+      const firstSystemIdx = messages.findIndex((m) => m.role === "system");
+      if (firstSystemIdx >= 0) {
+        messages[firstSystemIdx] = {
+          ...messages[firstSystemIdx]!,
+          content: `${messages[firstSystemIdx]!.content}\n\n${wrapped}`,
+          contextKind: "prompt",
+        };
+      } else {
+        // No system message at all — prepend one
+        messages.unshift({ role: "system", content: wrapped, contextKind: "prompt" });
+      }
+    }
+  }
+
+  // ── Phase 3: Adjacent same-role merging (skipped when disabled) ──
+  let finalMessages = parameters.disableMessageMerge ? messages : mergeAdjacentMessages(messages);
 
   // ── Phase 4: Squash leading system messages if enabled ──
   if (parameters.squashSystemMessages) {

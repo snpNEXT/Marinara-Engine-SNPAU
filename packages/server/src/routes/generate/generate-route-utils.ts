@@ -4,6 +4,8 @@ import {
   SUMMARY_TAIL_MESSAGES,
   applyTrackerFieldLocksToGameStatePatch,
   generationParametersSchema,
+  normalizeChatSummaryEntries,
+  localAuthProviderBaseUrl,
   normalizeTextForMatch,
   normalizeSummaryTailMessages,
   normalizeWorldCustomFields,
@@ -567,6 +569,55 @@ export function computeSummaryHideIds(args: {
 }
 
 /**
+ * Non-destructive roleplay summary compression at prompt-build time.
+ *
+ * When `hideSummarisedMessages` is enabled, we skip summarized messages from
+ * prompt history based on enabled `summaryEntries` instead of mutating message
+ * `hiddenFromAI` flags. This means toggling the setting works immediately for
+ * existing summaries and does not require re-generating summaries.
+ */
+export function resolveSummaryPromptSkipIds(args: {
+  chatMode: string;
+  chatMetadata: Record<string, unknown>;
+  messages: Array<{ id: string; extra?: unknown }>;
+}): Set<string> {
+  const { chatMode, chatMetadata, messages } = args;
+  if (!isRoleplaySummaryMode(chatMode) || chatMetadata.hideSummarisedMessages !== true) {
+    return new Set<string>();
+  }
+
+  const entries = normalizeChatSummaryEntries(chatMetadata.summaryEntries, {
+    legacySummary: typeof chatMetadata.summary === "string" ? chatMetadata.summary : null,
+  }).filter((entry) => entry.enabled !== false);
+  if (entries.length === 0) return new Set<string>();
+
+  const entryMessageIds = new Set<string>();
+  const maxIndex = messages.length - 1;
+  for (const entry of entries) {
+    for (const id of entry.messageIds ?? []) entryMessageIds.add(id);
+    if (typeof entry.rangeStartIndex === "number" && typeof entry.rangeEndIndex === "number") {
+      const start = Math.max(0, Math.min(maxIndex, Math.floor(entry.rangeStartIndex)));
+      const end = Math.max(0, Math.min(maxIndex, Math.floor(entry.rangeEndIndex)));
+      if (start <= end) {
+        for (let index = start; index <= end; index++) {
+          const id = messages[index]?.id;
+          if (id) entryMessageIds.add(id);
+        }
+      }
+    }
+  }
+  if (entryMessageIds.size === 0) return new Set<string>();
+
+  return new Set(
+    computeSummaryHideIds({
+      messages,
+      entryMessageIds: [...entryMessageIds],
+      tail: resolveRoleplaySummaryTail(chatMetadata.summaryTailMessages),
+    }),
+  );
+}
+
+/**
  * Select the messages a non-range rolling summary should cover. Normally the most
  * recent `contextSize` *visible* messages (the historical `visible.slice(-contextSize)`
  * behavior). When a previous summary has already hidden earlier messages, the window is
@@ -593,13 +644,8 @@ export function selectRollingSummaryMessages<T extends { id: string; extra?: unk
   const size = Number.isFinite(contextSize) ? Math.max(0, Math.floor(contextSize)) : 0;
   if (size <= 0) return [];
   const visible = messages.filter((message) => !isMessageHiddenFromAI(message));
-  // Fewer visible messages than the window — nothing can have drifted out of it.
   if (visible.length <= size) return visible;
-  // Ids owned by a live (enabled) summary entry — what it summarized. A manual "Hide from
-  // AI" never appears here, so it can't be mistaken for a boundary. We include both
-  // `hiddenMessageIds` and `messageIds` so entries created before `hiddenMessageIds`
-  // existed (see ChatSummaryEntry) still anchor a boundary; the hidden check in the scan
-  // keeps the protected tail (also in `messageIds`, but visible) from being chosen.
+
   const summaryOwned = new Set<string>();
   for (const entry of Array.isArray(args.summaryEntries) ? args.summaryEntries : []) {
     if (entry?.enabled === false) continue;
@@ -607,7 +653,7 @@ export function selectRollingSummaryMessages<T extends { id: string; extra?: unk
     for (const id of Array.isArray(entry?.messageIds) ? entry.messageIds : []) summaryOwned.add(id);
   }
   if (summaryOwned.size === 0) return visible.slice(-size);
-  // The previous summary's boundary: the most recent hidden message owned by a summary.
+
   let lastBoundaryIndex = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
     if (isMessageHiddenFromAI(messages[i]!) && summaryOwned.has(messages[i]!.id)) {
@@ -615,10 +661,8 @@ export function selectRollingSummaryMessages<T extends { id: string; extra?: unk
       break;
     }
   }
-  // No summary-hidden message precedes the window — keep the plain last-`size` window.
   if (lastBoundaryIndex < 0) return visible.slice(-size);
-  // Visible messages accumulated since that boundary. Extend the window to cover all of
-  // them when they exceed `size`, pulling a drifted protected tail back into the batch.
+
   const sinceBoundary = messages
     .slice(lastBoundaryIndex + 1)
     .filter((message) => !isMessageHiddenFromAI(message)).length;
@@ -1048,7 +1092,7 @@ export function parseStoredGenerationParameters(raw: unknown): StoredGenerationP
   }
   if (
     source.reasoningEffort === null ||
-    ["low", "medium", "high", "xhigh", "maximum"].includes(String(source.reasoningEffort))
+    ["low", "medium", "high", "minimal", "xhigh", "maximum"].includes(String(source.reasoningEffort))
   ) {
     out.reasoningEffort = source.reasoningEffort as StoredGenerationParameters["reasoningEffort"];
   }
@@ -1074,6 +1118,7 @@ export function parseStoredGenerationParameters(raw: unknown): StoredGenerationP
   }
   for (const key of [
     "squashSystemMessages",
+    "disableMessageMerge",
     "showThoughts",
     "useMaxContext",
     "strictRoleFormatting",
