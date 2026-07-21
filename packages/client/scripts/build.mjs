@@ -8,10 +8,12 @@ const PACKAGE_ROOT = resolve(__dirname, "..");
 const LOW_MEMORY_BUILD = process.platform === "android" || process.env.MARINARA_LOW_MEMORY_BUILD === "1";
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+  const isWin = process.platform === "win32";
+  const safeCommand = isWin && command.includes(" ") ? `"${command}"` : command;
+  const result = spawnSync(safeCommand, args, {
     cwd: PACKAGE_ROOT,
     env: { ...process.env, ...options.env },
-    shell: process.platform === "win32",
+    shell: isWin,
     stdio: "inherit",
   });
   if (result.status !== 0) {
