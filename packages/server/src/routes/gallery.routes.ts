@@ -951,13 +951,15 @@ export async function galleryRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: message });
     }
     const promptBuilder = promptRuntime.provider;
+    const imagePromptHint = typeof imageConn.imagePromptHint === "string" ? imageConn.imagePromptHint.trim() : "";
     const promptContext = input.context?.trim()
       ? `Context for the selfie: ${input.context.trim()}`
       : `Generate a casual selfie of ${characterName} based on the current conversation context.`;
+    const promptContextWithHint = imagePromptHint ? `${promptContext}\n\n${imagePromptHint}` : promptContext;
 
     if (debugLogsEnabled) {
       debugLog("[debug/gallery/selfie] prompt-builder system:\n%s", selfieSystemPrompt);
-      debugLog("[debug/gallery/selfie] prompt-builder user:\n%s", promptContext);
+      debugLog("[debug/gallery/selfie] prompt-builder user:\n%s", promptContextWithHint);
     }
 
     let imagePrompt = input.promptOverride?.trim() ?? "";
@@ -966,7 +968,7 @@ export async function galleryRoutes(app: FastifyInstance) {
         const promptResult = await promptBuilder.chatComplete(
           [
             { role: "system", content: selfieSystemPrompt },
-            { role: "user", content: promptContext },
+            { role: "user", content: promptContextWithHint },
           ],
           {
             model: promptRuntime.model,

@@ -1395,11 +1395,12 @@ export function parseCharacterCommands(content: string): {
     if (cmd.name) commands.push(cmd);
   }
 
-  // Strip all commands from the visible content
+  // Strip all commands from the visible content.
+  // [selfie] is intentionally kept so the LLM sees its own past tool calls in history
+  // (stripCapabilityConversationCommands does not touch [selfie]).
   let cleanContent = stripCapabilityConversationCommands(content)
     .replace(SCHEDULE_UPDATE_RE, "")
     .replace(CROSS_POST_RE, "")
-    .replace(SELFIE_RE, "")
     .replace(MEMORY_RE, "")
     .replace(SCENE_RE, "")
     .replace(CALL_RE, "")

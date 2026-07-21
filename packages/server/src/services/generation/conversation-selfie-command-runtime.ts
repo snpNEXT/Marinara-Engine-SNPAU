@@ -154,6 +154,11 @@ async function generateSelfie(
     appearance,
     charName: args.charName,
   });
+  const imagePromptHint = (imgConnFull as unknown as { imagePromptHint?: unknown }).imagePromptHint;
+  const imgConnHint =
+    typeof imagePromptHint === "string"
+      ? imagePromptHint.trim()
+      : "";
   const userPrompt = args.command.context
     ? `Context for the selfie: ${args.command.context}`
     : `Generate a casual selfie of ${args.charName} based on the current conversation context.`;
@@ -174,7 +179,7 @@ async function generateSelfie(
       },
       {
         role: "user",
-        content: userPrompt,
+  content: imgConnHint ? `${userPrompt}\n\n${imgConnHint}` : userPrompt,
       },
     ],
     {
