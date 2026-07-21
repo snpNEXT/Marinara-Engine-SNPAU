@@ -81,6 +81,33 @@ function compileImagePromptPass(
     : omitPromptValueAlreadyPresent(userPositive, duplicateComparisonPrompt, fragmentMode, positiveDiagnostics);
   const promptPrefix = imagePromptPrefixFromDefaults(input.imageDefaults);
   const negativePromptPrefix = imageNegativePromptPrefixFromDefaults(input.imageDefaults);
+  // Selfie prompts are already model-authored outputs; preserve them verbatim.
+  if (input.kind === "selfie") {
+    const positiveParts = [promptPrefix, input.prompt, input.userPositive]
+      .map((p) => p?.trim())
+      .filter(Boolean)
+      .join(", ");
+    const negativeFragments: string[] = [];
+    const negativeDiagnostics: string[] = [];
+    const negativeParts = [negativePromptPrefix, profile.negativeTags, input.negativePrompt, input.userNegative, input.hardNegative];
+    for (const part of negativeParts) {
+      negativeFragments.push(
+        ...splitPromptFragments(part, promptMode).map((fragment) => cleanPromptFragment(fragment, promptMode)),
+      );
+    }
+    const negative = dedupeFragments(negativeFragments, profile.rules.dedupeStrength, negativeDiagnostics);
+    return {
+      prompt: positiveParts,
+      negativePrompt: joinFragments(negative, promptMode),
+      profile,
+      diagnostics: {
+        removedPositiveDuplicates: [],
+        removedNegativeDuplicates: negativeDiagnostics,
+        movedNegativeFragments: [],
+      },
+    };
+  }
+
   const sourceCueText = [input.prompt, input.userPositive].filter(Boolean).join("\n");
   const sourceCues = compactPrompt ? deriveTaggedSourceCues(sourceCueText) : [];
   const profileSubjectTags = reconcileProfileSubjectTags(profile.subjectTags[input.kind] ?? "", sourceCues);
