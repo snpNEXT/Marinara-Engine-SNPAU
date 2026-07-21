@@ -233,6 +233,7 @@ import {
   resolveBaseUrl,
   resolveGroupGenerationMode,
   resolveRoleplaySummaryTail,
+  resolveSummaryPromptSkipIds,
   resolveCharacterNameMap,
   resolvePromptCharacterIdsForTarget,
   resolveRegenerationGameStateFallbackMessageIds,
@@ -444,6 +445,7 @@ import {
   type ConversationProfileParticipant,
 } from "../services/conversation/conversation-profiles.js";
 import {
+  isStandaloneCharacterProfileBlock,
   filterPromptMessagesForCharacterAudience,
   scopeIndividualGroupMessagesForTarget,
   type GenerationPromptMessage,
@@ -1171,8 +1173,17 @@ export async function generateRoutes(app: FastifyInstance) {
         }
       }
       const scopedMessages = startIdx > 0 ? allChatMessages.slice(startIdx) : allChatMessages;
+      const summaryPromptSkipIds = supportsHiddenFromAI
+        ? resolveSummaryPromptSkipIds({
+            chatMode,
+            chatMetadata: chatMeta,
+            messages: scopedMessages,
+          })
+        : new Set<string>();
       let chatMessages = supportsHiddenFromAI
-        ? scopedMessages.filter((message: any) => !isMessageHiddenFromAI(message))
+        ? scopedMessages.filter(
+            (message: any) => !isMessageHiddenFromAI(message) && !summaryPromptSkipIds.has(message.id),
+          )
         : scopedMessages;
       let lorebookKeeperMessages = chatMessages;
       let regenMsg: any;
@@ -1543,7 +1554,8 @@ export async function generateRoutes(app: FastifyInstance) {
         let frequencyPenalty = 0;
         let presencePenalty = 0;
         let showThoughts = true;
-        let reasoningEffort: "low" | "medium" | "high" | "xhigh" | "maximum" | null =
+        let disableMessageMerge = false;
+        let reasoningEffort: "low" | "medium" | "high" | "minimal" | "xhigh" | "maximum" | null =
           DEFAULT_GENERATION_PARAMS.reasoningEffort;
         let verbosity: "low" | "medium" | "high" | null = null;
         let serviceTier: "flex" | "priority" | null = null;
@@ -1664,6 +1676,8 @@ export async function generateRoutes(app: FastifyInstance) {
           promptGroupChatMode === "individual" &&
           (promptGroupResponseOrder !== "manual" || chatMode === "conversation") &&
           input.impersonate !== true;
+        // Always enabled for individual mode in roleplay/visual_novel so the model always has
+        // character attribution in context. User-opt-in still works for merged and other modes.
         const shouldPrefixGroupHistorySpeakers =
           chatMeta.groupSpeakerNamesInHistory === true &&
           characterIds.length > 1 &&
@@ -2071,6 +2085,7 @@ export async function generateRoutes(app: FastifyInstance) {
           frequencyPenalty = assembled.parameters.frequencyPenalty ?? 0;
           presencePenalty = assembled.parameters.presencePenalty ?? 0;
           showThoughts = assembled.parameters.showThoughts ?? true;
+          disableMessageMerge = assembled.parameters.disableMessageMerge ?? false;
           reasoningEffort = assembled.parameters.reasoningEffort ?? null;
           verbosity = assembled.parameters.verbosity ?? null;
           serviceTier = assembled.parameters.serviceTier ?? null;
@@ -3141,6 +3156,7 @@ export async function generateRoutes(app: FastifyInstance) {
           // Keep one concrete tagged assistant example while trimming redundant
           // wrappers from older roleplay history.
           stripSpeakerTagsExceptLastAssistant(finalMessages);
+
         }
 
         if (isGroupChat) {
@@ -3308,6 +3324,30 @@ export async function generateRoutes(app: FastifyInstance) {
           agentContext.memory._personaId = personaId;
           agentContext.memory._personaAvatarPath =
             persona && typeof persona.avatarPath === "string" ? persona.avatarPath : null;
+        }
+        // Inject the image gen connection's prompting hint into agent memory so the illustrator
+        // (and any other image-prompt-generating agent) can use it.
+        // Resolve using the same priority as the illustrator itself:
+        // game/roleplay image connection → agent settings image connection → conversation selfie connection → default image gen connection.
+        {
+          const illustratorAgentForHint = resolvedAgents.find((a) => a.type === "illustrator");
+          const agentImageConnId = ((illustratorAgentForHint?.settings?.imageConnectionId as string) ?? "").trim();
+          const imgHintCandidates = [
+            typeof chatMeta.gameImageConnectionId === "string" ? chatMeta.gameImageConnectionId.trim() : "",
+            agentImageConnId,
+            typeof chatMeta.imageGenConnectionId === "string" ? chatMeta.imageGenConnectionId.trim() : "",
+          ].filter(Boolean);
+          let imgConnForHint = null;
+          for (const id of imgHintCandidates) {
+            imgConnForHint = await connections.getById(id).catch(() => null);
+            if (imgConnForHint) break;
+          }
+          imgConnForHint ??= await connections.getDefaultForImageGeneration().catch(() => null);
+          const hint =
+            imgConnForHint && typeof (imgConnForHint as any).imagePromptHint === "string"
+              ? ((imgConnForHint as any).imagePromptHint as string).trim()
+              : "";
+          if (hint) agentContext.memory._imagePromptHint = hint;
         }
         const getLatestUserExpressionSource = () =>
           (
@@ -4835,6 +4875,11 @@ export async function generateRoutes(app: FastifyInstance) {
           const explicitMentionIds = getExplicitlyMentionedCharacterIds();
           return explicitMentionIds.length > 0 ? explicitMentionIds : selectFallbackSmartGroupResponder();
         };
+        const useNaturalCompletionSmart =
+          useIndividualLoop &&
+          groupResponseOrder === "natural" &&
+          !input.forCharacterId &&
+          (chatMode === "roleplay" || chatMode === "visual_novel");
         const needsSmartResponseQueue =
           useIndividualLoop &&
           groupResponseOrder === "smart" &&
@@ -4873,6 +4918,7 @@ export async function generateRoutes(app: FastifyInstance) {
         }
 
         if (
+          !useNaturalCompletionSmart && // natural completion handles this without a queue
           useIndividualLoop &&
           groupResponseOrder === "smart" &&
           !input.forCharacterId &&
@@ -4892,19 +4938,23 @@ export async function generateRoutes(app: FastifyInstance) {
           chatMode === "conversation" ? await getTurnGameContextBuilder(app.db, input.chatId) : null;
 
         // Manual mode with forCharacterId: only generate for the specified character.
-        // Sequential: all available characters respond. Smart: generate the selected queue in order.
-        const respondingCharIds = useIndividualLoop
+        // Mention-driven: generate for mentioned characters.
+        // Sequential: all available characters respond.
+        // Smart: either natural-completion picker (null sentinel) or the full queued order.
+        const respondingCharIds: (string | null)[] = useIndividualLoop
           ? input.forCharacterId && characterIds.includes(input.forCharacterId)
             ? [input.forCharacterId]
             : explicitlyMentionedConversationCharacterIds.length > 0
               ? explicitlyMentionedConversationCharacterIds
               : groupResponseOrder === "manual"
-                ? [] // manual mode without forCharacterId or a mention: no auto-generation
+                ? [] // manual mode without forCharacterId or mentions: no auto-generation
                 : groupResponseOrder === "sequential"
                   ? availableGroupCharacters.map((character) => character.id)
-                  : smartResponseQueue?.length
-                    ? [...smartResponseQueue]
-                    : []
+                  : useNaturalCompletionSmart
+                    ? [null] // model picks speaker via name-prefixed completion
+                    : smartResponseQueue?.length
+                      ? [...smartResponseQueue]
+                      : []
           : [characterIds[0] ?? null];
 
         if (deferConversationLorebookScanToResponder && respondingCharIds.length > 0) {
@@ -5039,7 +5089,11 @@ export async function generateRoutes(app: FastifyInstance) {
           }
           const scopedMessagesForGen =
             isGroupChat && usesIndividualGroupGeneration && targetCharId
-              ? scopeIndividualGroupMessagesForTarget(gameAwareMessagesForGen, targetCharId, charInfo)
+              ? chatMode !== "conversation"
+                ? scopeIndividualGroupMessagesForTarget(gameAwareMessagesForGen, targetCharId, charInfo, {
+                    otherCharsAsUser: chatMeta.groupOtherCharsAsUser !== false,
+                  })
+                : scopeIndividualGroupMessagesForTarget(gameAwareMessagesForGen, targetCharId, charInfo)
               : gameAwareMessagesForGen;
           const targetScopedMessagesForGen =
             !promptTargetCharacterId && targetCharId
@@ -5161,7 +5215,9 @@ export async function generateRoutes(app: FastifyInstance) {
             // Append mid-prompt system messages to the last user turn after context fitting.
             // This keeps prompt/injection system blocks protected while trimming history,
             // then preserves provider alternation rules for the actual request.
-            return mergeProviderAdjacentMessages(appendNonLeadingSystemMessagesToLastUser(messages));
+            // Skip same-role merging when disabled by generation parameters.
+            const appended = appendNonLeadingSystemMessagesToLastUser(messages);
+            return disableMessageMerge ? appended : mergeProviderAdjacentMessages(appended);
           };
 
           let finalPromptSent: ChatMessage[] = [];
@@ -5191,6 +5247,55 @@ export async function generateRoutes(app: FastifyInstance) {
           fullResponse = "";
           fullThinking = "";
           providerThinking = "";
+
+          // Natural completion: buffer the first few tokens until we detect "CharName: " so we can
+          // send a group_turn update to the client during streaming rather than waiting until after
+          // the full response is received. Once detected (or the buffer grows past all character
+          // name lengths), flush buffered content and continue streaming normally.
+          const naturalDetectionActive = targetCharId === null && isGroupChat && groupChatMode === "individual";
+          let naturalPrefixFlushed = !naturalDetectionActive;
+          let naturalPrefixBuffer = "";
+          const longestNaturalName = naturalDetectionActive
+            ? charInfo.reduce((max, c) => Math.max(max, c.name.length), 0) + 3 // longest name + ": " + margin
+            : 0;
+          const streamChunk = async (chunk: string): Promise<void> => {
+            if (naturalPrefixFlushed) {
+              await sendTokenTextChunked(chunk);
+              return;
+            }
+            naturalPrefixBuffer += chunk;
+            for (const char of charInfo) {
+              const escapedName = char.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              const m = naturalPrefixBuffer.match(new RegExp(`^\\s*(${escapedName})\\s*:\\s*`, "i"));
+              if (m) {
+                targetCharId = char.id;
+                naturalPrefixFlushed = true;
+                // Tell the client the real character as early as possible during streaming
+                reply.raw.write(
+                  `data: ${JSON.stringify({ type: "group_turn", data: { characterId: char.id, characterName: char.name, detected: true } })}\n\n`,
+                );
+                const remainder = naturalPrefixBuffer.slice(m[0].length);
+                naturalPrefixBuffer = "";
+                if (remainder) await sendTokenTextChunked(remainder);
+                return;
+              }
+            }
+            // Buffer longer than any possible "Name: " prefix — give up on detection and flush
+            if (naturalPrefixBuffer.length > longestNaturalName) {
+              naturalPrefixFlushed = true;
+              const buf = naturalPrefixBuffer;
+              naturalPrefixBuffer = "";
+              if (buf) await sendTokenTextChunked(buf);
+            }
+          };
+          const flushNaturalBuffer = async (): Promise<void> => {
+            if (!naturalPrefixFlushed && naturalPrefixBuffer) {
+              naturalPrefixFlushed = true;
+              const buf = naturalPrefixBuffer;
+              naturalPrefixBuffer = "";
+              await sendTokenTextChunked(buf);
+            }
+          };
           if (
             tailMessages.assistantPrefillInjected &&
             !tailMessages.googleUserRegenerationInjected &&
@@ -5290,7 +5395,7 @@ export async function generateRoutes(app: FastifyInstance) {
               if (holdForTextRewrite) {
                 return;
               }
-              await sendTokenTextChunked(chunk);
+              await streamChunk(chunk);
             };
 
             for (let round = 0; round < maxToolRounds; round++) {
@@ -5580,6 +5685,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 finishReason = finalResult.finishReason;
               }
             }
+            await flushNaturalBuffer();
           } else {
             logPromptSentToModel(initialProviderMessages);
             const gen = provider.chat(initialProviderMessages, {
@@ -5632,7 +5738,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   result = await withLlmRequestTimeout(chatGenerationTimeoutMs, () => gen.next());
                   continue;
                 }
-                await sendTokenTextChunked(val);
+                await streamChunk(val);
                 result = await withLlmRequestTimeout(chatGenerationTimeoutMs, () => gen.next());
               }
               // Generator return value contains usage
@@ -5649,6 +5755,7 @@ export async function generateRoutes(app: FastifyInstance) {
             if (abortController.signal.aborted) {
               return null;
             }
+            await flushNaturalBuffer();
           }
 
           const durationMs = Date.now() - genStartTime;
@@ -5878,6 +5985,27 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           }
 
+          // ── Auto-detect character in natural-completion smart mode ──
+          // When targetCharId is null (roleplay/visual_novel individual smart mode without a pre-call
+          // selector), the model chose a character based on name-prefixed history. Detect from the
+          // leading "Name: " prefix and reassign targetCharId so save, stripping, and return all
+          // use the correct character without additional per-site changes.
+          if (targetCharId === null && isGroupChat && groupChatMode === "individual") {
+            for (const char of charInfo) {
+              const escapedName = char.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              if (new RegExp(`^\\s*${escapedName}\\s*:`, "i").test(fullResponse)) {
+                targetCharId = char.id;
+                fullResponse = fullResponse
+                  .replace(new RegExp(`^\\s*${escapedName}\\s*:\\s*`, "i"), "")
+                  .trimStart();
+                contentReplaced = true;
+                break;
+              }
+            }
+            // Detection failed — fall back to first character so the message isn't saved with null.
+            if (targetCharId === null) targetCharId = charInfo[0]?.id ?? null;
+          }
+
           // ── Strip character name prefix in individual group mode ──
           // LLMs often prefix the response with the character name even when told not to.
           // Also strip any leftover <speaker> tags from individual mode responses.
@@ -6003,7 +6131,13 @@ export async function generateRoutes(app: FastifyInstance) {
 
           if (contentReplaced) {
             if (!holdForTextRewrite) {
-              reply.raw.write(`data: ${JSON.stringify({ type: "content_replace", data: fullResponse })}\n\n`);
+              // Strip [selfie] tags from the display signal — the tag is kept in fullResponse
+              // (stored to DB) so the LLM sees it in history, but the client must not render it as text.
+              const displayResponse = fullResponse
+                .replace(/\[selfie(?::\s*(?:context="[^"]*"|"[^"]*"|[^\]\r\n"]+))?\]/gi, "")
+                .trim();
+              reply.raw.write(`data: ${JSON.stringify({ type: "content_replace", data: displayResponse })}\n\n`);
+
             }
           }
 
@@ -6354,8 +6488,55 @@ export async function generateRoutes(app: FastifyInstance) {
         // are declared above the follow-up loop so they survive iterations.)
 
         const generationGuideInstruction = buildGenerationGuideInstruction(input.generationGuide, promptMacroContext);
-        const buildRoleplayCharacterInstruction = (charName: string) =>
-          groupTurnPromptEnabled && chatMode === "roleplay" ? `Respond ONLY as ${charName}.` : null;
+        const latestVisibleSenderOtherThan = (targetCharId: string): string | null => {
+          for (let i = chatMessages.length - 1; i >= 0; i--) {
+            const message = chatMessages[i]!;
+            if (message.role !== "user" && message.role !== "assistant") continue;
+            if (message.role === "assistant" && message.characterId === targetCharId) continue;
+            return resolveMessageSpeakerName(message);
+          }
+          return null;
+        };
+        const filterTargetProfileBlocks = (messages: typeof finalMessages, targetCharId: string) => {
+          if (chatMode !== "conversation") return messages;
+          const otherNames = charInfo.filter((c) => c.id !== targetCharId).map((c) => c.name);
+          if (otherNames.length === 0) return messages;
+          return messages.filter((message) => {
+            if (message.role !== "system") return true;
+            return !otherNames.some((name) => isStandaloneCharacterProfileBlock(message.content, name));
+          });
+        };
+        const buildCharacterInstruction = (charId: string, charName: string) => {
+          if (chatMode !== "conversation") {
+            return groupTurnPromptEnabled ? `Respond ONLY as ${charName}.` : null;
+          }
+          if (groupResponseOrder !== "manual") {
+            const otherNames = charInfo
+              .filter((character) => character.id !== charId)
+              .map((character) => character.name);
+            return [
+              `Respond ONLY as ${charName}.`,
+              `Your entire answer is ${charName}'s next message only.`,
+              `Do not write dialogue, narration, labels, or actions for anyone except ${charName}.`,
+              otherNames.length > 0
+                ? `Forbidden speaker labels for this turn: ${otherNames.join(", ")}. Do not start any line with those names.`
+                : null,
+              `If another character should react, stop after ${charName}'s message and let their own turn handle it.`,
+            ]
+              .filter(Boolean)
+              .join("\n");
+          }
+          const latestOtherSender = latestVisibleSenderOtherThan(charId);
+          return [
+            `Respond ONLY as ${charName}.`,
+            `This is an invisible manual trigger, not a visible message from ${personaName}. Do not mention being pinged, summoned, selected, or called by the user.`,
+            latestOtherSender
+              ? `Reply naturally to the latest visible sender other than yourself: ${latestOtherSender}.`
+              : `Reply naturally to the ongoing group context.`,
+            `If your own previous message is the most relevant last beat, continue naturally instead of answering the hidden trigger as if it came from ${personaName}.`,
+            `You may address ${personaName} or another character if that is what the context calls for, but do not speak or act for them.`,
+          ].join("\n");
+        };
 
         if (useIndividualLoop) {
           // Individual group mode: generate one response per character
@@ -6368,21 +6549,42 @@ export async function generateRoutes(app: FastifyInstance) {
 
           for (let ci = 0; ci < respondingCharIds.length; ci++) {
             if (abortController.signal.aborted) break;
-            const charId = respondingCharIds[ci]!;
-            const charName = charInfo.find((c) => c.id === charId)?.name ?? "Character";
+            const charId = respondingCharIds[ci] ?? null; // may be null for natural-completion smart mode
+            const charName = charId !== null ? (charInfo.find((c) => c.id === charId)?.name ?? "Character") : null;
 
             // Tell the client which character is responding next
             reply.raw.write(
-              `data: ${JSON.stringify({ type: "group_turn", data: { characterId: charId, characterName: charName, index: ci } })}\n\n`,
+              `data: ${JSON.stringify({ type: "group_turn", data: { characterId: charId, characterName: charName ?? "Character", index: ci } })}\n\n`,
             );
 
-            // Conversation puts its short turn instruction in Output Format.
-            // Keep the established Roleplay instruction placement unchanged.
-            const charInstruction = buildRoleplayCharacterInstruction(charName);
-            const messagesWithInstruction = [...runningMessages];
-            // Add as a system message at the end (just before any trailing user message)
-            if (charInstruction) {
-              messagesWithInstruction.push({ role: "system", content: charInstruction });
+            // For roleplay/visual_novel individual mode, use a soft system instruction for character
+            // attribution. A system message is safe for all models including those that produce a
+            // <think> block before responding — assistant prefill would block the thinking block.
+            // For natural-completion smart mode (charId === null): add a minimal hint and let the
+            // model pick a character from context.
+            const messagesWithInstruction =
+              charId !== null ? [...filterTargetProfileBlocks(runningMessages, charId)] : [...runningMessages];
+
+            if (chatMode === "conversation") {
+              // Conversation mode keeps the full directional instruction (invisible trigger handling etc.)
+              const charInstruction = charId !== null ? buildCharacterInstruction(charId, charName ?? "Character") : null;
+              if (charInstruction) {
+                messagesWithInstruction.push({ role: "system", content: charInstruction });
+              }
+            } else if (charId !== null) {
+              // Roleplay/visual_novel with a known target: soft system instruction.
+              const charInstruction = buildCharacterInstruction(charId, charName ?? "Character");
+              if (charInstruction) {
+                messagesWithInstruction.push({ role: "system", content: charInstruction });
+              }
+            } else {
+              // Natural-completion smart mode: give a minimal hint so the model knows to open with
+              // the character name. Without this many models skip the prefix entirely.
+              const charNames = charInfo.map((c) => c.name).join(", ");
+              messagesWithInstruction.push({
+                role: "system",
+                content: `Begin your response with the name of the character who would most naturally respond next, followed by a colon. Available characters: ${charNames}.`,
+              });
             }
 
             const genResult = await generateForCharacter(
@@ -6396,12 +6598,12 @@ export async function generateRoutes(app: FastifyInstance) {
             }
             firstSavedMsg ??= genResult.savedMsg;
             lastSavedMsg = genResult.savedMsg;
-            recordExpressionTarget(genResult.savedMsg, charId);
+            recordExpressionTarget(genResult.savedMsg, genResult.characterId);
             allResponses.push(genResult.response);
             for (const cmd of genResult.commands) {
               collectedCommands.push({
                 command: cmd,
-                characterId: charId,
+                characterId: genResult.characterId, // use detected/actual character
                 messageId: genResult.savedMsg?.id ?? "",
                 swipeIndex: genResult.savedMsg?.activeSwipeIndex ?? 0,
               });
@@ -6413,7 +6615,7 @@ export async function generateRoutes(app: FastifyInstance) {
               role: "assistant",
               content: genResult.response,
               contextKind: "history",
-              characterId: charId,
+              characterId: genResult.characterId, // use detected/actual character
             } as const;
             if (shouldPrefixGroupHistorySpeakers) {
               const characterNamesById = await getGroupHistoryCharacterNamesById();
@@ -6467,10 +6669,14 @@ export async function generateRoutes(app: FastifyInstance) {
               return;
             }
 
-            // Conversation puts its short turn instruction in Output Format.
+            // Attribute this regen to the original message's character
             targetCharId = regenMsg?.characterId ?? null;
             const targetCharName = charInfo.find((c) => c.id === targetCharId)?.name ?? "Character";
-            const charInstruction = buildRoleplayCharacterInstruction(targetCharName);
+            const charInstruction = targetCharId
+              ? buildCharacterInstruction(targetCharId, targetCharName)
+              : groupTurnPromptEnabled
+                ? `Respond ONLY as ${targetCharName}.`
+                : null;
             if (charInstruction) {
               sentMessages.push({ role: "system", content: charInstruction });
             }
@@ -6728,23 +6934,10 @@ export async function generateRoutes(app: FastifyInstance) {
               });
             } else {
               const combined = typeof chatMeta.summary === "string" ? chatMeta.summary : newText;
-              // Opt-in token compression: hide the messages this summary covered
-              // (except the protected recent tail, already excluded in autoHideIds)
-              // so the summary is a net token reduction. Best-effort; never aborts
-              // the stream. The same set is persisted on the entry above.
-              let hiddenMessageIds: string[] = [];
-              if (autoHideIds.length > 0) {
-                try {
-                  await chats.bulkSetHiddenFromAI(input.chatId, autoHideIds, true);
-                  hiddenMessageIds = autoHideIds;
-                } catch (err) {
-                  logger.error(err, "[chat-summary] Failed to auto-hide summarized roleplay messages");
-                }
-              }
               reply.raw.write(
                 `data: ${JSON.stringify({
                   type: "chat_summary",
-                  data: { summary: combined, entry: createdEntry, entries: summaryEntries, hiddenMessageIds },
+                  data: { summary: combined, entry: createdEntry, entries: summaryEntries },
                 })}\n\n`,
               );
             }

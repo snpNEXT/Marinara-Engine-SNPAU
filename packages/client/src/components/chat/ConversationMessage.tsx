@@ -313,30 +313,38 @@ export const ConversationMessage = memo(function ConversationMessage({
     ],
   );
 
-  // #3164: seed display randomness by message identity — this site previously
-  // passed no seed, so every {{random}}/{{roll}} re-rolled (Math.random) on
-  // every recompute, even for finished messages.
+  // Strip [selfie] / [selfie: context="..."] tags from display — the image attachment is shown instead.
+  // The raw tag is preserved in message.content for edit mode and LLM history.
+  const displayContent = useMemo(
+    () => message.content.replace(/\[selfie(?::\s*(?:context="[^"]*"|"[^"]*"|[^\]\r\n"]+))?\]/gi, "").trim(),
+    [message.content],
+  );
+  // #3164: seed display randomness by message identity so {{random}}/{{roll}} don't
+  // re-roll on every recompute for finished messages.
   const renderedContent = useMemo(
     () =>
       formatTextQuotes(
-        resolveMessageMacros(message.content, macroContext, {
+        resolveMessageMacros(displayContent, macroContext, {
           randomSeed: `${message.id}:${message.activeSwipeIndex ?? 0}`,
         }),
         quoteFormat,
       ),
-    [macroContext, message.activeSwipeIndex, message.content, message.id, quoteFormat],
+    [macroContext, displayContent, message.activeSwipeIndex, message.id, quoteFormat],
   );
   const renderedContentParts = useMemo(() => {
     if (!contentParts?.length) return null;
     const count = Math.max(1, Math.min(visiblePartCount ?? contentParts.length, contentParts.length));
-    return contentParts.slice(0, count).map((part, partIndex) =>
-      formatTextQuotes(
-        resolveMessageMacros(part, macroContext, {
-          randomSeed: `${message.id}:${message.activeSwipeIndex ?? 0}:${partIndex}`,
-        }),
-        quoteFormat,
-      ),
-    );
+    return contentParts
+      .slice(0, count)
+      .map((part, partIndex) => {
+        const stripped = part.replace(/\[selfie(?::\s*(?:context="[^"]*"|"[^"]*"|[^\]\r\n"]+))?\]/gi, "").trim();
+        return formatTextQuotes(
+          resolveMessageMacros(stripped, macroContext, {
+            randomSeed: `${message.id}:${message.activeSwipeIndex ?? 0}:${partIndex}`,
+          }),
+          quoteFormat,
+        );
+      });
   }, [contentParts, macroContext, message.activeSwipeIndex, message.id, quoteFormat, visiblePartCount]);
 
   // ── Attachment removal ──

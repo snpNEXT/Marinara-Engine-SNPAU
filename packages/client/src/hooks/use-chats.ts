@@ -257,6 +257,16 @@ export function useClearChatMemories(chatId: string | null) {
   });
 }
 
+export function useClearChatGameState(chatId: string | null) {
+  const resetGameState = useGameStateStore((s) => s.reset);
+  return useMutation({
+    mutationFn: () => api.delete(`/chats/${chatId}/game-state`),
+    onSuccess: () => {
+      resetGameState();
+    },
+  });
+}
+
 export function useRefreshChatMemories(chatId: string | null) {
   const qc = useQueryClient();
   return useMutation({

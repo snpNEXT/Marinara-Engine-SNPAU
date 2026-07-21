@@ -1731,6 +1731,7 @@ export function ChatSettingsDrawer({
     illustratorPromptConnectionId.length > 0 &&
     !illustratorPromptConnectionsList.some((connection) => connection.id === illustratorPromptConnectionId);
   const selfieUseAvatarReferences = metadata.selfieUseAvatarReferences === true;
+  const selfieTagInHistory = metadata.selfieTagInHistory !== false;
   const selfieIncludeCharacterAppearance = metadata.selfieIncludeCharacterAppearance === true;
   const gameImageUseAvatarReferences = metadata.gameImageUseAvatarReferences !== false;
   const gameImageIncludeCharacterAppearance = metadata.gameImageIncludeCharacterAppearance !== false;
@@ -5849,6 +5850,17 @@ export function ChatSettingsDrawer({
                                 })
                               }
                             />
+                            <AgentSettingsToggle
+                              label="Include Selfie Tag in AI Context"
+                              description="Keep [selfie] in message history so the AI knows it previously sent a photo. Turn off if you don't want the tag sent to the model at all."
+                              enabled={selfieTagInHistory}
+                              onToggle={() =>
+                                updateMeta.mutate({
+                                  id: chat.id,
+                                  selfieTagInHistory: !selfieTagInHistory,
+                                })
+                              }
+                            />
                             <p className="text-[0.55rem] text-[var(--muted-foreground)]">
                               Used for character selfies when Commands are enabled. The prompt model writes the selfie
                               prompt; the selfie connection renders the final image.
@@ -8785,6 +8797,7 @@ export function ChatSettingsDrawer({
               connections={chatGenerationConnectionsList}
               contextMessageLimit={metadata.contextMessageLimit as number | null | undefined}
               excludePastReasoning={metadata.excludePastReasoning as boolean | undefined}
+              disableMessageMerge={metadata.disableMessageMerge as boolean | undefined}
               imageCaptioningEnabled={metadata.imageCaptioningEnabled as boolean | undefined}
               imageCaptioningConnectionId={
                 typeof metadata.imageCaptioningConnectionId === "string" ? metadata.imageCaptioningConnectionId : null
@@ -8795,6 +8808,9 @@ export function ChatSettingsDrawer({
               }
               onExcludePastReasoningChange={(excludePastReasoning) =>
                 updateMeta.mutate({ id: chat.id, excludePastReasoning })
+              }
+              onDisableMessageMergeChange={(disableMessageMerge) =>
+                updateMeta.mutate({ id: chat.id, disableMessageMerge })
               }
               onImageCaptioningChange={(patch) => updateMeta.mutate({ id: chat.id, ...patch })}
             />

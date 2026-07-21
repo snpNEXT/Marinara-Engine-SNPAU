@@ -18,7 +18,7 @@ export type ChatMode = "conversation" | "roleplay" | "visual_novel" | "game";
 export type GroupChatMode = "merged" | "individual";
 
 /** How individual-mode group chats decide response order. */
-export type GroupResponseOrder = "sequential" | "smart" | "manual";
+export type GroupResponseOrder = "sequential" | "smart" | "natural" | "manual";
 
 export interface KnowledgeAgentSourceSettings {
   /** When true/omitted, this agent uses the chat's active lorebooks unless fixed sources are selected. */
@@ -318,6 +318,8 @@ export interface ChatMetadata {
   groupSpeakerColors?: boolean;
   /** Group individual mode: prefix chat history turns with the speaker name before prompt merging. */
   groupSpeakerNamesInHistory?: boolean;
+  /** Group individual mode: reassign other characters' messages to "user" role so only the responding character appears as "assistant". Defaults to true when absent. */
+  groupOtherCharsAsUser?: boolean;
   /** Group individual mode response order: "sequential" or "smart" (agent-decided) */
   groupResponseOrder?: GroupResponseOrder;
   /** When true/omitted, individual group turns append a responding-character instruction to the prompt. */

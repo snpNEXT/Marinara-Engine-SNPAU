@@ -250,11 +250,13 @@ export function scopeIndividualGroupMessagesForTarget(
   messages: GenerationPromptMessage[],
   targetCharacterId: string | null,
   characters: CharacterPromptScopeInfo[],
+  options?: { otherCharsAsUser?: boolean },
 ): GenerationPromptMessage[] {
   if (!targetCharacterId) return messages;
   const targetCharacter = characters.find((character) => character.id === targetCharacterId);
   if (!targetCharacter) return messages;
   const otherCharacters = characters.filter((character) => character.id !== targetCharacterId);
+  const otherCharsAsUser = options?.otherCharsAsUser !== false; // default true for backward compat
 
   const scoped = messages
     .map((message) => {
@@ -268,7 +270,7 @@ export function scopeIndividualGroupMessagesForTarget(
         next = { ...next, content };
       }
 
-      if (isHistoryMessage) {
+      if (isHistoryMessage && otherCharsAsUser) {
         if (next.characterId) {
           const role = next.characterId === targetCharacterId ? "assistant" : "user";
           next = { ...next, role };
