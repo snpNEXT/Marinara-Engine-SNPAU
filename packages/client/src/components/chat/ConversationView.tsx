@@ -334,6 +334,20 @@ export function ConversationView({
       item.manifest.kind.includes("turn-game") &&
       item.manifest.entrypoints.client,
   );
+  const conversationToolbarPackages = installedCapabilities.filter(
+    (item) =>
+      item.status === "active" &&
+      item.manifest.contributions?.slots?.includes("conversation-toolbar") &&
+      item.manifest.entrypoints.client,
+  );
+  const conversationSurfacePackages = installedCapabilities.filter(
+    (item) =>
+      item.status === "active" &&
+      item.manifest.contributions?.slots?.includes("conversation-surface") &&
+      item.manifest.entrypoints.client,
+  );
+  const [openCapabilitySurfaceId, setOpenCapabilitySurfaceId] = useState<string | null>(null);
+  useEffect(() => setOpenCapabilitySurfaceId(null), [chatId]);
   const isStreamCommitted = useChatStore((s) => s.committedStreamChatIds.has(chatId));
   const hasLiveStream = isStreaming && !isStreamCommitted;
   const streamBuffer = useThrottledStreamBuffer();
@@ -474,6 +488,20 @@ export function ConversationView({
       />
 
       <div className="ml-2 flex min-w-0 flex-1 items-center justify-end gap-2">
+        {conversationToolbarPackages.map((capability) => (
+          <CapabilityElement
+            key={`${capability.id}-toolbar`}
+            packageId={capability.id}
+            view="toolbar"
+            capabilityProps={{
+              chatId,
+              metadata: chatMeta,
+              openSurface: () => setOpenCapabilitySurfaceId(capability.id),
+              closeSurface: () => setOpenCapabilitySurfaceId(null),
+            }}
+            className="contents"
+          />
+        ))}
         {callsPackage && (
           <CapabilityElement
             packageId={callsPackage.id}
@@ -1402,6 +1430,23 @@ export function ConversationView({
           capabilityProps={callCapabilityProps}
           className="contents"
         />
+      )}
+      {conversationSurfacePackages.map(
+        (capability) =>
+          openCapabilitySurfaceId === capability.id && (
+            <CapabilityElement
+              key={`${capability.id}-surface-${chatId}`}
+              packageId={capability.id}
+              view="surface"
+              capabilityProps={{
+                chatId,
+                metadata: chatMeta,
+                open: true,
+                onClose: () => setOpenCapabilitySurfaceId(null),
+              }}
+              className="contents"
+            />
+          ),
       )}
       {/* Setup modals mounted once here (stable position) so they never double-render.
           Keyed by chatId so their internal selection state resets on a chat switch
