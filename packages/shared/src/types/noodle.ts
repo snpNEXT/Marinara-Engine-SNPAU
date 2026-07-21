@@ -13,6 +13,7 @@ export type NoodleCarryoverMode = "off" | "conversation" | "roleplay" | "game" |
 export type NoodleCarryoverTarget = "conversation" | "roleplay" | "game";
 export type NoodleParticipantSelectionMode = "all" | "random_range" | "exact";
 export type NoodleAvatarCrop = PersonaAvatarCrop | LegacyPersonaAvatarCrop;
+export type NoodleReasoningEffort = "low" | "medium" | "high" | "minimal" | "xhigh" | "maximum" | null;
 export type NoodleIdentityDisclosure = "open" | "hinted" | "secret";
 
 export interface NoodleAccountAccessSettings {
@@ -88,6 +89,10 @@ export interface NoodleSettings {
   carryoverMaxItems: number;
   theme: NoodleTheme;
   generationConnectionId: string | null;
+  generationTemperature: number;
+  generationTopP: number;
+  generationReasoningEffort: NoodleReasoningEffort;
+  includeChatCharacterStatuses: boolean;
   enableNoodler: boolean;
 }
 

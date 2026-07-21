@@ -18,7 +18,9 @@ export const NOODLE_LEGACY_PAST_MEMORY_INCLUSION_CHANCE = 0.5;
 export const NOODLE_PAST_MEMORY_MAX_ITEMS = 5;
 export const NOODLE_PAST_MEMORY_INCLUSION_CHANCE = 0.85;
 export const NOODLE_ADULT_PLATFORM_POLICY =
-  "Noodle only accepts confirmed adult accounts and personas. Every participant on Noodle is 18+; minors are not allowed on the platform. NSFW content is allowed, anything goes, and adult in-character drama, flirtation, gossip, and explicit references may appear when they fit the accounts involved.";
+// "Noodle only accepts confirmed adult accounts and personas. Every participant on Noodle is 18+; minors are not allowed on the platform. "
+// Commented this out because for some reason characters love to mention how much of an adult and not a minor they are with it?
+  "NSFW content is allowed, anything goes, and adult in-character drama, flirtation, gossip, and explicit references may appear when they fit the accounts involved.";
 export const NOODLE_PERSONA_AUTHORSHIP_INSTRUCTION =
   "- The user persona is controlled exclusively by the user. Never generate posts, replies, likes, reposts, poll votes, or follows as a persona. Personas may only be mentioned or targeted by other accounts.";
 export const NOODLE_PERSONA_IDENTITY_INSTRUCTION =

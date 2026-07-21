@@ -16,6 +16,7 @@ import type {
   NoodleCreatePostInput,
   NoodleInteraction,
   NoodleInteractionUpdateInput,
+  NoodleNudgeInput,
   NoodlePost,
   NoodlePostUpdateInput,
   NoodleRemoveInteractionInput,
@@ -409,13 +410,27 @@ export function useRemoveNoodleCharacter() {
   });
 }
 
-/** Clear every Noodle invitation source and refresh the bootstrap cache. */
 export function useClearNoodleInvites() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => api.delete<NoodleBootstrap>("/noodle/invites"),
     onSuccess: (bootstrap) => {
-      qc.setQueryData<NoodleBootstrap>(noodleKeys.bootstrap(), bootstrap);
+      qc.setQueryData<NoodleBootstrap | undefined>(noodleKeys.bootstrap(), (current) =>
+        current ? preservePollVotes(current, bootstrap) : bootstrap,
+      );
+      qc.invalidateQueries({ queryKey: noodleKeys.bootstrap() });
+    },
+  });
+}
+
+export function useNudgeNoodleCharacter() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: NoodleNudgeInput) => api.post<NoodleBootstrap>("/noodle/nudge", input),
+    onSuccess: (bootstrap) => {
+      qc.setQueryData<NoodleBootstrap | undefined>(noodleKeys.bootstrap(), (current) =>
+        current ? preservePollVotes(current, bootstrap) : bootstrap,
+      );
       qc.invalidateQueries({ queryKey: noodleKeys.bootstrap() });
     },
   });

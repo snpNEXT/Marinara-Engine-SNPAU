@@ -10,6 +10,9 @@ export const noodleParticipantSelectionModeSchema = z.enum(["all", "random_range
 export const noodleCarryoverModeSchema = z.enum(["off", "conversation", "roleplay", "game", "all"]);
 export const noodleCarryoverTargetSchema = z.enum(["conversation", "roleplay", "game"]);
 export const noodleThemeSchema = z.enum(["system", "light", "dark"]);
+export const noodleReasoningEffortSchema = z
+  .enum(["low", "medium", "high", "minimal", "xhigh", "maximum"])
+  .nullable();
 export const noodleIdentityDisclosureSchema = z.enum(["open", "hinted", "secret"]);
 
 export const DEFAULT_NOODLE_SETTINGS = {
@@ -25,7 +28,7 @@ export const DEFAULT_NOODLE_SETTINGS = {
   enableImagePrompts: false,
   imageGenerationConnectionId: null,
   imageGenerationPrompt:
-    "Create either a social-media-ready character image or an in-character meme for the post. For character images, mention build, clothing, visible appearance, pose, expression, setting, lighting, mood, and composition. For memes, mention meme format, visual gag, composition, and short readable caption/text when relevant.",
+    "Create either a social-media-ready character image or an in-character meme for the post. For character images, choose one clear visible-character viewpoint: selfie or mirror selfie (the character is visible holding the phone or in the reflection), a photo taken by a friend (the character is visible), or a back-facing or over-the-shoulder photo (the character is visible from behind). Do not use first-person POV, an empty scene, or an unseen camera operator's viewpoint unless the post explicitly asks for it. Default to casual phone selfies, mirror selfies, back-facing or over-the-shoulder photos, handheld candid shots, or photos taken by a friend. Use a tripod, studio, professional photographer, posed photoshoot, or polished commercial photography only when the character's occupation, wealth, setting, or post context makes that plausible. Vary framing and do not always show the character's face. For memes, mention meme format, visual gag, composition, and short readable caption/text when relevant.",
   imageGenerationUseAvatarReferences: true,
   imageGenerationIncludeDescriptions: true,
   allowGalleryImageAttachments: false,
@@ -43,6 +46,10 @@ export const DEFAULT_NOODLE_SETTINGS = {
   carryoverMaxItems: 8,
   theme: "system",
   generationConnectionId: null,
+  generationTemperature: 0.9,
+  generationTopP: 0.95,
+  generationReasoningEffort: null,
+  includeChatCharacterStatuses: false,
   enableNoodler: false,
 } as const;
 
@@ -93,6 +100,10 @@ export const noodleSettingsSchema = z.object({
   carryoverMaxItems: z.number().int().min(1).max(50).default(DEFAULT_NOODLE_SETTINGS.carryoverMaxItems),
   theme: noodleThemeSchema.default(DEFAULT_NOODLE_SETTINGS.theme),
   generationConnectionId: z.string().min(1).nullable().default(DEFAULT_NOODLE_SETTINGS.generationConnectionId),
+  generationTemperature: z.number().min(0).max(2).default(DEFAULT_NOODLE_SETTINGS.generationTemperature),
+  generationTopP: z.number().min(0).max(1).default(DEFAULT_NOODLE_SETTINGS.generationTopP),
+  generationReasoningEffort: noodleReasoningEffortSchema.default(DEFAULT_NOODLE_SETTINGS.generationReasoningEffort),
+  includeChatCharacterStatuses: z.boolean().default(DEFAULT_NOODLE_SETTINGS.includeChatCharacterStatuses),
   enableNoodler: z.boolean().default(DEFAULT_NOODLE_SETTINGS.enableNoodler),
 });
 
@@ -424,6 +435,16 @@ export const noodleGenerationRequestSchema = z.union([
   noodlePrivateGenerationRequestSchema,
 ]);
 
+export const noodleNudgeSchema = z.object({
+  accountId: z.string().min(1),
+  prompt: z.string().max(1000).optional(),
+  connectionId: z.string().min(1).optional(),
+  personaId: z.string().min(1).optional(),
+  targetPostId: z.string().min(1).optional(),
+  fastMode: z.boolean().optional(),
+  debugMode: z.boolean().optional(),
+});
+
 export const noodleRescheduleRefreshSchema = z.object({
   scheduledTime: z.string().datetime(),
   time: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/u, "Use a 24-hour time in HH:mm format."),
@@ -551,6 +572,7 @@ export type NoodleCreateInteractionInput = z.infer<typeof noodleCreateInteractio
 export type NoodleRemoveInteractionInput = z.infer<typeof noodleRemoveInteractionSchema>;
 export type NoodleInteractionOwnerInput = z.infer<typeof noodleInteractionOwnerSchema>;
 export type NoodleInteractionUpdateInput = z.infer<typeof noodleInteractionUpdateSchema>;
+export type NoodleNudgeInput = z.infer<typeof noodleNudgeSchema>;
 export type NoodlerCreateInteractionInput = z.infer<typeof noodlerCreateInteractionSchema>;
 export type NoodlerRemoveInteractionInput = z.infer<typeof noodlerRemoveInteractionSchema>;
 type InferredNoodlePublicGenerationRequest = z.infer<typeof noodlePublicGenerationRequestSchema>;

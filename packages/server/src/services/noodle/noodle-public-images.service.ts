@@ -170,12 +170,15 @@ export async function generateNoodlePostImage(input: {
     }
   }
 
+  const connectionHint =
+    typeof input.imageConnection.imagePromptHint === "string" ? input.imageConnection.imagePromptHint.trim() : "";
   const postPrompt = await loadPrompt(input.promptOverrides, NOODLE_IMAGE_POST, {
     authorName: input.account.displayName,
     postContent: input.postContent,
     draftPrompt: input.draftPrompt,
     userInstructions: input.settings.imageGenerationPrompt,
     characterDescription,
+    connectionHint,
   });
   const compiledPrompt = compileImagePrompt({
     kind: "illustration",

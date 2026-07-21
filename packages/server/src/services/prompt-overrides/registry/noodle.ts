@@ -10,6 +10,7 @@ export interface NoodleImagePostCtx extends Record<string, string | number | und
   draftPrompt: string;
   userInstructions: string;
   characterDescription: string;
+  connectionHint: string;
 }
 
 export const NOODLE_IMAGE_POST: PromptOverrideKeyDef<NoodleImagePostCtx> = {
@@ -40,10 +41,28 @@ export const NOODLE_IMAGE_POST: PromptOverrideKeyDef<NoodleImagePostCtx> = {
       description: "Optional character appearance or description notes included by Noodle Settings.",
       example: "Character appearance notes:\nDottore's Appearance: tall, slim build, blue hair, red eyes, mask.",
     },
+    {
+      name: "connectionHint",
+      description: "Optional image-prompt formatting hint from the image generation connection (e.g. tag style, quality tokens, negative conventions).",
+      example: "Use danbooru-style comma-separated tags. Always start with: masterpiece, best quality.",
+    },
   ],
   defaultBuilder: (ctx) =>
-    [ctx.draftPrompt.trim() || `A social-media-ready image posted by ${ctx.authorName}.`, ctx.characterDescription, ctx.userInstructions]
-      .map((part) => part.trim())
+    [
+      `Create one concise image-generation prompt for a fake social media post by ${ctx.authorName}.`,
+      ``,
+      `Post text: ${ctx.postContent}`,
+      `Draft image idea: ${ctx.draftPrompt.trim() || `A social-media-ready image posted by ${ctx.authorName}.`}`,
+      ctx.userInstructions?.trim() ? `User instructions: ${ctx.userInstructions.trim()}` : "",
+      ctx.characterDescription?.trim() ?? "",
+      ``,
+      `The image may be either a character-focused image or an in-character meme. Choose one clear visible-character viewpoint: selfie or mirror selfie (the character is visible holding the phone or in the reflection), a photo taken by a friend (the character is visible), or a back-facing or over-the-shoulder photo (the character is visible from behind). Do not use first-person POV, an empty scene, or an unseen camera operator's viewpoint unless the post explicitly asks for it. Default to casual phone selfies, mirror selfies, back-facing or over-the-shoulder photos, handheld candid shots, or photos taken by a friend. Use a tripod, studio, professional photographer, posed photoshoot, or polished commercial photography only when the character's occupation, wealth, setting, or post context makes that plausible. Vary framing and do not always show the character's face.`,
+      `For character-focused images, describe the visible subject, build/body type when relevant, clothing, appearance, expression, pose, setting, lighting, mood, framing, and composition.`,
+      `For memes, describe the meme format, visual gag, composition, character appearance if a character is visible, and exact short readable caption/text only when the meme needs it.`,
+      `Do not include UI chrome, social-media interface elements, watermarks, or unrelated text.`,
+      `Output only the final positive image prompt.`,
+      ctx.connectionHint?.trim() ?? "",
+    ]
       .filter(Boolean)
       .join("\n\n"),
   exampleContext: {
@@ -55,6 +74,7 @@ export const NOODLE_IMAGE_POST: PromptOverrideKeyDef<NoodleImagePostCtx> = {
       "Create either a social-media-ready character image or a meme. Mention build, clothing, appearance, pose, expression, setting, lighting, mood, composition, meme format, and short visible meme text when relevant.",
     characterDescription:
       "Character appearance notes:\nDottore's Appearance: tall, slim build, blue hair, red eyes, mask.",
+    connectionHint: "",
   },
 };
 
