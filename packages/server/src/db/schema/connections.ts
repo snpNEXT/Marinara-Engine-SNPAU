@@ -58,6 +58,8 @@ export const apiConnections = fileTable("api_connections", {
   imageGenerationSource: text("image_generation_source"),
   /** ComfyUI: custom workflow JSON with placeholders (%prompt%, %width%, etc.) */
   comfyuiWorkflow: text("comfyui_workflow"),
+  /** Per-connection hint injected into every LLM image-prompt generation call. */
+  imagePromptHint: text("image_prompt_hint"),
   /** Image generation: explicitly selected service ID (e.g. "comfyui", "automatic1111"). Overrides URL inference. */
   imageService: text("image_service"),
   /** For endpoint-based image services (e.g. RunPod Serverless ComfyUI): the endpoint ID. */

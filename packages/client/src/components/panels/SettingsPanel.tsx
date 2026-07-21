@@ -6830,6 +6830,37 @@ function AdvancedSettings() {
   const [exportProfileDialogOpen, setExportProfileDialogOpen] = useState(false);
   const [refreshingSpa, setRefreshingSpa] = useState(false);
   const [adminSecret, setAdminSecret] = useState(() => localStorage.getItem(ADMIN_SECRET_STORAGE_KEY) ?? "");
+  const [chubApiKey, setChubApiKey] = useState("");
+  const [isSavingChubApiKey, setIsSavingChubApiKey] = useState(false);
+
+  // Load existing Chub API key on mount
+  React.useEffect(() => {
+    const loadChubApiKey = async () => {
+      try {
+        const res = await api.get("/app-settings/chub_api_key");
+        if (res && typeof res === "object" && "value" in res) {
+          setChubApiKey((res.value as string) ?? "");
+        }
+      } catch {
+        // Fail silently if the setting doesn't exist
+      }
+    };
+    void loadChubApiKey();
+  }, []);
+
+  const saveChubApiKey = useCallback(async () => {
+    setIsSavingChubApiKey(true);
+    try {
+      await api.put(`/app-settings/chub_api_key`, { value: chubApiKey.trim() });
+      toast.success(chubApiKey.trim() ? "Chub API key saved!" : "Chub API key cleared!");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save Chub API key");
+    } finally {
+      setIsSavingChubApiKey(false);
+    }
+  }, [chubApiKey]);
+
+  const [quickRepliesDrawerOpen, setQuickRepliesDrawerOpen] = useState(true);
   const nativeConsoleBridge = getMarinaraAndroidBridge();
   const canOpenNativeConsole = typeof nativeConsoleBridge?.openConsole === "function";
   const nativeConsoleHelp = getNativeConsoleShortcutHelp();
@@ -7203,6 +7234,53 @@ function AdvancedSettings() {
               Save
             </span>
           </button>
+        </div>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Bot Browser API Keys"
+        description="Configure API keys for search features like Chub character browser."
+        icon={<Code size="0.875rem" />}
+      >
+        <div className="flex flex-col gap-2">
+          <label className="flex flex-col gap-1">
+            <span className="inline-flex items-center gap-1 text-xs font-medium">
+              Chub API Key
+              <HelpTooltip text="Your Chub API key enables authenticated searches with higher rate limits and full result sets. Found in your Chub account settings. Leave blank to use public searches." />
+            </span>
+            <div className="flex min-w-0 flex-wrap gap-2">
+              <input
+                type="password"
+                value={chubApiKey}
+                onChange={(e) => setChubApiKey(e.target.value)}
+                placeholder="Paste your Chub API key (UUID format)"
+                className="min-w-0 flex-[1_1_12rem] rounded-lg bg-[var(--background)] px-3 py-2 text-xs outline-none ring-1 ring-[var(--border)] placeholder:text-[var(--muted-foreground)]/50 focus:ring-[var(--primary)]"
+              />
+              <button
+                type="button"
+                onClick={saveChubApiKey}
+                disabled={isSavingChubApiKey}
+                className={cn(SETTINGS_PRIMARY_BUTTON_CLASS, "max-w-full shrink-0 whitespace-nowrap")}
+              >
+                <span className="flex min-w-0 items-center justify-center gap-1.5">
+                  {isSavingChubApiKey ? (
+                    <>
+                      <Loader2 size="0.75rem" className="shrink-0 animate-spin" />
+                      Saving…
+                    </>
+                  ) : (
+                    <>
+                      <Save size="0.75rem" className="shrink-0" />
+                      Save
+                    </>
+                  )}
+                </span>
+              </button>
+            </div>
+            <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+              Your API key is stored server-side and used only for Chub API requests. It is never sent to your browser.
+            </p>
+          </label>
         </div>
       </SettingsSection>
 

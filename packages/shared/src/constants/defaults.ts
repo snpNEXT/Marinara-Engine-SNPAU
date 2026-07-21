@@ -36,6 +36,7 @@ export const DEFAULT_GENERATION_PARAMS: GenerationParameters = {
   customThinkingTags: [],
   customParameters: {},
   squashSystemMessages: true,
+  disableMessageMerge: false,
   showThoughts: true,
   useMaxContext: false,
   stopSequences: [],

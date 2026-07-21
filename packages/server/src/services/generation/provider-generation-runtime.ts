@@ -54,7 +54,7 @@ type GenerationProviderRuntimeArgs = {
     frequencyPenalty: number;
     presencePenalty: number;
     showThoughts: boolean;
-    reasoningEffort: "low" | "medium" | "high" | "xhigh" | "maximum" | null;
+    reasoningEffort: "low" | "medium" | "high" | "minimal" | "xhigh" | "maximum" | null;
     verbosity: "low" | "medium" | "high" | null;
     serviceTier: "flex" | "priority" | null;
     assistantPrefill: string;
@@ -69,7 +69,7 @@ type GenerationProviderRuntimeArgs = {
 export type GenerationProviderRuntime = GenerationProviderRuntimeArgs["initial"] & {
   connectionParams: ReturnType<typeof parseStoredGenerationParameters>;
   chatParams: ReturnType<typeof parseStoredGenerationParameters>;
-  resolvedEffort: "low" | "medium" | "high" | "xhigh" | "max" | null;
+  resolvedEffort: "low" | "medium" | "high" | "minimal" | "xhigh" | "max" | null;
   enableThinking: boolean;
   isClaudeNoSampling: boolean;
   providerTopK: number | undefined;

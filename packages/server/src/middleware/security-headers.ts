@@ -25,15 +25,17 @@ const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   "base-uri 'self'",
   "form-action 'self'",
-  "frame-ancestors 'none'",
+  // frame-ancestors 'self' — allows blob: iframes created by this page (mobile fix);
+  // X-Frame-Options: DENY still blocks legacy browsers from external framing.
+  "frame-ancestors 'self'",
   "object-src 'none'",
-  "script-src 'self' blob: https://sdk.scdn.co https://www.youtube.com https://s.ytimg.com",
+  "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob: https://sdk.scdn.co https://www.youtube.com https://s.ytimg.com",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https:",
-  "media-src 'self' data: blob: https:",
+  "img-src 'self' data: blob: https: http:",
+  "media-src 'self' data: blob: https http:",
   "font-src 'self' data:",
   "connect-src 'self' http: https: ws: wss:",
-  "frame-src 'self' https://sdk.scdn.co https://accounts.spotify.com https://www.youtube.com https://www.youtube-nocookie.com",
+  "frame-src 'self' blob: https://sdk.scdn.co https://accounts.spotify.com https://www.youtube.com https://www.youtube-nocookie.com",
   "worker-src 'self' blob:",
   "manifest-src 'self'",
 ].join("; ");

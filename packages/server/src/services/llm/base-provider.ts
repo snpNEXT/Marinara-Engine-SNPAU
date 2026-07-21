@@ -135,7 +135,7 @@ export interface ChatOptions {
   /** Enable extended thinking (reasoning models) */
   enableThinking?: boolean;
   /** Reasoning effort level for models that support it */
-  reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  reasoningEffort?: "low" | "medium" | "high" | "minimal" | "xhigh" | "max";
   /** When true, previous provider-native reasoning state is not reused. */
   excludePastReasoning?: boolean;
   /** Output verbosity for GPT-5+ models */

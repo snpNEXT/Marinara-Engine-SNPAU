@@ -594,9 +594,50 @@ export class OpenAIProvider extends BaseLLMProvider {
     return normalized.startsWith("gpt-5.5-pro") || isOpenAIGpt56SolProAlias(normalized);
   }
 
+  private mapCustomReasoningEffort(reasoningEffort: ChatOptions["reasoningEffort"]):
+    | "high"
+    | "medium"
+    | "low"
+    | "minimal"
+    | "none"
+    | null {
+    if (!reasoningEffort) return null;
+    if (
+      reasoningEffort === "low" ||
+      reasoningEffort === "medium" ||
+      reasoningEffort === "high" ||
+      reasoningEffort === "minimal"
+    ) {
+      return reasoningEffort;
+    }
+    if (reasoningEffort === "xhigh" || reasoningEffort === "max") {
+      return "high";
+    }
+    return null;
+  }
+
+  private applyCustomEndpointThinkingArgs(body: Record<string, unknown>, options: ChatOptions): void {
+    if (!this.isGenericCustomProvider()) return;
+
+    const mappedEffort = this.mapCustomReasoningEffort(options.reasoningEffort);
+    if (mappedEffort) {
+      body.reasoning_effort = mappedEffort;
+    }
+
+    if (options.enableThinking !== undefined || options.reasoningEffort !== undefined) {
+      const hasReasoning = this.hasActiveReasoningEffort(options.reasoningEffort);
+      const enableThinking = hasReasoning || options.enableThinking === true;
+      const rawKwargs = OpenAIProvider.asRecord(body.chat_template_kwargs) ?? {};
+      body.chat_template_kwargs = {
+        ...rawKwargs,
+        enable_thinking: enableThinking,
+      };
+    }
+  }
+
   /** Check if a model ID represents an OpenAI reasoning model */
   private isReasoningModel(model: string): boolean {
-    if (this.isGenericCustomProvider() && !this.isOpenAIGpt55Or56Model(model)) return false;
+    if (this.isGenericCustomProvider()) return true;
     const m = model.toLowerCase();
     return /^(o1|o3|o4)/.test(m) || m.startsWith("gpt-5");
   }
@@ -1097,6 +1138,7 @@ export class OpenAIProvider extends BaseLLMProvider {
 
     this.applyOpenRouterServiceTier(body, options);
     this.applyCustomParameters(body, options);
+    this.applyCustomEndpointThinkingArgs(body, options);
     this.stripUnsupportedSamplerParameters(body, options);
 
     logger.debug(
@@ -1379,6 +1421,7 @@ export class OpenAIProvider extends BaseLLMProvider {
 
     this.applyOpenRouterServiceTier(body, options);
     this.applyCustomParameters(body, options);
+    this.applyCustomEndpointThinkingArgs(body, options);
     this.stripUnsupportedSamplerParameters(body, options);
 
     logger.debug(

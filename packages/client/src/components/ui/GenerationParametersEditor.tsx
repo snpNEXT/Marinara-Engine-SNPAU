@@ -33,7 +33,7 @@ export type EditableGenerationParameters = Pick<
 
 type EditableGenerationParameterOverrides = Partial<EditableGenerationParameters>;
 
-const REASONING_LEVELS = [null, "low", "medium", "high", "xhigh", "maximum"] as const;
+const REASONING_LEVELS = [null, "minimal", "low", "medium", "high", "xhigh", "maximum"] as const;
 const VERBOSITY_LEVELS = [null, "low", "medium", "high"] as const;
 const OPENROUTER_SERVICE_TIERS = [null, "flex", "priority"] as const;
 const THINKING_TAG_CONTENT_PLACEHOLDER = "{{thinking}}";
@@ -136,6 +136,7 @@ export function parseEditableGenerationParameters(raw: unknown): EditableGenerat
   if (typeof source.presencePenalty === "number") next.presencePenalty = source.presencePenalty;
   if (
     source.reasoningEffort === null ||
+    source.reasoningEffort === "minimal" ||
     source.reasoningEffort === "low" ||
     source.reasoningEffort === "medium" ||
     source.reasoningEffort === "high" ||
@@ -335,7 +336,7 @@ export function GenerationParametersFields({
         <div>
           <ParameterHeader
             label="Reasoning Effort"
-            help="How much reasoning work the provider should spend before responding. Unsupported tiers are lowered to the strongest compatible tier automatically."
+            help="How much reasoning work the provider should spend before responding. Minimal is useful for light reasoning (for example KoboldCpp), and unsupported tiers are lowered automatically."
             sendEnabled={isSendEnabled("reasoningEffort")}
             onSendChange={(enabled) => setSend("reasoningEffort", enabled)}
           />

@@ -2,6 +2,7 @@
 // Routes: Browser (proxy to character sources)
 // ──────────────────────────────────────────────
 import type { FastifyInstance } from "fastify";
+import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
 import { fetchBotBrowserJson } from "../services/bot-browser/fetch-json.js";
 import { resolveValidatedImage, safeFetch } from "../utils/security.js";
 
@@ -23,6 +24,7 @@ async function fetchAvatarImage(url: string, signal: AbortSignal) {
 }
 
 export async function botBrowserRoutes(app: FastifyInstance) {
+  const settingsStorage = createAppSettingsStorage(app.db);
   // ── Search characters on Chub ──
   app.get<{
     Querystring: {
@@ -68,11 +70,12 @@ export async function botBrowserRoutes(app: FastifyInstance) {
       search: q,
       first: "48",
       page,
-      nsfw,
-      nsfl: nsfw,
+      nsfw: "true",
+      nsfl: "true",
       include_forks: "true",
-      venus: "false",
+      venus: "true",
       min_tokens,
+      chub: "true",
     });
 
     // Sort: only set if not "default" (default = let Chub decide relevance)
@@ -113,10 +116,17 @@ export async function botBrowserRoutes(app: FastifyInstance) {
     if (require_expressions === "true") params.set("require_expressions", "true");
     if (require_alternate_greetings === "true") params.set("require_alternate_greetings", "true");
 
+    // Load API key if configured
+    const apiKey = await settingsStorage.get("chub_api_key");
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (apiKey?.trim()) {
+      headers["ch-api-key"] = apiKey;
+    }
+
     const data = await fetchBotBrowserJson(`${CHUB_API_BASE}/search?${params}`, {
       allowedHosts: ["api.chub.ai"],
       method: "GET",
-      headers: { Accept: "application/json" },
+      headers,
     });
     return data;
   });

@@ -139,6 +139,7 @@ export function createConnectionsStorage(db: DB) {
         openrouterProvider: input.openrouterProvider ?? null,
         imageGenerationSource: input.imageGenerationSource ?? null,
         comfyuiWorkflow: input.comfyuiWorkflow ?? null,
+        imagePromptHint: input.imagePromptHint ?? null,
         imageService: input.imageService ?? null,
         imageEndpointId: input.imageEndpointId ?? null,
         videoGenerationSource: input.videoGenerationSource ?? null,
@@ -275,6 +276,9 @@ export function createConnectionsStorage(db: DB) {
       }
       if (data.comfyuiWorkflow !== undefined) {
         updateFields.comfyuiWorkflow = data.comfyuiWorkflow;
+      }
+      if (data.imagePromptHint !== undefined) {
+        updateFields.imagePromptHint = data.imagePromptHint;
       }
       if (data.imageService !== undefined) {
         updateFields.imageService = data.imageService;

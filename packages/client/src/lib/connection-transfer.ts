@@ -30,6 +30,7 @@ export type ConnectionTransferRow = {
   service?: unknown;
   imageEndpointId?: unknown;
   comfyuiWorkflow?: unknown;
+  imagePromptHint?: unknown;
   treatAsLocalEndpoint?: unknown;
   claudeFastMode?: unknown;
 };
@@ -62,6 +63,7 @@ export type SafeConnectionExport = {
   videoService: string | null;
   imageEndpointId: string | null;
   comfyuiWorkflow: string | null;
+  imagePromptHint: string | null;
   treatAsLocalEndpoint: boolean;
   claudeFastMode: boolean;
 };
@@ -129,6 +131,7 @@ export function normalizeImportedConnectionEntry(value: unknown): ConnectionImpo
       openrouterProvider: asNullableString(value.openrouterProvider),
       imageGenerationSource: asNullableString(value.imageGenerationSource),
       comfyuiWorkflow: asNullableString(value.comfyuiWorkflow),
+      imagePromptHint: asNullableString(value.imagePromptHint),
       imageService,
       imageEndpointId: asNullableString(value.imageEndpointId),
       videoGenerationSource: provider === "video_generation" ? asNullableString(value.videoGenerationSource) : null,
@@ -175,6 +178,7 @@ function serializeConnectionForExport(connection: ConnectionTransferRow): SafeCo
     videoService: isVideoProvider ? asNullableString(connection.videoService ?? connection.service) : null,
     imageEndpointId: asNullableString(connection.imageEndpointId),
     comfyuiWorkflow: asNullableString(connection.comfyuiWorkflow),
+    imagePromptHint: asNullableString(connection.imagePromptHint),
     treatAsLocalEndpoint: asBoolean(connection.treatAsLocalEndpoint),
     claudeFastMode: asBoolean(connection.claudeFastMode),
   };

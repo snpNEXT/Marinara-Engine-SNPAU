@@ -40,11 +40,13 @@ interface AdvancedParametersSectionProps {
   connections: AdvancedConnection[];
   contextMessageLimit: number | null | undefined;
   excludePastReasoning: boolean | undefined;
+  disableMessageMerge: boolean | undefined;
   imageCaptioningEnabled: boolean | undefined;
   imageCaptioningConnectionId: string | null | undefined;
   onChatParametersChange: (chatParameters: Record<string, unknown>) => void;
   onContextMessageLimitChange: (value: number | null) => void;
   onExcludePastReasoningChange: (value: boolean) => void;
+  onDisableMessageMergeChange: (value: boolean) => void;
   onImageCaptioningChange: (patch: {
     imageCaptioningEnabled?: boolean;
     imageCaptioningConnectionId?: string | null;
@@ -58,11 +60,13 @@ export function AdvancedParametersSection({
   connections,
   contextMessageLimit,
   excludePastReasoning,
+  disableMessageMerge,
   imageCaptioningEnabled,
   imageCaptioningConnectionId,
   onChatParametersChange,
   onContextMessageLimitChange,
   onExcludePastReasoningChange,
+  onDisableMessageMergeChange,
   onImageCaptioningChange,
 }: AdvancedParametersSectionProps) {
   const modeDefaults = isConversation ? CHAT_PARAMETER_DEFAULTS : ROLEPLAY_PARAMETER_DEFAULTS;
@@ -78,6 +82,8 @@ export function AdvancedParametersSection({
   const params = (metadata.chatParameters as Record<string, unknown>) ?? {};
   const effectiveParams = getEditableGenerationParameters(defaults, params);
   const excludeReasoningEnabled = excludePastReasoning !== false;
+  const disableMergeEnabled =
+    disableMessageMerge ?? (params.disableMessageMerge as boolean) ?? false;
   const captioningEnabled = imageCaptioningEnabled === true;
   const chatConnectionCanCaption = !!conn && isLanguageGenerationConnection(conn);
   const connectionOptions = useMemo(
@@ -208,6 +214,20 @@ export function AdvancedParametersSection({
               className={cn(
                 "justify-between rounded-lg px-3 py-2.5 text-left",
                 excludeReasoningEnabled
+                  ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
+                  : "bg-[var(--secondary)] hover:bg-[var(--accent)]",
+              )}
+              labelClassName="text-xs font-medium"
+            />
+            <SettingsSwitch
+              label="Keep Messages Separate"
+              description="Send each message as its own API message instead of merging consecutive same-role messages."
+              checked={disableMergeEnabled}
+              onChange={onDisableMessageMergeChange}
+              labelPosition="start"
+              className={cn(
+                "justify-between rounded-lg px-3 py-2.5 text-left",
+                disableMergeEnabled
                   ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
                   : "bg-[var(--secondary)] hover:bg-[var(--accent)]",
               )}
