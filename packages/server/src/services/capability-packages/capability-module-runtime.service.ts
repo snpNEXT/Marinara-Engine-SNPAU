@@ -22,6 +22,7 @@ import {
 } from "./capability-command-registry.service.js";
 import { registerCapabilityService } from "./capability-service-registry.service.js";
 import { createCapabilityLanguageModelHost } from "./capability-language-model.service.js";
+import { createCapabilityImageGenerationHost } from "./capability-image-generation.service.js";
 import { createCapabilityPersistenceHost } from "./capability-persistence.service.js";
 import { createCapabilityResourceHost } from "./capability-resources.service.js";
 
@@ -38,10 +39,15 @@ type CapabilityActivationContext = {
   };
 };
 
-function createCapabilityRuntimeHost(app: FastifyInstance): CapabilityRuntimeHost {
+function createCapabilityRuntimeHost(
+  app: FastifyInstance,
+  packageId: string,
+  permissions: readonly string[],
+): CapabilityRuntimeHost {
   return Object.freeze({
     isDebugAgentsEnabled,
     json: Object.freeze({ parseJsonish: parseGameJsonish }),
+    images: createCapabilityImageGenerationHost(app.db, packageId, permissions.includes("image-generation")),
     languageModels: createCapabilityLanguageModelHost(app.db),
     logger: Object.freeze({
       debug: (message: string, ...args: CapabilityRuntimeLogArgument[]) =>
@@ -145,7 +151,7 @@ class CapabilityModuleRuntime {
         dataDir: DATA_DIR,
         package: installed,
         api: {
-          runtime: createCapabilityRuntimeHost(app),
+          runtime: createCapabilityRuntimeHost(app, installed.id, installed.manifest.permissions),
           registerTurnGameEngine: (engine) => trackCleanup(registerTurnGameEngine(engine)),
           registerConversationCommand: (registration) =>
             trackCleanup(registerCapabilityConversationCommand(registration)),

@@ -77,6 +77,29 @@ export interface CapabilityLanguageModelHost {
   resolve(connectionId?: string | null): Promise<CapabilityResolvedLanguageModel>;
 }
 
+export interface CapabilityImageGenerationRequest {
+  prompt: string;
+  negativePrompt?: string;
+  width?: number;
+  height?: number;
+  connectionId?: string | null;
+  cacheKey?: string;
+}
+
+export interface CapabilityGeneratedImage {
+  dataUrl: string;
+  mimeType: string;
+  width: number | null;
+  height: number | null;
+  connectionId: string;
+  model: string;
+  fromCache: boolean;
+}
+
+export interface CapabilityImageGenerationHost {
+  generate(request: CapabilityImageGenerationRequest): Promise<CapabilityGeneratedImage>;
+}
+
 export interface CapabilityJsonHost {
   parseJsonish(raw: string): unknown;
 }
@@ -165,6 +188,7 @@ export interface CapabilityPersistenceHost extends CapabilityPersistenceSession 
 export interface CapabilityRuntimeHost {
   isDebugAgentsEnabled(): boolean;
   json: CapabilityJsonHost;
+  images: CapabilityImageGenerationHost;
   languageModels: CapabilityLanguageModelHost;
   logger: CapabilityRuntimeLogger;
   persistence: CapabilityPersistenceHost;

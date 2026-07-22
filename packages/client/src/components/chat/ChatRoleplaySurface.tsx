@@ -47,14 +47,19 @@ import { useUIStore } from "../../stores/ui.store";
 import { useChatStore } from "../../stores/chat.store";
 import { useGameStateStore } from "../../stores/game-state.store";
 import { useThrottledStreamBuffer } from "../../hooks/use-throttled-stream-buffer";
+import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
+import { useCreateMessage } from "../../hooks/use-chats";
 import { useActiveLorebookEntries, useLorebooks } from "../../hooks/use-lorebooks";
 import { usePresetFull, usePresets } from "../../hooks/use-presets";
 import { ChatMessage } from "./ChatMessage";
+import { CapabilityElement } from "../capabilities/CapabilityElement";
+import { CapabilitySurfacePanel } from "../capabilities/CapabilitySurfacePanel";
 import { ChatInput } from "./ChatInput";
 import { CyoaChoices } from "./CyoaChoices";
 import { ChatBranchSelector } from "./ChatBranchSelector";
 import {
   CHAT_TOOLBAR_ICON_GAP_CLASS,
+  CHAT_TOOLBAR_OVERFLOW_BUTTON_SIZE_CLASS,
   CHAT_TOOLBAR_OVERFLOW_MENU_SELECTOR,
   ChatToolbarButton,
   ChatToolbarMenu,
@@ -1215,6 +1220,33 @@ export function ChatRoleplaySurface({
   isGrouped,
 }: RoleplaySurfaceProps) {
   useRenderTimer("rp-surface"); // [#3104 diagnostic]
+  const { data: installedCapabilities = [] } = useInstalledCapabilityPackages();
+  const createObserverMessage = useCreateMessage(activeChatId);
+  const handleCapabilityObserver = useCallback(
+    async ({ text, name }: { text: string; name?: string }) => {
+      const observerText = text.trim();
+      if (!observerText) return;
+      const content = name?.trim() ? `${name.trim()}: ${observerText}` : observerText;
+      await createObserverMessage.mutateAsync({
+        role: "user",
+        content,
+        characterId: null,
+        extra: { source: "websim", observer: true },
+      });
+    },
+    [createObserverMessage],
+  );
+  const roleplayToolbarPackages = installedCapabilities.filter(
+    (item) =>
+      item.status === "active" &&
+      item.manifest.contributions?.slots?.includes("conversation-toolbar") &&
+      item.manifest.entrypoints.client,
+  );
+  const [openCapabilitySurfaceId, setOpenCapabilitySurfaceId] = useState<string | null>(null);
+  const { data: capabilityLoreScan } = useActiveLorebookEntries(
+    activeChatId,
+    openCapabilitySurfaceId !== null,
+  );
   const isStreamCommitted = useChatStore((s) => s.committedStreamChatIds.has(activeChatId));
   const streamedMessageId = useChatStore((s) => s.streamedMessageIds.get(activeChatId) ?? null);
   const hasDraftInput = useChatStore((s) => s.currentInput.trim().length > 0);
@@ -1496,6 +1528,23 @@ export function ChatRoleplaySurface({
                   paddingRight: "calc(1rem + var(--tracker-panel-hud-clear-right, 0px))",
                 }}
               >
+                <div className={cn("pointer-events-auto mr-2 flex shrink-0 items-center", CHAT_TOOLBAR_ICON_GAP_CLASS)}>
+                  {roleplayToolbarPackages.map((capability) => (
+                    <CapabilityElement
+                      key={`${capability.id}-roleplay-toolbar`}
+                      packageId={capability.id}
+                      view="toolbar"
+                      capabilityProps={{
+                        chatId: activeChatId,
+                        connectionId: chat?.connectionId ?? null,
+                        metadata: chatMeta,
+                        toolbarButtonClass: getChatToolbarButtonClass(),
+                        openSurface: () => setOpenCapabilitySurfaceId(capability.id),
+                        closeSurface: () => setOpenCapabilitySurfaceId(null),
+                      }}
+                    />
+                  ))}
+                </div>
                 {chat && chatMeta.enableAgents && (
                   <div className="pointer-events-auto flex-1 overflow-x-auto">
                     <Suspense fallback={null}>
@@ -1617,6 +1666,23 @@ export function ChatRoleplaySurface({
                       data-roleplay-top-controls="right"
                       className={cn("ml-auto flex shrink-0 items-center", CHAT_TOOLBAR_ICON_GAP_CLASS)}
                     >
+                      {roleplayToolbarPackages.map((capability) => (
+                        <CapabilityElement
+                          key={`${capability.id}-roleplay-mobile-toolbar`}
+                          packageId={capability.id}
+                          view="toolbar"
+                          capabilityProps={{
+                            chatId: activeChatId,
+                            connectionId: chat?.connectionId ?? null,
+                            metadata: chatMeta,
+                            toolbarButtonClass: getChatToolbarButtonClass({
+                              sizeClassName: CHAT_TOOLBAR_OVERFLOW_BUTTON_SIZE_CLASS,
+                            }),
+                            openSurface: () => setOpenCapabilitySurfaceId(capability.id),
+                            closeSurface: () => setOpenCapabilitySurfaceId(null),
+                          }}
+                        />
+                      ))}
                       <ChatToolbarMenu>
                         <ChatBranchSelector
                           activeChatId={activeChatId}
@@ -1981,6 +2047,37 @@ export function ChatRoleplaySurface({
           <EchoChamberPanel hiddenOnMobile={hideEchoChamberOnMobile} />
         </Suspense>
       </div>
+      {roleplayToolbarPackages.map(
+        (capability) =>
+          openCapabilitySurfaceId === capability.id && (
+            <CapabilitySurfacePanel key={`${capability.id}-roleplay-surface-${activeChatId}`}>
+                <CapabilityElement
+                  packageId={capability.id}
+                  view="surface"
+                  capabilityProps={{
+                    chatId: activeChatId,
+                    connectionId: chat?.connectionId ?? null,
+                    metadata: chatMeta,
+                    context: {
+                      mode: "roleplay",
+                      recentMessages: (messages ?? []).slice(-12).map((message) => ({
+                        role: message.role,
+                        content: message.content,
+                      })),
+                      chatSummary: typeof chatMeta.summary === "string" ? chatMeta.summary : undefined,
+                      worldInfo: capabilityLoreScan?.entries
+                        .map((entry) => `${entry.name}: ${entry.content}`)
+                        .join("\n\n"),
+                    },
+                    onObserver: handleCapabilityObserver,
+                    open: true,
+                    onClose: () => setOpenCapabilitySurfaceId(null),
+                  }}
+                  className="block h-full min-h-0 w-full"
+                />
+            </CapabilitySurfacePanel>
+          ),
+      )}
 
       <ChatCommonOverlays
         chat={chat}
