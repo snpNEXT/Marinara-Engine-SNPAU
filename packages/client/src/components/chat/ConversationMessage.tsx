@@ -313,10 +313,10 @@ export const ConversationMessage = memo(function ConversationMessage({
     ],
   );
 
-  // Strip [selfie] / [selfie: context="..."] tags from display — the image attachment is shown instead.
+  // Strip bracketed selfie commands from display; the image attachment is shown instead.
   // The raw tag is preserved in message.content for edit mode and LLM history.
   const displayContent = useMemo(
-    () => message.content.replace(/\[selfie(?::\s*(?:context="[^"]*"|"[^"]*"|[^\]\r\n"]+))?\]/gi, "").trim(),
+    () => message.content.replace(/\[selfie\b[^\]\r\n]*\]/gi, "").trim(),
     [message.content],
   );
   // #3164: seed display randomness by message identity so {{random}}/{{roll}} don't
@@ -337,7 +337,7 @@ export const ConversationMessage = memo(function ConversationMessage({
     return contentParts
       .slice(0, count)
       .map((part, partIndex) => {
-        const stripped = part.replace(/\[selfie(?::\s*(?:context="[^"]*"|"[^"]*"|[^\]\r\n"]+))?\]/gi, "").trim();
+        const stripped = part.replace(/\[selfie\b[^\]\r\n]*\]/gi, "").trim();
         return formatTextQuotes(
           resolveMessageMacros(stripped, macroContext, {
             randomSeed: `${message.id}:${message.activeSwipeIndex ?? 0}:${partIndex}`,
