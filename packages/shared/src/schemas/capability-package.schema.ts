@@ -43,6 +43,7 @@ const capabilityPackageManifestBaseSchema = z.object({
           ]),
         )
         .optional(),
+      chatModes: z.array(z.enum(["conversation", "roleplay", "game"])).min(1).optional(),
       conversationGame: z
         .object({
           command: z.string().regex(/^\/[a-z0-9-]+$/),

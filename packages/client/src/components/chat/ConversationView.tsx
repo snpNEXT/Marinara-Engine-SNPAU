@@ -59,7 +59,6 @@ import { CapabilitySurfacePanel } from "../capabilities/CapabilitySurfacePanel";
 import { TURN_GAME_BOT_REQUEST_EVENT } from "../../lib/capability-turn-game-events";
 import { useGenerate } from "../../hooks/use-generate";
 import { useActiveLorebookEntries } from "../../hooks/use-lorebooks";
-import { useCreateMessage } from "../../hooks/use-chats";
 
 const ConversationAutonomousEffects = lazy(async () => {
   const module = await import("./ConversationAutonomousEffects");
@@ -319,21 +318,6 @@ export function ConversationView({
   const streamingChatId = useChatStore((s) => s.streamingChatId);
   const isStreaming = useChatStore((s) => s.isStreaming) && streamingChatId === chatId;
   const { generate: generateTurnGameBots } = useGenerate();
-  const createObserverMessage = useCreateMessage(chatId);
-  const handleCapabilityObserver = useCallback(
-    async ({ text, name }: { text: string; name?: string }) => {
-      const observerText = text.trim();
-      if (!observerText) return;
-      const content = name?.trim() ? `${name.trim()}: ${observerText}` : observerText;
-      await createObserverMessage.mutateAsync({
-        role: "user",
-        content,
-        characterId: null,
-        extra: { source: "websim", observer: true },
-      });
-    },
-    [createObserverMessage],
-  );
   useEffect(() => {
     const handleBotRequest = (event: Event) => {
       const requestedChatId = (event as CustomEvent<{ chatId?: string }>).detail?.chatId;
@@ -363,12 +347,14 @@ export function ConversationView({
     (item) =>
       item.status === "active" &&
       item.manifest.contributions?.slots?.includes("conversation-toolbar") &&
+      (!item.manifest.contributions.chatModes || item.manifest.contributions.chatModes.includes("conversation")) &&
       item.manifest.entrypoints.client,
   );
   const conversationSurfacePackages = installedCapabilities.filter(
     (item) =>
       item.status === "active" &&
       item.manifest.contributions?.slots?.includes("conversation-surface") &&
+      (!item.manifest.contributions.chatModes || item.manifest.contributions.chatModes.includes("conversation")) &&
       item.manifest.entrypoints.client,
   );
   const [openCapabilitySurfaceId, setOpenCapabilitySurfaceId] = useState<string | null>(null);
@@ -1532,7 +1518,6 @@ export function ConversationView({
                       .map((entry) => `${entry.name}: ${entry.content}`)
                       .join("\n\n"),
                   },
-                  onObserver: handleCapabilityObserver,
                   open: true,
                   onClose: () => setOpenCapabilitySurfaceId(null),
                 }}
