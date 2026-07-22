@@ -50,7 +50,6 @@ export async function botBrowserRoutes(app: FastifyInstance) {
       q = "",
       page = "1",
       sort = "download_count",
-      nsfw = "true",
       tags,
       excludeTags,
       asc,

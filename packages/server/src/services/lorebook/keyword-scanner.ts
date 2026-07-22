@@ -456,7 +456,6 @@ export function scanForActivatedEntries(
     scanDepth = 0,
     gameState = null,
     timingStates = new Map(),
-    currentMessageIndex = messages.length,
     chatEmbedding = null,
     semanticEmbeddingsByLorebookId = new Map<string, number[] | null>(),
     semanticThreshold = 0.3,

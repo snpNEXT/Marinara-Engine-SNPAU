@@ -14,6 +14,7 @@ import type {
   RPGStatsConfig,
   LorebookEntryTimingState,
   MacroContext,
+  ResolveMacroOptions,
 } from "@marinara-engine/shared";
 import { createCharactersStorage } from "../storage/characters.storage.js";
 import { createAgentsStorage } from "../storage/agents.storage.js";
@@ -108,8 +109,13 @@ function cardPromptText(value: unknown): string {
   return typeof value === "string" ? stripMacroComments(value).trim() : "";
 }
 
-function resolveSanitizedPromptLeaf(value: string, ctx: MarkerContext, macroCtx: MacroContext = ctx.macroCtx): string {
-  return sanitizePromptLeaf(resolveMacros(value, macroCtx), ctx.wrapFormat);
+function resolveSanitizedPromptLeaf(
+  value: string,
+  ctx: MarkerContext,
+  macroCtx: MacroContext = ctx.macroCtx,
+  macroOptions?: ResolveMacroOptions,
+): string {
+  return sanitizePromptLeaf(resolveMacros(value, macroCtx, macroOptions), ctx.wrapFormat);
 }
 
 const DEFAULT_CHARACTER_MARKER_FIELDS = [
@@ -154,7 +160,11 @@ export function resolveCharacterMarkerFields(
 /**
  * Expand a marker section into actual content based on its type and config.
  */
-export async function expandMarker(config: MarkerConfig, ctx: MarkerContext): Promise<ExpandedMarker> {
+export async function expandMarker(
+  config: MarkerConfig,
+  ctx: MarkerContext,
+  macroOptions?: ResolveMacroOptions,
+): Promise<ExpandedMarker> {
   switch (config.type) {
     case "character":
       return expandCharacter(config, ctx);
@@ -167,7 +177,7 @@ export async function expandMarker(config: MarkerConfig, ctx: MarkerContext): Pr
     case "chat_history":
       return expandChatHistory(config, ctx);
     case "chat_summary":
-      return expandChatSummary(ctx);
+      return expandChatSummary(ctx, macroOptions);
     case "dialogue_examples":
       return expandDialogueExamples(config, ctx);
     case "agent_data":
@@ -500,8 +510,8 @@ async function expandDialogueExamples(_config: MarkerConfig, ctx: MarkerContext)
 
 // ── Chat Summary ───────────────────────────────
 
-function expandChatSummary(ctx: MarkerContext): ExpandedMarker {
-  return { content: resolveSanitizedPromptLeaf(ctx.chatSummary ?? "", ctx) };
+function expandChatSummary(ctx: MarkerContext, macroOptions?: ResolveMacroOptions): ExpandedMarker {
+  return { content: resolveSanitizedPromptLeaf(ctx.chatSummary ?? "", ctx, ctx.macroCtx, macroOptions) };
 }
 
 // ── Agent Data ─────────────────────────────────

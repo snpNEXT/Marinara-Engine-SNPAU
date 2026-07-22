@@ -10,7 +10,6 @@ import type {
   NoodleAccountKind,
   NoodleAccountProfileUpdateInput,
   NoodleAccountSettingsPatchInput,
-  NoodleAccountUpdateInput,
   NoodleBootstrap,
   NoodleCreateInteractionInput,
   NoodleCreatePostInput,
@@ -308,25 +307,6 @@ export function useRescheduleNoodleRefresh() {
       );
     },
     onSettled: () => qc.invalidateQueries({ queryKey: noodleKeys.bootstrap() }),
-  });
-}
-
-export function useUpdateNoodleAccount() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, ...patch }: { id: string } & NoodleAccountUpdateInput) =>
-      api.put<NoodleAccount>(`/noodle/accounts/${id}`, patch),
-    onSuccess: (account) => {
-      qc.setQueryData<NoodleBootstrap | undefined>(noodleKeys.bootstrap(), (current) =>
-        current
-          ? {
-              ...current,
-              accounts: current.accounts.map((item) => (item.id === account.id ? account : item)),
-            }
-          : current,
-      );
-      qc.invalidateQueries({ queryKey: noodleKeys.bootstrap() });
-    },
   });
 }
 

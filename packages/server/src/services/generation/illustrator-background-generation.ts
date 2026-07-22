@@ -249,6 +249,7 @@ export async function generateIllustratorSceneBackground(args: {
   chatName?: string | null;
   chatMode: "roleplay" | "visual_novel";
   chatMetadata: Record<string, unknown>;
+  currentBackground: string | null;
   illustratorAgent: ResolvedAgent;
   assistantResponse: string;
   decisionReason?: string;

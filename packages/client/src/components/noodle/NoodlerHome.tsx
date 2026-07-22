@@ -71,13 +71,6 @@ import { NoodleShell, NOODLE_PERSONA_SWITCHER_PAGE_SIZE, NOODLE_PINK, useNoodleA
 import { Modal } from "../ui/Modal";
 import type { NoodleNavigationState } from "./noodle-navigation.types";
 
-export type NoodlerNotificationItem = {
-  id: string;
-  createdAt: string;
-  kind: "account-created";
-  accountId: string;
-};
-
 interface NoodlerHomeProps {
   navigation: Extract<NoodleNavigationState, { mode: "private" | "verification" }>;
   onNavigate: (destination: NoodleNavigationState) => void;

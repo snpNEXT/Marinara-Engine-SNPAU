@@ -2485,7 +2485,7 @@ export function ChatSettingsDrawer({
     })),
   });
 
-  const chatSpriteSubjectsWithSprites = chatSpriteSubjects.filter((subject, index) => {
+  const chatSpriteSubjectsWithSprites = chatSpriteSubjects.filter((_, index) => {
     const sprites = chatSpriteQueries[index]?.data;
     return Array.isArray(sprites) && sprites.length > 0;
   });

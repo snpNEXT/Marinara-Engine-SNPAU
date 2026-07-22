@@ -1092,7 +1092,7 @@ export async function gameAssetsRoutes(app: FastifyInstance) {
   });
 
   // ── POST /game-assets/delete-bulk ──
-  app.post("/delete-bulk", async (req, reply) => {
+  app.post("/delete-bulk", async (req) => {
     const schema = z.object({
       paths: z.array(z.string().min(1).max(500)).min(1).max(100),
     });

@@ -32,7 +32,6 @@ import {
   type NoodlePostUpdateInput,
   type NoodlePostSource,
   type NoodleStageProfileInput,
-  type NoodlerStageProfile,
   type NoodlerManagedStageProfile,
   type NoodleRefreshAttempt,
   type NoodleRefreshRun,
@@ -1515,10 +1514,7 @@ export function createNoodleStorage(db: DB) {
       return deletedRows.map(mapInteraction);
     },
 
-    async createInteraction(
-      postId: string,
-      input: PublicCreateInteractionCommand,
-    ): Promise<NoodleInteraction | null> {
+    async createInteraction(postId: string, input: PublicCreateInteractionCommand): Promise<NoodleInteraction | null> {
       const [post, actor] = await Promise.all([this.getPostById(postId), this.getAccountById(input.actorAccountId)]);
       if (!post || !actor) return null;
 
@@ -1567,10 +1563,7 @@ export function createNoodleStorage(db: DB) {
       });
     },
 
-    async deleteInteraction(
-      postId: string,
-      input: PublicRemoveInteractionCommand,
-    ): Promise<NoodleInteraction | null> {
+    async deleteInteraction(postId: string, input: PublicRemoveInteractionCommand): Promise<NoodleInteraction | null> {
       const post = await this.getPostById(postId);
       if (!post) return null;
       return deleteStoredInteraction(postId, input, "protect-public-digests");
@@ -1593,7 +1586,10 @@ export function createNoodleStorage(db: DB) {
       postId: string,
       input: PrivateCreateInteractionCommand,
     ): Promise<NoodleInteraction | null> {
-      const [post, actor] = await Promise.all([this.getPrivatePostById(postId), this.getAccountById(input.actorAccountId)]);
+      const [post, actor] = await Promise.all([
+        this.getPrivatePostById(postId),
+        this.getAccountById(input.actorAccountId),
+      ]);
       if (!post || !actor) return null;
 
       const parentInteractionId = input.parentInteractionId ?? null;

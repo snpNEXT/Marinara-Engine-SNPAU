@@ -46,7 +46,6 @@ export const characterKeys = {
   personaDetail: (id: string) => [...characterKeys.personas, "detail", id] as const,
   personaVersions: (id: string) => [...characterKeys.personaDetail(id), "versions"] as const,
   groups: ["character-groups"] as const,
-  groupDetail: (id: string) => ["character-groups", "detail", id] as const,
   personaGroups: ["persona-groups"] as const,
   personaGroupDetail: (id: string) => ["persona-groups", "detail", id] as const,
 };
@@ -770,28 +769,6 @@ export function useDeletePersonaGalleryClip(personaId: string) {
   });
 }
 
-export function useUpdatePersonaGalleryClipTrim(personaId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      clipId,
-      trimStartSeconds,
-      trimEndSeconds,
-    }: {
-      clipId: string;
-      trimStartSeconds: number | null;
-      trimEndSeconds: number | null;
-    }) =>
-      api.patch(`/characters/personas/${personaId}/gallery/clips/${encodeURIComponent(clipId)}/trim`, {
-        trimStartSeconds,
-        trimEndSeconds,
-      }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: characterKeys.personaGalleryClips(personaId) });
-    },
-  });
-}
-
 export function useUploadPersonaGalleryClip(personaId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -1154,14 +1131,6 @@ export function useCharacterGroups() {
   return useQuery({
     queryKey: characterKeys.groups,
     queryFn: () => api.get<unknown[]>("/characters/groups/list"),
-  });
-}
-
-export function useCharacterGroup(id: string | null) {
-  return useQuery({
-    queryKey: characterKeys.groupDetail(id ?? ""),
-    queryFn: () => api.get(`/characters/groups/${id}`),
-    enabled: !!id,
   });
 }
 

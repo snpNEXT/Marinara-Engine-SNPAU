@@ -33,7 +33,6 @@ export function isCustomToolSelectable(tool: CustomToolRow, capabilities?: Custo
 
 const toolKeys = {
   all: ["custom-tools"] as const,
-  detail: (id: string) => ["custom-tools", id] as const,
   capabilities: ["custom-tools", "capabilities"] as const,
 };
 
@@ -41,14 +40,6 @@ export function useCustomTools() {
   return useQuery({
     queryKey: toolKeys.all,
     queryFn: () => api.get<CustomToolRow[]>("/custom-tools"),
-  });
-}
-
-export function useCustomTool(id: string | null) {
-  return useQuery({
-    queryKey: toolKeys.detail(id ?? ""),
-    queryFn: () => api.get<CustomToolRow>(`/custom-tools/${id}`),
-    enabled: !!id,
   });
 }
 

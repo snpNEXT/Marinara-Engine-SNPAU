@@ -5744,7 +5744,11 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
         </>
       }
     >
-      <div ref={timelineScrollRef} className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        ref={timelineScrollRef}
+        data-component="NoodleView.TimelineScroller"
+        className="min-h-0 flex-1 overflow-y-auto"
+      >
             <div className="min-h-full w-full border-x border-[var(--noodle-divider)] bg-[var(--background)]">
               {activeNoodleView === "home" && (
                 <div

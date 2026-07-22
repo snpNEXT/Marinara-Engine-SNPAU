@@ -90,10 +90,7 @@ import { isFileUniqueConstraintError } from "../db/file-schema.js";
 import { resolveImageCaptioningRuntime } from "./generate/image-captioning-runtime.js";
 import { resolveNoodleAvatarCropAfterProfileUpdate } from "../services/noodle/noodle-profile-avatar.js";
 
-import { createPublicNoodleGenerationService } from "../services/noodle/noodle-public-generation.service.js";
-import { createPublicNoodleImagesService } from "../services/noodle/noodle-public-images.service.js";
 import {
-  generatePrivatePost,
   stageProfileContainsPublicIdentity,
 } from "../services/noodle/noodle-private-generation.service.js";
 import { generateNoodlerStageProfileDraft } from "../services/noodle/noodle-stage-profile-draft.service.js";
@@ -1565,7 +1562,7 @@ export async function noodleRoutes(app: FastifyInstance) {
             imagePrompt: locked ? null : post.imagePrompt,
             metadata: locked ? null : post.metadata,
             createdAt: post.createdAt,
-            interactions: locked ? [] : interactionsByPostId.get(post.id) ?? [],
+            interactions: locked ? [] : (interactionsByPostId.get(post.id) ?? []),
           };
         }),
       };
@@ -1670,12 +1667,7 @@ export async function noodleRoutes(app: FastifyInstance) {
       resolveViewerPersona(parsed.data.personaId),
       noodle.getPrivateAccountById(id),
     ]);
-    if (
-      !viewer ||
-      !creator ||
-      creator.publicAccountId === viewer.id ||
-      isNoodlerHiddenFromViewer(creator, viewer.id)
-    ) {
+    if (!viewer || !creator || creator.publicAccountId === viewer.id || isNoodlerHiddenFromViewer(creator, viewer.id)) {
       return reply.code(404).send({ error: "NoodleR stage profile not found" });
     }
     const subscription = await noodle.subscribe(viewer.id, creator.id);

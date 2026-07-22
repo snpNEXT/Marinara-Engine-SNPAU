@@ -2,7 +2,7 @@
 // Routes: Generation (SSE Streaming with Tool Use + Agent Pipeline)
 // ──────────────────────────────────────────────
 import type { FastifyInstance } from "fastify";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import {
   generateRequestSchema,
@@ -16,7 +16,6 @@ import {
   DEFERRED_RELOCATION_CONDITIONAL_TOKEN_RE,
   parseDeferredConditionalPayload,
   selectConditionalPayloadBranch,
-  LIMITS,
   coerceGameStateTextValue,
   appendChatSummaryEntryToMetadata,
   applyQuestUpdatesToPlayerStats,
@@ -39,7 +38,6 @@ import {
   LOCAL_SIDECAR_CONNECTION_ID,
   normalizeTextForMatch,
   normalizeGameStoryboardKeyframeCount,
-  resolveGameSetupArtStylePrompt,
   type APIProvider,
   type MacroContext,
 } from "@marinara-engine/shared";
@@ -47,9 +45,6 @@ import type {
   AgentContext,
   AgentCallDebugEvent,
   AgentResult,
-  AgentPhase,
-  CharacterStat,
-  GameState,
   HapticDeviceCommand,
   PlayerStats,
   LorebookEntryTimingState,
@@ -83,7 +78,6 @@ import { createPersonaGalleryStorage } from "../services/storage/persona-gallery
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
 import { buildLorebookSemanticEmbeddingsById, warmLorebookEntryEmbeddings } from "../services/lorebook/embeddings.js";
 import { applyRegexScriptsToPromptMessages } from "../services/regex/regex-application.js";
-import { createPromptOverridesStorage } from "../services/storage/prompt-overrides.storage.js";
 import {
   filterRelevantLorebooks,
   processLorebooks,
@@ -96,7 +90,6 @@ import {
 } from "../services/lorebook/game-lorebook-scope.js";
 import { lorebookEntryPassesContextFilters, type GameStateForScanning } from "../services/lorebook/keyword-scanner.js";
 import { injectAtDepth } from "../services/lorebook/prompt-injector.js";
-import { createLLMProvider } from "../services/llm/provider-registry.js";
 import { resolveChatSummaryConnection } from "../services/chat-summary/connection-resolution.js";
 import { resolveConnectionImageDefaults } from "../services/image/image-generation-defaults.js";
 import {
@@ -135,7 +128,6 @@ import { DATA_DIR } from "../utils/data-dir.js";
 import { executeAgent, normalizeAgentContextSize, resolveAgentResultType } from "../services/agents/agent-executor.js";
 import { matchCustomAgentActivation } from "./generate/agent-activation.js";
 import { listCharacterSprites } from "../services/game/sprite.service.js";
-import { generateChatBackground } from "../services/game/game-asset-generation.js";
 import {
   generateIllustratorSceneBackground,
   illustratorBackgroundGenerationEnabled,
@@ -169,25 +161,15 @@ import {
   stripConversationPromptTimestamps,
   stripConversationResponseEnvelope,
 } from "../services/conversation/transcript-sanitize.js";
-import {
-  formatZonedConversationDate,
-  formatZonedConversationTime,
-  normalizePromptTimeZone,
-  toZonedWallClockDate,
-} from "../services/conversation/timezone.js";
+import { normalizePromptTimeZone, toZonedWallClockDate } from "../services/conversation/timezone.js";
 import { countUserMessagesAfterSummaryAnchor } from "../services/conversation/auto-summary.service.js";
 import { executeKnowledgeRetrieval } from "../services/agents/knowledge-retrieval.js";
 import { executeKnowledgeRouter } from "../services/agents/knowledge-router.js";
 import { extractFileText, getSourceFilePath } from "./knowledge-sources.routes.js";
 import { gameStateSnapshots as gameStateSnapshotsTable } from "../db/schema/index.js";
-import { chats as chatsTable } from "../db/schema/index.js";
 import { eq } from "../db/file-query.js";
-import {
-  PROFESSOR_MARI_ID,
-  normalizeCustomEmojiSelection,
-  type GenerationParameterSendMap,
-} from "@marinara-engine/shared";
-import { chunkAndEmbedMessages, embedMemoryRecallTexts } from "../services/memory-recall.js";
+import { PROFESSOR_MARI_ID, type GenerationParameterSendMap } from "@marinara-engine/shared";
+import { chunkAndEmbedMessages } from "../services/memory-recall.js";
 import {
   isMemoryRecallVectorizerAvailable,
   resolveMemoryRecallEmbeddingSource,
@@ -256,6 +238,7 @@ import {
   customAgentCanEmitResult,
   findResultAgent,
   isAbortLikeError,
+  shouldAutomaticallyRetryAgentResult,
 } from "./generate/agent-result-capabilities.js";
 import { appendConversationCustomAssetAdvertisements } from "./generate/conversation-custom-assets.js";
 import { injectConnectedConversationPromptBlocks } from "./generate/connected-conversation-injections.js";
@@ -272,7 +255,6 @@ import {
   CONVERSATION_NO_REPEAT_INSTRUCTION,
   conversationPromptHistoryContent,
   formatConversationGroupOutputFormat,
-  latestHistoryUserContent,
   resolvePresetModePrompt,
 } from "./generate/conversation-prompt-formatting.js";
 import {
@@ -309,11 +291,7 @@ import { registerRetryAgentsRoute } from "./generate/retry-agents-route.js";
 import { fingerprintChatSummary } from "../services/prompt/chat-summary-fingerprint.js";
 import { sendSseEvent, startSseKeepalive, startSseReply, trySendSseEvent } from "./generate/sse.js";
 import { runTurnGameBotTurns } from "../services/turn-games/turn-game-bot-runner.service.js";
-import {
-  getActiveTurnGame,
-  getTurnGameContextBuilder,
-  startTurnGame,
-} from "../services/turn-games/turn-game-runner.service.js";
+import { getTurnGameContextBuilder } from "../services/turn-games/turn-game-runner.service.js";
 import { buildRecentSocialMediaActivityBlock } from "../services/noodle/noodle-context.js";
 import { normalizeContextInjections } from "./generate/agent-normalizers.js";
 import {
@@ -387,7 +365,6 @@ import {
   clearUnusedRuntimeAgentSections,
   formatAgentInjections,
   makeRuntimeAgentSectionTokens,
-  pruneEmptyPromptWrappers,
   replaceRuntimeAgentSection,
   splitRuntimeHandledAgentInjections,
   toRuntimeAgentSectionType,
@@ -407,11 +384,7 @@ import {
   stripSpacesBeforeLineBreaks,
   trimIncompleteModelEnding,
 } from "../services/generation/generation-text-utils.js";
-import {
-  areConversationSchedulesEnabled,
-  formatSmartGroupCandidates,
-  parsePromptPresetChoices,
-} from "../services/generation/conversation-context-utils.js";
+import { formatSmartGroupCandidates, parsePromptPresetChoices } from "../services/generation/conversation-context-utils.js";
 import { recoverImplicitSelfieCommand } from "../services/generation/selfie-command-recovery.js";
 import {
   buildLorebookScanMessagesWithGenerationGuide,
@@ -422,7 +395,6 @@ import {
 } from "../services/generation/lorebook-generation-runtime.js";
 import {
   addLocationEntry,
-  addEventEntry,
   addInventoryEntry,
   upsertQuest,
   addNpcEntry,
@@ -452,7 +424,6 @@ import {
 } from "../services/generation/prompt-message-scope.js";
 import {
   applyProviderMaxTokensOverride,
-  normalizeAgentMaxTokens,
   readChatCompletionsReasoningMetadata,
   shouldReplayStoredChatCompletionsReasoning,
 } from "../services/generation/generation-parameters.js";
@@ -479,7 +450,7 @@ import { injectCommittedTrackerContext } from "../services/generation/committed-
 import { injectGameGmPromptRuntime } from "../services/generation/game-gm-prompt-runtime.js";
 import { mergeConversationCharacterMemories } from "../services/generation/conversation-memory-context.js";
 import { injectMemoryRecallContext } from "../services/generation/memory-recall-context.js";
-import { resolveAgentRunInterval, shouldSkipAgentByAssistantInterval } from "../services/generation/agent-cadence.js";
+import { shouldSkipAgentByAssistantInterval } from "../services/generation/agent-cadence.js";
 import {
   createAgentEventDispatcher,
   shouldDeferExpressionAgentEvent,
@@ -1017,6 +988,12 @@ export async function generateRoutes(app: FastifyInstance) {
         logger.warn(err, "[generate] Failed to remember timezone for chat %s", input.chatId);
       }
     }
+    const currentBackgroundSource =
+      input.currentBackground !== undefined ? input.currentBackground : chatMeta.background;
+    const currentBackground =
+      typeof currentBackgroundSource === "string" && currentBackgroundSource.trim()
+        ? currentBackgroundSource.trim()
+        : null;
     const promptNow = toZonedWallClockDate(new Date(), promptTimeZone);
     const excludePastReasoning = chatMeta.excludePastReasoning !== false;
     const imageCaptioningRuntime: ImageCaptioningRuntime = await resolveImageCaptioningRuntime({
@@ -2642,7 +2619,6 @@ export async function generateRoutes(app: FastifyInstance) {
         });
         const {
           connectionParams,
-          chatParams,
           resolvedEffort,
           enableThinking,
           isClaudeNoSampling,
@@ -3549,30 +3525,8 @@ export async function generateRoutes(app: FastifyInstance) {
         // If the background agent is enabled, load available backgrounds + tags into context
         const backgroundAgent = resolvedAgents.find((a) => a.type === "background");
         if (backgroundAgent) {
-          const backgroundGenerationEnabled =
-            backgroundAgent.settings?.autoGenerateBackgrounds === true &&
-            chatMeta.gameStoryboardViewerDisplayMode !== "background";
           agentContext.memory._availableBackgrounds = [];
-          agentContext.memory._currentBackground = chatMeta.background ?? null;
-          if (backgroundGenerationEnabled) {
-            agentContext.memory._backgroundGenerationEnabled = true;
-          }
-          if (backgroundGenerationEnabled) {
-            const setupConfigForBackground =
-              chatMeta.gameSetupConfig &&
-              typeof chatMeta.gameSetupConfig === "object" &&
-              !Array.isArray(chatMeta.gameSetupConfig)
-                ? (chatMeta.gameSetupConfig as Record<string, unknown>)
-                : null;
-            agentContext.memory._backgroundWorldContext = {
-              genre: (setupConfigForBackground?.genre as string | undefined) ?? null,
-              setting: (setupConfigForBackground?.setting as string | undefined) ?? null,
-              location: gameState?.location ?? null,
-              weather: gameState?.weather ?? null,
-              timeOfDay: gameState?.time ?? null,
-              worldOverview: (chatMeta.gameWorldOverview as string | undefined) ?? null,
-            };
-          }
+          agentContext.memory._currentBackground = currentBackground;
           try {
             const { readdirSync, readFileSync, existsSync } = await import("fs");
             const { join, extname } = await import("path");
@@ -3608,7 +3562,7 @@ export async function generateRoutes(app: FastifyInstance) {
           illustratorBackgroundGenerationEnabled(chatMode, chatMeta)
         ) {
           agentContext.memory._illustratorBackgroundGenerationEnabled = true;
-          agentContext.memory._currentBackground = chatMeta.background ?? null;
+          agentContext.memory._currentBackground = currentBackground;
         }
 
         const spotifyMusicAgents = resolvedAgents.filter(
@@ -7079,8 +7033,16 @@ export async function generateRoutes(app: FastifyInstance) {
           // ── Auto-retry failed agents once ──
           const failedResults = postResults.filter((r) => !r.success);
           if (failedResults.length > 0 && !abortController.signal.aborted) {
+            const retryableFailures = failedResults.filter(shouldAutomaticallyRetryAgentResult);
+            const timedOutFailures = failedResults.filter((result) => !shouldAutomaticallyRetryAgentResult(result));
+            if (timedOutFailures.length > 0) {
+              logger.warn(
+                "[agents] Skipping automatic retry after timeout for: %s",
+                timedOutFailures.map((result) => result.agentType).join(", "),
+              );
+            }
             const retryResults: AgentResult[] = [];
-            for (const failed of failedResults) {
+            for (const failed of retryableFailures) {
               const agentCfg = resolvedAgents.find((a) => a.type === failed.agentType);
               if (!agentCfg) continue;
               try {
@@ -7197,18 +7159,6 @@ export async function generateRoutes(app: FastifyInstance) {
             return trackerFieldLocksAreEmpty(locks) ? null : JSON.stringify(locks);
           };
 
-          const resolveAgentImageConnectionId = async (agent: ResolvedAgent | undefined): Promise<string | null> => {
-            let imgConnId = (agent?.settings?.imageConnectionId as string) ?? null;
-            if (!imgConnId) {
-              const defaultImageConn = (await connections.list()).find(
-                (c) =>
-                  c.provider === "image_generation" && (c.defaultForAgents === true || c.defaultForAgents === "true"),
-              );
-              imgConnId = defaultImageConn?.id ?? null;
-            }
-            return imgConnId;
-          };
-
           for (const result of sortedResults) {
             const resultMessageId =
               result.agentType === "lorebook-keeper" && lorebookKeeperProcessedMessageId
@@ -7224,16 +7174,6 @@ export async function generateRoutes(app: FastifyInstance) {
             ) {
               const bgData = result.data as {
                 chosen?: string | null;
-                generate?: {
-                  location?: unknown;
-                  locationSlug?: unknown;
-                  slug?: unknown;
-                  prompt?: unknown;
-                  description?: unknown;
-                  reason?: unknown;
-                } | null;
-                generated?: boolean;
-                error?: string;
               };
               if (typeof bgData.chosen === "string") {
                 bgData.chosen = bgData.chosen.trim() || null;
@@ -7249,143 +7189,6 @@ export async function generateRoutes(app: FastifyInstance) {
                   if (!valid) {
                     logger.warn(`[generate] Background agent chose "${bgData.chosen}" which doesn't exist — rejecting`);
                     bgData.chosen = null;
-                  }
-                }
-              }
-
-              const generationRequest =
-                bgData.generate && typeof bgData.generate === "object" && !Array.isArray(bgData.generate)
-                  ? bgData.generate
-                  : null;
-              const currentBackgroundAgent = resolvedAgents.find(
-                (a) => a.id === result.agentId || a.type === "background",
-              );
-              const canGenerateBackground =
-                currentBackgroundAgent?.settings?.autoGenerateBackgrounds === true &&
-                chatMeta.gameStoryboardViewerDisplayMode !== "background";
-              if (!bgData.chosen && canGenerateBackground && generationRequest) {
-                const promptText =
-                  typeof generationRequest.prompt === "string" && generationRequest.prompt.trim()
-                    ? generationRequest.prompt.trim()
-                    : typeof generationRequest.description === "string"
-                      ? generationRequest.description.trim()
-                      : "";
-                const locationSource =
-                  typeof generationRequest.location === "string" && generationRequest.location.trim()
-                    ? generationRequest.location
-                    : typeof generationRequest.locationSlug === "string" && generationRequest.locationSlug.trim()
-                      ? generationRequest.locationSlug
-                      : typeof generationRequest.slug === "string" && generationRequest.slug.trim()
-                        ? generationRequest.slug
-                        : typeof generationRequest.reason === "string" && generationRequest.reason.trim()
-                          ? generationRequest.reason
-                          : promptText;
-                const locationText = locationSource.trim();
-                if (promptText && locationText) {
-                  try {
-                    const imgConnId = await resolveAgentImageConnectionId(currentBackgroundAgent);
-                    if (!imgConnId) {
-                      bgData.error =
-                        "No image generation connection set on the Background agent, and no default agent image connection is configured.";
-                      trySendSseEvent(reply, {
-                        type: "agent_error",
-                        data: {
-                          agentType: "background",
-                          agentName: currentBackgroundAgent?.name ?? "Background",
-                          error:
-                            "No image generation connection set on the Background agent, and no default agent image connection is configured. Assign one in Settings → Agents → Background.",
-                        },
-                      });
-                    } else {
-                      const imgConnFull = await connections.getWithKey(imgConnId);
-                      if (!imgConnFull) throw new Error("Cannot resolve Background agent image connection");
-
-                      const imageDefaults = resolveConnectionImageDefaults(imgConnFull);
-                      const imageFallback = await resolveImageConnectionFallback(connections, imgConnFull.id);
-                      const imageSettings = await loadImageGenerationUserSettings(app.db);
-                      const promptOverridesStorage = createPromptOverridesStorage(app.db);
-                      const setupConfigForImage =
-                        chatMeta.gameSetupConfig &&
-                        typeof chatMeta.gameSetupConfig === "object" &&
-                        !Array.isArray(chatMeta.gameSetupConfig)
-                          ? (chatMeta.gameSetupConfig as Record<string, unknown>)
-                          : null;
-                      const styleProfileId =
-                        (setupConfigForImage?.imageStyleProfileId as string | undefined) ??
-                        (chatMeta.imageStyleProfileId as string | undefined) ??
-                        null;
-                      const generatedFilename = await generateChatBackground({
-                        chatId: input.chatId,
-                        locationSlug: locationText.slice(0, 120),
-                        sceneDescription: promptText.slice(0, 1000),
-                        genre: (setupConfigForImage?.genre as string | undefined) ?? undefined,
-                        setting: (setupConfigForImage?.setting as string | undefined) ?? undefined,
-                        currentLocation: gameState?.location ?? null,
-                        currentWeather: gameState?.weather ?? null,
-                        currentTimeOfDay: gameState?.time ?? null,
-                        worldOverview: (chatMeta.gameWorldOverview as string | undefined) ?? null,
-                        artStyle: resolveGameSetupArtStylePrompt(setupConfigForImage) || undefined,
-                        reason:
-                          typeof generationRequest.reason === "string"
-                            ? generationRequest.reason.trim().slice(0, 300)
-                            : undefined,
-                        imgModel: imgConnFull.model || "",
-                        imgBaseUrl: imgConnFull.baseUrl || "https://image.pollinations.ai",
-                        imgApiKey: imgConnFull.apiKey || "",
-                        imgSource: (imgConnFull as any).imageGenerationSource || imgConnFull.model || "",
-                        imgService: imgConnFull.imageService || (imgConnFull as any).imageGenerationSource || "",
-                        imgEndpointId: imgConnFull.imageEndpointId || undefined,
-                        imgComfyWorkflow: imgConnFull.comfyuiWorkflow || undefined,
-                        imgDefaults: imageDefaults,
-                        imgFallback: imageFallback,
-                        styleProfiles: imageSettings.styleProfiles,
-                        styleProfileId,
-                        promptOverridesStorage,
-                        size: {
-                          width: imageSettings.background.width,
-                          height: imageSettings.background.height,
-                        },
-                        debugLog,
-                      });
-                      if (generatedFilename) {
-                        bgData.chosen = generatedFilename;
-                        bgData.generated = true;
-                        trySendSseEvent(reply, {
-                          type: "agent_result",
-                          data: {
-                            agentType: result.agentType,
-                            agentName: currentBackgroundAgent?.name ?? "Background",
-                            resultType: result.type,
-                            data: bgData,
-                            tokensUsed: result.tokensUsed,
-                            success: result.success,
-                            error: result.error,
-                            durationMs: result.durationMs,
-                          },
-                        });
-                      } else {
-                        bgData.error = "Background image generation failed";
-                        trySendSseEvent(reply, {
-                          type: "agent_error",
-                          data: {
-                            agentType: "background",
-                            agentName: currentBackgroundAgent?.name ?? "Background",
-                            error: "Background image generation failed. Check the image connection and server logs.",
-                          },
-                        });
-                      }
-                    }
-                  } catch (bgErr) {
-                    logger.error(bgErr, "[background-agent] Image generation failed");
-                    bgData.error = bgErr instanceof Error ? bgErr.message : "Background image generation failed";
-                    trySendSseEvent(reply, {
-                      type: "agent_error",
-                      data: {
-                        agentType: "background",
-                        agentName: currentBackgroundAgent?.name ?? "Background",
-                        error: `Background image generation failed: ${bgData.error}`,
-                      },
-                    });
                   }
                 }
               }
@@ -8400,6 +8203,7 @@ export async function generateRoutes(app: FastifyInstance) {
                       chatName: chat.name,
                       chatMode: chatMode === "visual_novel" ? "visual_novel" : "roleplay",
                       chatMetadata: freshMeta,
+                      currentBackground: backgroundBeforeGeneration ?? currentBackground,
                       illustratorAgent: illustratorBackgroundAgent,
                       assistantResponse: combinedResponse,
                       decisionReason: backgroundDecisionReason,
@@ -8453,6 +8257,7 @@ export async function generateRoutes(app: FastifyInstance) {
                       data: {
                         agentType: "illustrator",
                         agentName: illustratorBackgroundAgent.name ?? "Illustrator",
+                        retryTarget: "background",
                         error: `Background generation failed: ${
                           backgroundError instanceof Error ? backgroundError.message : String(backgroundError)
                         }`,
@@ -8706,6 +8511,7 @@ export async function generateRoutes(app: FastifyInstance) {
                           data: {
                             agentType: "illustrator",
                             agentName: illustratorAgent?.name ?? "Illustrator",
+                            retryTarget: "illustration",
                             error: `Image generation failed: ${illErr instanceof Error ? illErr.message : String(illErr)}`,
                           },
                         })}\n\n`,
@@ -8720,6 +8526,7 @@ export async function generateRoutes(app: FastifyInstance) {
                       data: {
                         agentType: "illustrator",
                         agentName: illustratorAgent?.name ?? "Illustrator",
+                        retryTarget: "illustration",
                         error:
                           "No image generation connection is set on the Illustrator agent or under Settings → Connections → Defaults → Images. Choose one there, or assign one directly in Settings → Agents → Illustrator.",
                       },

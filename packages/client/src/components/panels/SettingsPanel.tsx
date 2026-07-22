@@ -6860,7 +6860,6 @@ function AdvancedSettings() {
     }
   }, [chubApiKey]);
 
-  const [quickRepliesDrawerOpen, setQuickRepliesDrawerOpen] = useState(true);
   const nativeConsoleBridge = getMarinaraAndroidBridge();
   const canOpenNativeConsole = typeof nativeConsoleBridge?.openConsole === "function";
   const nativeConsoleHelp = getNativeConsoleShortcutHelp();

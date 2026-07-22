@@ -159,6 +159,11 @@ import {
   illustratorRequestedBackground,
   illustratorTrackerLocationChanged,
 } from "../../services/generation/illustrator-background-generation.js";
+import {
+  parseIllustratorRetryTargets,
+  shouldRetryIllustratorTarget,
+  type IllustratorRetryTarget,
+} from "../../services/generation/illustrator-retry-targets.js";
 import { normalizeContextInjections } from "./agent-normalizers.js";
 import { executeToolCalls, type MetadataPatchInput } from "../../services/tools/tool-executor.js";
 
@@ -530,6 +535,7 @@ async function buildRetryAgentContext(args: {
   db: Parameters<typeof buildPromptMacroContext>[0]["db"];
   chat: any;
   chatMeta: Record<string, unknown>;
+  currentBackground: string | null;
   recentMessages: any[];
   enabledConfigs: any[];
   resolvedAgentTypes: Set<string>;
@@ -539,6 +545,7 @@ async function buildRetryAgentContext(args: {
   lorebooksStore: ReturnType<typeof createLorebooksStorage>;
   streaming: boolean;
   wrapFormat: WrapFormat;
+  forceIllustratorBackgroundGeneration: boolean;
   /**
    * When retrying agents for a specific assistant message (e.g. refreshing cached prompt injections),
    * use the game-state snapshot committed for that message+swipe — not the latest chat snapshot.
@@ -553,6 +560,7 @@ async function buildRetryAgentContext(args: {
     db,
     chat,
     chatMeta,
+    currentBackground,
     recentMessages,
     enabledConfigs,
     resolvedAgentTypes,
@@ -562,6 +570,7 @@ async function buildRetryAgentContext(args: {
     lorebooksStore,
     streaming,
     wrapFormat,
+    forceIllustratorBackgroundGeneration,
     historicalGameStateAnchor,
     useLatestGameStateFallback = true,
   } = args;
@@ -931,7 +940,7 @@ async function buildRetryAgentContext(args: {
           })),
       );
       agentContext.memory._availableBackgrounds = availableBackgrounds;
-      agentContext.memory._currentBackground = chatMeta.background ?? null;
+      agentContext.memory._currentBackground = currentBackground;
     } catch (err) {
       logger.warn(err, "[retry-agents] Failed to load available backgrounds for retry");
     }
@@ -939,10 +948,11 @@ async function buildRetryAgentContext(args: {
 
   if (
     resolvedAgentTypes.has("illustrator") &&
-    illustratorBackgroundGenerationEnabled((chat as { mode?: unknown }).mode, chatMeta)
+    (forceIllustratorBackgroundGeneration ||
+      illustratorBackgroundGenerationEnabled((chat as { mode?: unknown }).mode, chatMeta))
   ) {
     agentContext.memory._illustratorBackgroundGenerationEnabled = true;
-    agentContext.memory._currentBackground = chatMeta.background ?? null;
+    agentContext.memory._currentBackground = currentBackground;
   }
 
   const spotifyRetryConfig = enabledConfigs.find((config) => config.type === "spotify");
@@ -2475,6 +2485,7 @@ async function applyRetryResultEffects(args: {
   queueImageGenerationRequests: boolean;
   reviewImagePromptsBeforeSend: boolean;
   illustratorPromptReviewOverride: IllustratorPromptReviewOverride | null;
+  illustratorRetryTargets: IllustratorRetryTarget[] | undefined;
   debugMode: boolean;
   secretPlotRerollMode?: "full" | "turn_only";
 }) {
@@ -2496,6 +2507,7 @@ async function applyRetryResultEffects(args: {
     queueImageGenerationRequests,
     reviewImagePromptsBeforeSend,
     illustratorPromptReviewOverride,
+    illustratorRetryTargets,
     debugMode,
     secretPlotRerollMode,
   } = args;
@@ -2505,6 +2517,8 @@ async function applyRetryResultEffects(args: {
   const chats = createChatsStorage(app.db);
   const agentsStore = createAgentsStorage(app.db);
   const chatMeta = parseExtra(chat.metadata) as Record<string, unknown>;
+  const isManualIllustratorBackgroundRequest =
+    illustratorRetryTargets?.length === 1 && illustratorRetryTargets[0] === "background";
   let currentResponseForRewrite = agentContext.mainResponse;
   const retryOwnerSpatialProjection =
     (retryMessageId
@@ -2997,7 +3011,13 @@ async function applyRetryResultEffects(args: {
     }
 
     // ── ILLUSTRATOR: generate image from agent prompt ──
-    if (result.success && result.type === "image_prompt" && result.data && typeof result.data === "object") {
+    if (
+      shouldRetryIllustratorTarget(illustratorRetryTargets, "illustration") &&
+      result.success &&
+      result.type === "image_prompt" &&
+      result.data &&
+      typeof result.data === "object"
+    ) {
       const illustratorFailureName =
         resolvedAgents.find((a) => a.resolved.id === result.agentId || a.resolved.type === "illustrator")?.cfg.name ??
         "Illustrator";
@@ -3297,6 +3317,7 @@ async function applyRetryResultEffects(args: {
               data: {
                 agentType: "illustrator",
                 agentName: illustratorFailureName,
+                retryTarget: "illustration",
                 error:
                   "No image generation connection is set on the Illustrator agent or under Settings -> Connections -> Defaults -> Images. Choose one there, or assign one directly in Settings -> Agents -> Illustrator.",
               },
@@ -3310,6 +3331,7 @@ async function applyRetryResultEffects(args: {
           data: {
             agentType: "illustrator",
             agentName: illustratorFailureName,
+            retryTarget: "illustration",
             error: illErr instanceof Error ? illErr.message : "Image generation failed",
           },
         });
@@ -3376,7 +3398,9 @@ async function applyRetryResultEffects(args: {
     illustratorResult &&
     illustratorEntry &&
     !illustratorPromptReviewOverride &&
-    illustratorBackgroundGenerationEnabled((chat as { mode?: unknown }).mode, chatMeta)
+    shouldRetryIllustratorTarget(illustratorRetryTargets, "background") &&
+    (isManualIllustratorBackgroundRequest ||
+      illustratorBackgroundGenerationEnabled((chat as { mode?: unknown }).mode, chatMeta))
   ) {
     const backgroundAtDecision =
       typeof chatMeta.background === "string" && chatMeta.background.trim() ? chatMeta.background.trim() : null;
@@ -3397,13 +3421,16 @@ async function applyRetryResultEffects(args: {
         ? parseGameStateRow(latestSnapshot as Record<string, unknown>)
         : agentContext.gameState;
       const illData = illustratorResult.data as Record<string, unknown>;
-      const requestedBackground = illustratorRequestedBackground(illData.generateBackground);
+      const requestedBackground =
+        isManualIllustratorBackgroundRequest || illustratorRequestedBackground(illData.generateBackground);
       const trackerLocationChanged = illustratorTrackerLocationChanged(
         agentContext.gameState?.location,
         latestGameState?.location,
       );
       if (!requestedBackground && !trackerLocationChanged) return;
-      const backgroundDecisionReason = requestedBackground
+      const backgroundDecisionReason = isManualIllustratorBackgroundRequest
+        ? "Manual Gallery background request"
+        : requestedBackground
         ? typeof illData.reason === "string"
           ? illData.reason
           : undefined
@@ -3421,6 +3448,11 @@ async function applyRetryResultEffects(args: {
         chatName: chat.name,
         chatMode: (chat as { mode?: unknown }).mode === "visual_novel" ? "visual_novel" : "roleplay",
         chatMetadata: freshMeta,
+        currentBackground:
+          backgroundBeforeGeneration ??
+          (typeof agentContext.memory._currentBackground === "string"
+            ? agentContext.memory._currentBackground
+            : null),
         illustratorAgent: illustratorEntry.resolved,
         assistantResponse: agentContext.mainResponse ?? "",
         decisionReason: backgroundDecisionReason,
@@ -3475,6 +3507,7 @@ async function applyRetryResultEffects(args: {
         data: {
           agentType: "illustrator",
           agentName: illustratorEntry.cfg?.name ?? illustratorEntry.resolved.name ?? "Illustrator",
+          retryTarget: "background",
           error: `Background generation failed: ${
             backgroundError instanceof Error ? backgroundError.message : String(backgroundError)
           }`,
@@ -3499,6 +3532,8 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
       agentTypes: string[];
       streaming?: boolean;
       debugMode?: boolean;
+      /** Background currently displayed on the active chat surface. */
+      currentBackground?: string | null;
       /** Serialize Roleplay Illustrator provider calls when enabled. */
       queueImageGenerationRequests?: boolean;
       /** Pause a manual Illustrator retry after prompt compilation so the client can review it. */
@@ -3507,6 +3542,8 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
       agentPromptTemplateIds?: unknown;
       /** Resume a reviewed Illustrator retry without running the Illustrator LLM a second time. */
       illustratorPromptReviewOverride?: unknown;
+      /** Limit an Illustrator retry to visual jobs that failed in the original run. */
+      illustratorRetryTargets?: unknown;
       lorebookKeeperBackfill?: boolean;
       /** When set, scope history and game state to this assistant message (as at original generation), not the latest turn. */
       forMessageId?: string;
@@ -3521,10 +3558,12 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
       agentTypes,
       streaming = true,
       debugMode = false,
+      currentBackground: requestedCurrentBackground,
       queueImageGenerationRequests = true,
       reviewImagePromptsBeforeSend = false,
       agentPromptTemplateIds,
       illustratorPromptReviewOverride: rawIllustratorPromptReviewOverride,
+      illustratorRetryTargets: rawIllustratorRetryTargets,
       lorebookKeeperBackfill = false,
       forMessageId,
       musicPlayerSource = "spotify",
@@ -3534,12 +3573,21 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
     const illustratorPromptReviewOverride = rawIllustratorPromptReviewOverride
       ? parseIllustratorPromptReviewOverride(rawIllustratorPromptReviewOverride)
       : null;
+    const illustratorRetryTargets = parseIllustratorRetryTargets(rawIllustratorRetryTargets);
     if (!chatId || !agentTypes?.length) {
       return reply.status(400).send({ error: "chatId and agentTypes are required" });
     }
     if (rawIllustratorPromptReviewOverride && !illustratorPromptReviewOverride) {
       return reply.status(400).send({ error: "Invalid Illustrator prompt review override" });
     }
+    if (illustratorRetryTargets === null) {
+      return reply.status(400).send({ error: "Invalid Illustrator retry targets" });
+    }
+    if (illustratorRetryTargets && !agentTypes.includes("illustrator")) {
+      return reply.status(400).send({ error: "Illustrator retry targets require an Illustrator retry" });
+    }
+    const isManualIllustratorBackgroundRequest =
+      illustratorRetryTargets?.length === 1 && illustratorRetryTargets[0] === "background";
 
     startSseReply(reply, { "X-Accel-Buffering": "no" });
     const onFallback = createReplyFallbackNotifier(reply);
@@ -3574,6 +3622,12 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
       }
 
       const chatMeta = parseExtra(chat.metadata);
+      const currentBackgroundSource =
+        requestedCurrentBackground !== undefined ? requestedCurrentBackground : chatMeta.background;
+      const currentBackground =
+        typeof currentBackgroundSource === "string" && currentBackgroundSource.trim()
+          ? currentBackgroundSource.trim()
+          : null;
       const requireAgentWriteApproval = agentWriteApprovalRequired(chatMeta);
       const allMessages = await chats.listMessages(chatId);
       let startIdx = 0;
@@ -3692,6 +3746,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
         db: app.db,
         chat,
         chatMeta,
+        currentBackground,
         recentMessages,
         enabledConfigs,
         resolvedAgentTypes: new Set(resolvedAgents.map((a) => a.resolved.type)),
@@ -3701,6 +3756,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
         lorebooksStore,
         streaming,
         wrapFormat: retryWrapFormat,
+        forceIllustratorBackgroundGeneration: isManualIllustratorBackgroundRequest,
         historicalGameStateAnchor,
       });
       agentContext.signal = abortController.signal;
@@ -3713,6 +3769,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
               db: app.db,
               chat,
               chatMeta,
+              currentBackground,
               recentMessages: preGenerationRecentMessages,
               enabledConfigs,
               resolvedAgentTypes: new Set(resolvedAgents.map((a) => a.resolved.type)),
@@ -3722,6 +3779,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
               lorebooksStore,
               streaming,
               wrapFormat: retryWrapFormat,
+              forceIllustratorBackgroundGeneration: isManualIllustratorBackgroundRequest,
               historicalGameStateAnchor: preGenerationGameStateAnchor,
               useLatestGameStateFallback: false,
             })
@@ -3992,6 +4050,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
         queueImageGenerationRequests,
         reviewImagePromptsBeforeSend,
         illustratorPromptReviewOverride,
+        illustratorRetryTargets,
         debugMode,
         secretPlotRerollMode,
       });

@@ -814,6 +814,8 @@ export interface GenerateRequest {
   continueMessageId?: string | null;
   /** Override connection for this generation */
   connectionId: string | null;
+  /** Background currently displayed on the active chat surface. */
+  currentBackground?: string | null;
   /** Validated owner-mode movement committed with the user turn. */
   pendingSpatialTransition?: import("./spatial-context.js").PendingSpatialTransition | null;
   /** One-shot attachments sent with the user message. */

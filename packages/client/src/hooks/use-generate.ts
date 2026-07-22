@@ -6,8 +6,15 @@ import type { AvatarCropValue } from "../lib/utils";
 import { useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { toast, type ExternalToast } from "sonner";
 import { api, ApiError } from "../lib/api-client";
-import { formatAgentFailuresToast, toAgentFailure, type AgentFailure } from "../lib/agent-failures";
-import { chatBackgroundMetadataToUrl } from "../lib/backgrounds";
+import {
+  formatAgentFailuresToast,
+  illustratorRetryTargetsForFailures,
+  mergeAgentFailures,
+  toAgentFailure,
+  type AgentFailure,
+  type IllustratorRetryTarget,
+} from "../lib/agent-failures";
+import { chatBackgroundMetadataToUrl, chatBackgroundUrlToMetadata } from "../lib/backgrounds";
 import { formatGenerationParameterError } from "../lib/generation-parameter-errors";
 import {
   getTypewriterRevealCharsPerSecond,
@@ -52,9 +59,21 @@ type RetryAgentsOptions = {
     prompt: string;
     negativePrompt?: string;
   };
+  illustratorRetryTargets?: IllustratorRetryTarget[];
 };
 
 type RetryAgentsFn = (chatId: string, agentTypes: string[], options?: RetryAgentsOptions) => Promise<boolean>;
+
+function withIllustratorFailureTargets(
+  options: RetryAgentsOptions | undefined,
+  failures: AgentFailure[],
+): RetryAgentsOptions | undefined {
+  const baseOptions: RetryAgentsOptions = { ...options };
+  delete baseOptions.illustratorRetryTargets;
+  const illustratorRetryTargets = illustratorRetryTargetsForFailures(failures);
+  if (illustratorRetryTargets) return { ...baseOptions, illustratorRetryTargets };
+  return Object.keys(baseOptions).length > 0 ? baseOptions : undefined;
+}
 
 /** Show a persistent, copyable error toast and log to console */
 function showError(msg: string, options?: Pick<ExternalToast, "action">) {
@@ -764,6 +783,11 @@ function getCachedChatForGeneration(qc: QueryClient, chatId: string): Chat | und
   if (detail) return detail;
   const list = qc.getQueryData<Chat[]>(chatKeys.list());
   return list?.find((chat) => chat.id === chatId);
+}
+
+function getActiveChatBackgroundForGeneration(chatId: string): string | null | undefined {
+  if (useChatStore.getState().activeChatId !== chatId) return undefined;
+  return chatBackgroundUrlToMetadata(useUIStore.getState().chatBackground);
 }
 
 function parseChatCharacterIds(rawIds: unknown): string[] {
@@ -1548,11 +1572,13 @@ export function useGenerate() {
         if (flushPatch) await flushPatch();
 
         await waitForPendingChatMetadataSaves(params.chatId);
+        const currentBackground = getActiveChatBackgroundForGeneration(params.chatId);
 
         for await (const event of api.streamEvents(
           "/generate",
           {
             ...params,
+            ...(currentBackground !== undefined ? { currentBackground } : {}),
             userStatus,
             userActivity,
             userTimeZone,
@@ -1563,6 +1589,10 @@ export function useGenerate() {
             streaming: transportStreaming,
           },
           abortController.signal,
+          // Backgrounded tabs can leave the stream socket half-open; treat a
+          // resume as a disconnect so the passive-recovery path refetches the
+          // reply the server finished while we were away instead of hanging.
+          { disconnectOnResume: true },
         )) {
           switch (event.type) {
             case "spatial_transition_committed": {
@@ -2381,12 +2411,28 @@ export function useGenerate() {
             }
 
             case "agent_error": {
-              const errData = event.data as { agentType: string; agentName?: string | null; error: string };
-              if (errData.agentType === "illustrator") illustrationSettled = true;
+              const errData = event.data as {
+                agentType: string;
+                agentName?: string | null;
+                error: string;
+                retryTarget?: unknown;
+              };
+              if (errData.agentType === "illustrator" && errData.retryTarget !== "background") {
+                illustrationSettled = true;
+              }
               const failure = toAgentFailure(errData);
-              setFailedAgentFailures([failure], params.chatId);
+              const failureState = useAgentStore.getState();
+              const existingFailures =
+                failureState.failedAgentChatId && failureState.failedAgentChatId !== params.chatId
+                  ? []
+                  : failureState.failedAgentFailures;
+              setFailedAgentFailures(mergeAgentFailures(existingFailures, [failure]), params.chatId);
               showAgentFailuresError([failure], () => {
-                void retryAgentsRef.current?.(params.chatId, [failure.agentType]);
+                void retryAgentsRef.current?.(
+                  params.chatId,
+                  [failure.agentType],
+                  withIllustratorFailureTargets(undefined, [failure]),
+                );
               });
               break;
             }
@@ -3100,6 +3146,7 @@ export function useGenerate() {
         }
 
         await waitForPendingChatMetadataSaves(chatId);
+        const currentBackground = getActiveChatBackgroundForGeneration(chatId);
 
         let agentResultCount = 0;
         let trackerPatchCount = 0;
@@ -3111,6 +3158,7 @@ export function useGenerate() {
           {
             chatId,
             agentTypes,
+            ...(currentBackground !== undefined ? { currentBackground } : {}),
             streaming: useUIStore.getState().enableStreaming,
             debugMode: retryDebugMode,
             queueImageGenerationRequests: useUIStore.getState().queueImageGenerationRequests,
@@ -3119,6 +3167,7 @@ export function useGenerate() {
             ...(options?.illustratorPromptReviewOverride
               ? { illustratorPromptReviewOverride: options.illustratorPromptReviewOverride }
               : {}),
+            ...(options?.illustratorRetryTargets ? { illustratorRetryTargets: options.illustratorRetryTargets } : {}),
             musicPlayerEnabled: useUIStore.getState().musicPlayerEnabled,
             musicPlayerSource: useUIStore.getState().musicPlayerSource,
             lorebookKeeperBackfill: options?.lorebookKeeperBackfill === true,
@@ -3290,7 +3339,11 @@ export function useGenerate() {
                 failedRetryFailures.push(failure);
                 setFailedAgentFailures(failedRetryFailures, chatId);
                 showAgentFailuresError([failure], () => {
-                  void retryAgentsRef.current?.(chatId, [failure.agentType], options);
+                  void retryAgentsRef.current?.(
+                    chatId,
+                    [failure.agentType],
+                    withIllustratorFailureTargets(options, [failure]),
+                  );
                 });
               }
               break;
@@ -3316,7 +3369,7 @@ export function useGenerate() {
                 void retryAgentsRef.current?.(
                   chatId,
                   failures.map((failure) => failure.agentType),
-                  options,
+                  withIllustratorFailureTargets(options, failures),
                 );
               });
               break;
@@ -3377,12 +3430,23 @@ export function useGenerate() {
               break;
             }
             case "agent_error": {
-              const errData = event.data as { agentType: string; agentName?: string | null; error: string };
+              const errData = event.data as {
+                agentType: string;
+                agentName?: string | null;
+                error: string;
+                retryTarget?: unknown;
+              };
               hasError = true;
               const failure = toAgentFailure(errData);
-              setFailedAgentFailures([failure], chatId);
+              const mergedFailures = mergeAgentFailures(failedRetryFailures, [failure]);
+              failedRetryFailures.splice(0, failedRetryFailures.length, ...mergedFailures);
+              setFailedAgentFailures(failedRetryFailures, chatId);
               showAgentFailuresError([failure], () => {
-                void retryAgentsRef.current?.(chatId, [failure.agentType], options);
+                void retryAgentsRef.current?.(
+                  chatId,
+                  [failure.agentType],
+                  withIllustratorFailureTargets(options, [failure]),
+                );
               });
               break;
             }

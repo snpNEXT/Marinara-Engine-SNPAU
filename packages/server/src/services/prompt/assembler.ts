@@ -8,9 +8,6 @@ import type { DB } from "../../db/connection.js";
 import { logger } from "../../lib/logger.js";
 import type {
   ChatMLMessage,
-  PromptPreset,
-  PromptSection,
-  PromptGroup,
   MarkerConfig,
   WrapFormat,
   GenerationParameters,
@@ -260,7 +257,6 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
   const wrapFormat = (input.preset.wrapFormat || "xml") as WrapFormat;
   const parameters = parsePresetParameters(input.preset.parameters);
   const sectionOrder = JSON.parse(input.preset.sectionOrder) as string[];
-  const groupOrder = JSON.parse(input.preset.groupOrder) as string[];
   const variableValues = JSON.parse(input.preset.variableValues) as Record<string, string>;
   // Preset text can safely delay all character macros until the responder is known.
   // Lorebook content only delays names so field macros keep the same budgeting behavior.
@@ -438,7 +434,6 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
   // Build ordered messages, wrapping grouped sections
   const messages: ChatMLMessage[] = [];
   const processedSections = new Set<string>();
-  let chatHistoryEndIdx = -1; // index in messages[] after the last chat_history message
 
   // Process in section order, grouping adjacent sections in the same group
   for (let i = 0; i < orderedSections.length; i++) {
@@ -472,7 +467,6 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
       processedSections.add(section.id);
       if (section.isChatHistory) {
         messages.push(...section.messages);
-        chatHistoryEndIdx = messages.length;
       } else {
         messages.push(...section.messages.map((message) => ({ ...message, contextKind: "prompt" as const })));
       }
@@ -561,7 +555,13 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
   // A chat_summary marker owns placement when present. Without one, enabled
   // summaries belong at the end of the system prompt block, before history.
   if (!hasChatSummaryMarker) {
-    finalMessages = appendFallbackChatSummaryToSystemPrompt(finalMessages, markerCtx.chatSummary, wrapFormat, macroCtx);
+    finalMessages = appendFallbackChatSummaryToSystemPrompt(
+      finalMessages,
+      markerCtx.chatSummary,
+      wrapFormat,
+      macroCtx,
+      deferAllMacroOptions,
+    );
   }
 
   // ── Phase 8: Single user message mode ──
@@ -638,14 +638,11 @@ async function resolveSection(
   let runtimeAgentText = "";
   let runtimeAgentStartToken: string | undefined;
   let runtimeAgentEndToken: string | undefined;
-  let wrapperName = section.name;
+  const wrapperName = section.name;
 
   // Handle marker sections
   if (section.isMarker === "true" && section.markerConfig) {
     const markerConfig = JSON.parse(section.markerConfig) as MarkerConfig;
-    if (markerConfig.type === "chat_summary") {
-      wrapperName = "Chat Summary";
-    }
     const runtimeAgentType =
       markerConfig.type === "agent_data" && markerConfig.agentType ? markerConfig.agentType : null;
     const runtimeAgentData = runtimeAgentType !== null ? ctx.runtimeAgentData[runtimeAgentType] : undefined;
@@ -664,7 +661,7 @@ async function resolveSection(
       runtimeAgentType !== null && Object.prototype.hasOwnProperty.call(ctx.runtimeAgentData, runtimeAgentType);
     const expanded = hasRuntimeAgentData
       ? { content: runtimeAgentText }
-      : await expandMarker(markerConfig, ctx.markerCtx);
+      : await expandMarker(markerConfig, ctx.markerCtx, ctx.macroOptions);
 
     // Chat history marker returns multiple messages
     if (markerConfig.type === "chat_history" && expanded.messages) {
@@ -818,8 +815,9 @@ function appendFallbackChatSummaryToSystemPrompt(
   chatSummary: string | null,
   wrapFormat: WrapFormat,
   macroCtx: MacroContext,
+  macroOptions?: ResolveMacroOptions,
 ): ChatMLMessage[] {
-  const summary = sanitizePromptLeaf(resolveMacros(chatSummary ?? "", macroCtx), wrapFormat).trim();
+  const summary = sanitizePromptLeaf(resolveMacros(chatSummary ?? "", macroCtx, macroOptions), wrapFormat).trim();
   if (!summary) return messages;
 
   const wrapped = wrapContent(summary, "Chat Summary", wrapFormat).trim();

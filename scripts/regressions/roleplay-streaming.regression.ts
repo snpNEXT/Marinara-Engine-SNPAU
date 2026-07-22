@@ -27,6 +27,7 @@ import {
 import { useAgentStore } from "../../packages/client/src/stores/agent.store.js";
 import { advanceWeatherFrameClock } from "../../packages/client/src/lib/weather-frame-clock.js";
 import { trackerEditableText } from "../../packages/client/src/features/tracker-panel/lib/tracker-display.js";
+import { api } from "../../packages/client/src/lib/api-client.js";
 import { executeAgentBatch } from "../../packages/server/src/services/agents/agent-executor.js";
 import { resolveAgentPipelineAgents } from "../../packages/server/src/services/generation/agent-resolution.js";
 import {
@@ -36,6 +37,7 @@ import {
   type ChatOptions,
 } from "../../packages/server/src/services/llm/base-provider.js";
 import type { AgentCallDebugEvent, AgentContext } from "../../packages/shared/src/types/agent.js";
+import { CSRF_HEADER, CSRF_HEADER_VALUE } from "../../packages/shared/src/constants/security.js";
 
 const retryAgentRouteSource = readFileSync(
   new URL("../../packages/server/src/routes/generate/retry-agents-route.ts", import.meta.url),
@@ -57,6 +59,51 @@ const gameInputSource = readFileSync(
   new URL("../../packages/client/src/components/game/GameInput.tsx", import.meta.url),
   "utf8",
 );
+const chatStoreSource = readFileSync(
+  new URL("../../packages/client/src/stores/chat.store.ts", import.meta.url),
+  "utf8",
+);
+const summaryPopoverSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/SummaryPopover.tsx", import.meta.url),
+  "utf8",
+);
+assert.match(
+  summaryPopoverSource,
+  /const \[draft, setDraft\] = useState\(\(\) => \(\{ \.\.\.entry \}\)\);/u,
+  "summary typing should update editor-local state instead of rerendering the entire popover",
+);
+assert.doesNotMatch(
+  summaryPopoverSource,
+  /onDraftChange=\{setDraftEntry\}/u,
+  "summary keystrokes must not update popover-level draft state",
+);
+assert.match(
+  chatStoreSource,
+  /api\.post\("\/generate\/abort", \{ chatId \}\)/u,
+  "explicit stop requests must use the authenticated API client so CSRF protection cannot discard them",
+);
+assert.doesNotMatch(
+  chatStoreSource,
+  /fetch\("\/api\/generate\/abort"/u,
+  "generation abort must not bypass shared CSRF and admin-auth headers",
+);
+const originalFetch = globalThis.fetch;
+let capturedAbortRequest: { input: string | URL | Request; init?: RequestInit } | null = null;
+globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+  capturedAbortRequest = { input, init };
+  return new Response(JSON.stringify({ aborted: true }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}) as typeof fetch;
+try {
+  await api.post("/generate/abort", { chatId: "roleplay-stop-regression" });
+} finally {
+  globalThis.fetch = originalFetch;
+}
+assert.ok(capturedAbortRequest, "the shared API client should send an abort request");
+assert.equal(String(capturedAbortRequest.input), "/api/generate/abort");
+assert.equal(new Headers(capturedAbortRequest.init?.headers).get(CSRF_HEADER), CSRF_HEADER_VALUE);
 assert.match(
   generateRouteSource,
   /type: "illustration_queued"/u,

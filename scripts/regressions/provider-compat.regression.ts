@@ -51,6 +51,7 @@ class RegressionProvider extends BaseLLMProvider {
   constructor(
     private readonly chunks: string[],
     private readonly failure?: Error,
+    private readonly usage?: LLMUsage,
   ) {
     super("", "");
   }
@@ -60,6 +61,7 @@ class RegressionProvider extends BaseLLMProvider {
     this.lastOptions = options;
     for (const chunk of this.chunks) yield chunk;
     if (this.failure) throw this.failure;
+    return this.usage;
   }
 }
 
@@ -484,6 +486,41 @@ assert.deepEqual(fallbackNotice, {
   connectionName: "Fallback",
   model: "fallback-model",
 });
+
+const emptyStreamFallback = new RegressionProvider(["fallback after empty stream"]);
+assert.equal(
+  await collectProviderOutput(
+    new ConnectionFallbackProvider(new RegressionProvider(["  "]), emptyStreamFallback, fallbackConnection, "main"),
+    { model: "primary-model" },
+  ),
+  "  fallback after empty stream",
+);
+assert.equal(emptyStreamFallback.calls, 1, "an empty successful stream must activate the fallback");
+
+const emptyCompletionFallback = new RegressionProvider(["fallback after empty completion"]);
+const emptyCompletionResult = await new ConnectionFallbackProvider(
+  new RegressionProvider([]),
+  emptyCompletionFallback,
+  fallbackConnection,
+  "main",
+).chatComplete([{ role: "user", content: "test" }], { model: "primary-model", stream: false });
+assert.equal(emptyCompletionResult.content, "fallback after empty completion");
+assert.equal(emptyCompletionFallback.calls, 1, "an empty successful completion must activate the fallback");
+
+const whitespaceCompletionFallback = new RegressionProvider(["fallback after whitespace completion"]);
+const whitespaceCompletionResult = await new ConnectionFallbackProvider(
+  new RegressionProvider([" \n "], undefined, {
+    promptTokens: 1,
+    completionTokens: 1,
+    totalTokens: 2,
+    finishReason: "length",
+  }),
+  whitespaceCompletionFallback,
+  fallbackConnection,
+  "main",
+).chatComplete([{ role: "user", content: "test" }], { model: "primary-model", stream: false });
+assert.equal(whitespaceCompletionResult.content, "fallback after whitespace completion");
+assert.equal(whitespaceCompletionFallback.calls, 1, "a whitespace-only completion must activate the fallback");
 
 const partialPrimary = new RegressionProvider(["partial"], new Error("stream interrupted"));
 const unusedFallback = new RegressionProvider(["must not be appended"]);

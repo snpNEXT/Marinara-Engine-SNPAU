@@ -45,7 +45,6 @@ import {
   buildSessionConclusionPrompt,
   buildCampaignProgressionPrompt,
   buildPartyRecruitCardPrompt,
-  type GmPromptContext,
 } from "../services/game/gm-prompts.js";
 import { buildPartySystemPrompt } from "../services/game/party-prompts.js";
 import { buildPromptMacroContext, resolveMacrosWithVariableSnapshot } from "../services/prompt/index.js";
@@ -92,12 +91,7 @@ import {
   GAME_LOREBOOK_KEEPER_SOURCE_ID,
   resolveLorebookScopeExclusions,
 } from "../services/lorebook/game-lorebook-scope.js";
-import {
-  applyMoraleEvent,
-  getMoraleTier,
-  formatMoraleContext,
-  type MoraleEvent,
-} from "../services/game/morale.service.js";
+import { applyMoraleEvent, getMoraleTier, type MoraleEvent } from "../services/game/morale.service.js";
 import {
   createJournal,
   addLocationEntry,
@@ -132,7 +126,6 @@ import {
   isClaudeAdaptiveOnlyNoSamplingModel,
   localAuthProviderBaseUrl,
   sceneAnalysisRequestSchema,
-  sceneSpotifyTrackCandidateSchema,
   resolveProviderReasoningEffort,
   scoreMusic,
   scoreAmbient,
@@ -4191,11 +4184,9 @@ function normalizePortraitAppearancePart(value: string): string {
 export function sanitizeNpcPortraitAppearanceText(value: string): string {
   return value
     .replace(/(?:^|\s+)Notable details:\s*[\s\S]*$/i, "")
+    .replace(/\[[^\]\r\n]{0,500}\breputation\s*:\s*[^\]\r\n]{0,500}\]/gi, " ")
     .replace(/\s*\breputation\s*:\s*[^,.;\r\n]*\s*[,;]?/gi, " ")
-    .replace(
-      /\[[^\]\r\n]{1,500}\]\s*reputation\s*[+-]?\d+(?:\s*(?:→|->)\s*-?\d+)?(?:\s*\([^)]*\))?/gi,
-      " ",
-    )
+    .replace(/\[[^\]\r\n]{1,500}\]\s*reputation\s*[+-]?\d+(?:\s*(?:→|->)\s*-?\d+)?(?:\s*\([^)]*\))?/gi, " ")
     .replace(/\breputation\s*[+-]?\d+\s*(?:→|->)\s*-?\d+(?:\s*\([^)]*\))?/gi, " ")
     .replace(/\s+([,.;])/g, "$1")
     .replace(/\s+/g, " ")

@@ -31,6 +31,7 @@ import {
   shouldExecuteQuickPostAsCommand,
 } from "../../packages/client/src/lib/slash-commands.js";
 import { getAvatarCropStyle } from "../../packages/client/src/lib/utils.js";
+import { filterCustomEmojisByName } from "../../packages/client/src/lib/custom-emoji.js";
 import {
   trackChatMetadataSave,
   waitForPendingChatMetadataSaves,
@@ -117,9 +118,11 @@ import {
   normalizeCustomAgentRepositoryUrl,
   parseCustomAgentRepositoryArchive,
 } from "../../packages/server/src/services/agents/custom-agent-repositories.service.js";
+import { shouldAutomaticallyRetryAgentResult } from "../../packages/server/src/routes/generate/agent-result-capabilities.js";
 import { runImageGenerationRequest } from "../../packages/server/src/services/image/image-generation-queue.js";
 import {
   detectNovelAiSubjectCount,
+  openRouterModalities,
   resolveNovelAiDefaults,
   resolveNovelAiRequestSize,
   resolveNovelAiSize,
@@ -1270,6 +1273,21 @@ assert.match(
   /"relative flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-xl/u,
   "The Metadata avatar preview must contain absolutely positioned saved crops",
 );
+assert.match(
+  globalStyles,
+  /\.mari-editor-avatar-tile \{\s*position: relative;\s*cursor: pointer;/u,
+  "The shared editor avatar upload target must contain absolutely positioned crops",
+);
+assert.equal(
+  characterEditorSource.match(/className="pointer-events-none h-full w-full object-cover"/gu)?.length,
+  2,
+  "Character avatar images inside upload targets must not intercept page clicks",
+);
+assert.equal(
+  personaEditorSource.match(/className="pointer-events-none h-full w-full object-cover"/gu)?.length,
+  1,
+  "The Persona header avatar inside its upload target must not intercept page clicks",
+);
 assert.match(gameJournalSource, /data-game-journal-scroll/u);
 assert.match(gameSurfaceSource, /h-\[min\(42rem,calc\(100dvh-6rem\)\)\]/u);
 assert.match(gameAssetHooksSource, /export function useGameAssetManifest/u);
@@ -1510,9 +1528,28 @@ const replayStoryboardFrames = [
   { id: "frame-1", index: 0, sectionStartIndex: 0, sectionEndIndex: 1 },
   { id: "frame-3", index: 2, sectionStartIndex: 5, sectionEndIndex: 5 },
 ] as Parameters<typeof findReplayStoryboardKeyframe>[0];
+assert.equal(findReplayStoryboardKeyframe([], 0), null);
 assert.equal(findReplayStoryboardKeyframe(replayStoryboardFrames, null)?.id, "frame-1");
 assert.equal(findReplayStoryboardKeyframe(replayStoryboardFrames, 3)?.id, "frame-2");
 assert.equal(findReplayStoryboardKeyframe(replayStoryboardFrames, 4)?.id, "frame-3");
+
+const unanchoredReplayStoryboardFrames = [
+  { id: "unanchored-2", index: 2 },
+  { id: "unanchored-1", index: 1 },
+] as Parameters<typeof findReplayStoryboardKeyframe>[0];
+assert.equal(findReplayStoryboardKeyframe(unanchoredReplayStoryboardFrames, 4)?.id, "unanchored-1");
+
+const overlappingReplayStoryboardFrames = [
+  { id: "overlap-2", index: 2, sectionStartIndex: 1, sectionEndIndex: 5 },
+  { id: "overlap-1", index: 1, sectionStartIndex: 2, sectionEndIndex: 4 },
+] as Parameters<typeof findReplayStoryboardKeyframe>[0];
+assert.equal(findReplayStoryboardKeyframe(overlappingReplayStoryboardFrames, 3)?.id, "overlap-1");
+
+const tiedReplayStoryboardFrames = [
+  { id: "right", index: 2, sectionStartIndex: 6, sectionEndIndex: 6 },
+  { id: "left", index: 1, sectionStartIndex: 2, sectionEndIndex: 2 },
+] as Parameters<typeof findReplayStoryboardKeyframe>[0];
+assert.equal(findReplayStoryboardKeyframe(tiedReplayStoryboardFrames, 4)?.id, "left");
 
 const replaySessionChats = [
   {
@@ -1632,6 +1669,44 @@ const imagePromptReviewModalSource = readFileSync(
 const retryAgentsPromptReviewSource = readFileSync(
   new URL("../../packages/server/src/routes/generate/retry-agents-route.ts", import.meta.url),
   "utf8",
+);
+const uiStoreSource = readFileSync(new URL("../../packages/client/src/stores/ui.store.ts", import.meta.url), "utf8");
+const syncedSettingsSource = uiStoreSource.slice(
+  uiStoreSource.indexOf("export function pickSyncedSettings"),
+  uiStoreSource.indexOf("export const useUIStore"),
+);
+assert.equal(
+  shouldAutomaticallyRetryAgentResult({ success: false, error: "The operation was aborted due to timeout" }),
+  false,
+  "timed-out agents should settle as failures instead of starting another full timeout window",
+);
+assert.equal(
+  shouldAutomaticallyRetryAgentResult({ success: false, error: "Agent returned invalid JSON" }),
+  true,
+  "ordinary agent failures should retain the existing one-time automatic retry",
+);
+assert.equal(
+  shouldAutomaticallyRetryAgentResult({ success: true, error: null }),
+  false,
+  "successful agents should never enter the automatic retry queue",
+);
+assert.deepEqual(openRouterModalities("krea/krea-2-large"), ["image"]);
+assert.deepEqual(openRouterModalities(" KREA/krea-2-medium-turbo "), ["image"]);
+assert.deepEqual(openRouterModalities("google/gemini-3.1-flash-image-preview"), ["image", "text"]);
+assert.deepEqual(
+  filterCustomEmojisByName(
+    [
+      { name: "MariWave", id: "wave" },
+      { name: "dottore_stare", id: "stare" },
+    ],
+    "mari",
+  ),
+  [{ name: "MariWave", id: "wave" }],
+);
+assert.match(
+  syncedSettingsSource,
+  /gameTextEffectsEnabled: state\.gameTextEffectsEnabled/,
+  "Game text effects must remain off after synced settings are restored",
 );
 assert.match(chatAreaPromptReviewSource, /MEDIA_PROMPT_PREVIEW_TIMEOUT_MS/);
 assert.match(chatAreaPromptReviewSource, /confirmRoleplayVideoPromptReview/);

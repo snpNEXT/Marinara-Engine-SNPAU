@@ -16,7 +16,6 @@ import { createChatsStorage } from "../../services/storage/chats.storage.js";
 import { createConnectionsStorage } from "../../services/storage/connections.storage.js";
 import { createPromptsStorage } from "../../services/storage/prompts.storage.js";
 import { createCharactersStorage } from "../../services/storage/characters.storage.js";
-import { createLorebooksStorage } from "../../services/storage/lorebooks.storage.js";
 import { createRegexScriptsStorage } from "../../services/storage/regex-scripts.storage.js";
 import {
   injectOwnerSpatialPrompt,
@@ -189,17 +188,6 @@ function injectTrackerContext(
   dedupeLastMessageWrappers(finalMessages);
   finalMessages.splice(findTrackerContextInsertIndex(finalMessages), 0, trackerMessage);
   return finalMessages;
-}
-
-function wrapperMessages(
-  wrapFormat: WrapFormat,
-  key: string,
-): { start?: { role: "system"; content: string }; end?: { role: "system"; content: string } } {
-  if (wrapFormat === "none") return {};
-  if (wrapFormat === "xml")
-    return { start: { role: "system", content: `<${key}>` }, end: { role: "system", content: `</${key}>` } };
-  // markdown
-  return { start: { role: "system", content: `## ${key}` }, end: undefined };
 }
 
 function wrapConversationHistoryAndLastMessageInPlace(
@@ -426,7 +414,6 @@ export async function registerDryRunRoute(app: FastifyInstance) {
   const connections = createConnectionsStorage(app.db);
   const presets = createPromptsStorage(app.db);
   const chars = createCharactersStorage(app.db);
-  const lorebooksStore = createLorebooksStorage(app.db);
   const regexScriptsStore = createRegexScriptsStorage(app.db);
 
   // Track active dry-runs so extensions can abort in-flight requests.
@@ -741,11 +728,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
         ? body.forCharacterId
         : null;
     const promptCharacterIds = resolvePromptCharacterIdsForTarget(characterIds, promptTargetCharacterId);
-    const audienceCharacterIds = impersonate
-      ? []
-      : promptTargetCharacterId
-        ? [promptTargetCharacterId]
-        : characterIds;
+    const audienceCharacterIds = impersonate ? [] : promptTargetCharacterId ? [promptTargetCharacterId] : characterIds;
     if (audienceCharacterIds.length > 0) {
       const audience = new Set(audienceCharacterIds);
       mappedMessages = mappedMessages.filter(

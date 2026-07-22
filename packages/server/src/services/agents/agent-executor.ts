@@ -28,7 +28,7 @@ import {
   resolveMacros,
 } from "@marinara-engine/shared";
 import { getMaxToolRounds, isDebugAgentsEnabled } from "../../config/runtime-config.js";
-import { logger } from "../../lib/logger.js";
+import { logger, logDebugOverride } from "../../lib/logger.js";
 import { wrapContent } from "../prompt/format-engine.js";
 import { sanitizePromptLeaf } from "../prompt/prompt-escaping.js";
 import { settleAgentJobsWithConcurrencyLimit } from "./agent-concurrency.js";
@@ -563,6 +563,17 @@ function debugUsage(usage?: LLMUsage): Partial<AgentCallDebugEvent> {
 }
 
 function emitAgentDebug(context: AgentContext, event: AgentCallDebugEvent): void {
+  if ((event.stage === "response" || event.stage === "retry_response") && typeof event.response === "string") {
+    logDebugOverride(
+      Boolean(context.agentDebug) || isDebugAgentsEnabled(),
+      "[agent-debug] %s %s response (%d chars):\n%s",
+      event.agentType,
+      event.stage === "retry_response" ? "retry" : "raw",
+      event.response.length,
+      event.response,
+    );
+  }
+
   try {
     context.agentDebug?.(event);
   } catch (err) {
@@ -2381,41 +2392,6 @@ function buildAgentExtras(context: AgentContext, agentTypes: string[] = []): str
     }
   }
 
-  if (agentTypes.includes("background") && context.memory._backgroundGenerationEnabled === true) {
-    parts.push(`<background_generation enabled="true">`);
-    parts.push(
-      `If no listed background fits a changed or new location, request a generated reusable location background instead of forcing a weak match.`,
-    );
-    const worldContext =
-      context.memory._backgroundWorldContext &&
-      typeof context.memory._backgroundWorldContext === "object" &&
-      !Array.isArray(context.memory._backgroundWorldContext)
-        ? (context.memory._backgroundWorldContext as Record<string, unknown>)
-        : null;
-    if (worldContext) {
-      const fields = [
-        ["genre", worldContext.genre],
-        ["setting", worldContext.setting],
-        ["location", worldContext.location],
-        ["weather", worldContext.weather],
-        ["timeOfDay", worldContext.timeOfDay],
-        ["world", worldContext.worldOverview],
-      ]
-        .map(([label, value]) => {
-          const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 180) : "";
-          return text ? `${label}: ${escapeXml(text)}` : "";
-        })
-        .filter(Boolean);
-      if (fields.length > 0) {
-        parts.push(`World context for generated backgrounds: ${fields.join("; ")}.`);
-        parts.push(
-          `Generated background prompts must include the setting era/genre and concrete location details. Do not request modern scenery, technology, signage, UI, or objects unless this world context supports them.`,
-        );
-      }
-    }
-    parts.push(`</background_generation>`);
-  }
-
   if (agentTypes.includes("spotify") && context.memory._spotifyDjConstraints) {
     parts.push(`<spotify_dj_constraints>`);
     parts.push(JSON.stringify(context.memory._spotifyDjConstraints));
@@ -2655,7 +2631,7 @@ const JSON_AGENTS = new Set([
  * directive. Strip that leaked content before it can be injected into the
  * main prompt.
  */
-function sanitizeTextAgentResponse(agentType: string, text: string): string {
+function sanitizeTextAgentResponse(text: string): string {
   const cleaned = text
     .replace(/<committed_tracker_state\b[^>]*>[\s\S]*?<\/committed_tracker_state\s*>/gi, "")
     .replace(/<assistant_response\b[^>]*>[\s\S]*?<\/assistant_response\s*>/gi, "")
@@ -2688,7 +2664,7 @@ function parseAgentResponse(
 
   // Text-based context-injection agents. Sanitize before injection so
   // leaked tracker/roleplay content can't reach the main prompt.
-  return { type: resultType, data: { text: sanitizeTextAgentResponse(config.type, responseText) } };
+  return { type: resultType, data: { text: sanitizeTextAgentResponse(responseText) } };
 }
 
 /** Extract JSON from a response that may contain markdown fences. */

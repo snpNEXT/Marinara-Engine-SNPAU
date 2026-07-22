@@ -20,6 +20,10 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Fixed
 
+- Removed the Background agent's obsolete image-generation toggle and runtime path. The agent now only selects existing library backgrounds, while Illustrator owns automatic and Gallery background generation. Gallery-generated backgrounds are applied to the active Roleplay chat instead of being attached as ordinary illustrations.
+- Stopped Roleplay generation immediately when **Stop** is pressed by sending the explicit server cancellation through the authenticated API client instead of allowing CSRF protection to discard it.
+- Made renamed Chat Summary preset markers use their authored wrapper name and resolved character-dependent summary macros against each individual group responder, allowing conditional summary knowledge to remain scoped to its intended character.
+- Kept Chat Summary entry editing responsive by isolating the live title and content draft from the rest of the summary popover until **Save** is pressed.
 - Kept automatic Roleplay Illustrator images on the same configured illustration canvas and requested orientation as manual Gallery generation, instead of leaving unattended images in a portrait/selfie-shaped layout (#3893).
 - Expanded Professor Mari's chat composer through approximately six lines before it scrolls internally (#3885).
 - Consolidated Cross-Chat Awareness under Connected Chats and restored normal spacing between Noodle references and Discord webhook controls (#3889).
@@ -63,7 +67,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Stopped HTML-escaping angle brackets in prompt leaf content so character card fields, persona, lorebook entries, memories, and scene text now reach the model verbatim — `<thinking>`, `<scenario>`, and inline HTML like `<div>` are passed through as written instead of arriving as `&lt;thinking&gt;`, which had been corrupting cards, breaking roleplay HTML, and showing raw `&lt;` in the editor. This finalizes prompt leaf content as verbatim and **supersedes** the `<`/`&` prompt-boundary escaping added in #3108 (line above) and the untrusted-card-text escaping in the "Hardened prompt assembly" entry below, for Marinara's local single-user threat model. The framework's own structural section wrappers are emitted around this content and are unaffected, and the agent value/attribute escapers are unchanged (they still escape values into machine-parsed XML).
 - Made image prompt review display the subject-count-resolved dimensions actually sent to native NovelAI, kept Prompt Prefix count tokens out of scene sizing, and filled new NovelAI settings for legacy partial profiles (#3758).
 - Made recalled memories, cross-chat awareness, connected Roleplay/Game context, and their command instructions honor the active Conversation preset's XML, Markdown, or unwrapped format instead of emitting hardcoded XML (#3753).
-- Kept existing cropped Character avatars contained inside the Metadata upload preview instead of allowing the image to cover the card editor (#3741).
+- Kept existing cropped Character and Persona avatars contained inside editor upload targets and prevented escaped image layers from hijacking page clicks (#3741, #3939).
 
 ## [2.3.3]
 

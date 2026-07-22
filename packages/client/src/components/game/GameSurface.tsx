@@ -103,6 +103,7 @@ import { filterGameAssetMap, parseGameAssetExcludedFolders } from "../../lib/gam
 import { resolveCombatFullBodyPose, resolveDialogueFullBodyPose } from "../../lib/game-full-body-pose";
 import { characterNamesMatch, findNamedEntry } from "../../lib/game-character-name-match";
 import { normalizeGameSegmentEdit, serializeGameSegmentEdit, type GameSegmentEdit } from "../../lib/game-segment-edits";
+import { findReplayStoryboardKeyframe } from "../../lib/game-storyboard-keyframes";
 import { useSceneAnalysis } from "../../hooks/use-scene-analysis";
 import { useSidecarStore } from "../../stores/sidecar.store";
 import { parsePartyDialogue } from "../../lib/party-dialogue-parser";
@@ -2234,35 +2235,6 @@ function buildStoryboardSectionsFromMessage(
     .filter((section): section is GameStoryboardSourceSection => Boolean(section));
 }
 
-function findStoryboardKeyframeForSegment(
-  frames: GameTurnStoryboardKeyframe[],
-  segmentIndex: number | null,
-): GameTurnStoryboardKeyframe | null {
-  if (frames.length === 0) return null;
-  const sorted = [...frames].sort((a, b) => a.index - b.index);
-  if (segmentIndex == null || !Number.isFinite(segmentIndex)) return sorted[0] ?? null;
-
-  const exact = sorted.find((frame) => {
-    const start = frame.sectionStartIndex ?? frame.sectionEndIndex;
-    const end = frame.sectionEndIndex ?? frame.sectionStartIndex;
-    if (start == null || end == null) return false;
-    return segmentIndex >= Math.min(start, end) && segmentIndex <= Math.max(start, end);
-  });
-  if (exact) return exact;
-
-  const anchored = sorted.filter((frame) => frame.sectionStartIndex != null || frame.sectionEndIndex != null);
-  if (anchored.length === 0) return sorted[0] ?? null;
-  return anchored.reduce((best, frame) => {
-    const bestStart = best.sectionStartIndex ?? best.sectionEndIndex ?? 0;
-    const bestEnd = best.sectionEndIndex ?? best.sectionStartIndex ?? bestStart;
-    const frameStart = frame.sectionStartIndex ?? frame.sectionEndIndex ?? 0;
-    const frameEnd = frame.sectionEndIndex ?? frame.sectionStartIndex ?? frameStart;
-    const bestCenter = (bestStart + bestEnd) / 2;
-    const frameCenter = (frameStart + frameEnd) / 2;
-    return Math.abs(frameCenter - segmentIndex) < Math.abs(bestCenter - segmentIndex) ? frame : best;
-  });
-}
-
 function formatStoryboardSectionLabel(frame: GameTurnStoryboardKeyframe): string {
   const start = frame.sectionStartIndex ?? frame.sectionEndIndex;
   const end = frame.sectionEndIndex ?? frame.sectionStartIndex;
@@ -3686,7 +3658,7 @@ function GameSurfaceComponent({
     [latestAssistantMsg, segmentDeletes, segmentEdits],
   );
   const activeStoryboardKeyframe = useMemo(
-    () => findStoryboardKeyframeForSegment(latestTurnStoryboard?.keyframes ?? [], activeStoryboardSegmentIndex),
+    () => findReplayStoryboardKeyframe(latestTurnStoryboard?.keyframes ?? [], activeStoryboardSegmentIndex),
     [activeStoryboardSegmentIndex, latestTurnStoryboard?.keyframes],
   );
   const gameStoryboardViewerDisplayMode: GameStoryboardViewerDisplayMode =

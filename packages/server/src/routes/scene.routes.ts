@@ -13,7 +13,6 @@ import { join, extname } from "path";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
-import { createGameStateStorage } from "../services/storage/game-state.storage.js";
 import { createLLMProvider } from "../services/llm/provider-registry.js";
 import { withConnectionFallbackProvider } from "../services/llm/connection-fallback-provider.js";
 import type { GenerationFallbackNotifier } from "../services/generation/fallback-notification.js";
@@ -277,7 +276,6 @@ export async function sceneRoutes(app: FastifyInstance) {
   const chats = createChatsStorage(app.db);
   const connections = createConnectionsStorage(app.db);
   const chars = createCharactersStorage(app.db);
-  const gsStorage = createGameStateStorage(app.db);
 
   async function createSceneProvider(
     conn: NonNullable<Awaited<ReturnType<typeof connections.getWithKey>>>,

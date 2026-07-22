@@ -72,6 +72,7 @@ import {
 import { resolveLiveConversationStatus } from "../../lib/conversation-presence-status";
 import { useUIStore } from "../../stores/ui.store";
 import { useAgentStore } from "../../stores/agent.store";
+import { illustratorRetryTargetsForFailures } from "../../lib/agent-failures";
 import { cn, parseAvatarCropJson } from "../../lib/utils";
 import { Modal } from "../ui/Modal";
 import { useEncounter } from "../../hooks/use-encounter";
@@ -1234,6 +1235,7 @@ export function ChatArea() {
     if (!activeChatId) return;
     await retryAgents(activeChatId, ["illustrator"], {
       agentPromptTemplateIds: { illustrator: "background" },
+      illustratorRetryTargets: ["background"],
     });
   }, [activeChatId, retryAgents]);
 
@@ -1922,7 +1924,17 @@ export function ChatArea() {
 
   const handleRetryAgents = useCallback(async () => {
     if (!activeChatId || isStreaming || agentProcessing || failedAgentTypes.length === 0) return;
-    await retryAgents(activeChatId, failedAgentTypes);
+    const failureState = useAgentStore.getState();
+    const failures =
+      failureState.failedAgentChatId && failureState.failedAgentChatId !== activeChatId
+        ? []
+        : failureState.failedAgentFailures;
+    const illustratorRetryTargets = illustratorRetryTargetsForFailures(failures);
+    await retryAgents(
+      activeChatId,
+      failedAgentTypes,
+      illustratorRetryTargets ? { illustratorRetryTargets } : undefined,
+    );
   }, [activeChatId, isStreaming, agentProcessing, failedAgentTypes, retryAgents]);
 
   const handleRerunTrackers = useCallback(async () => {

@@ -14,6 +14,7 @@ import type {
   SpatialDestinationRelation,
 } from "@marinara-engine/shared";
 import type { CharacterMap, PersonaInfo } from "../components/chat/chat-area.types";
+import { api } from "../lib/api-client";
 import { useAgentStore } from "./agent.store";
 import { useGameStateStore } from "./game-state.store";
 
@@ -113,11 +114,7 @@ function savePendingSpatialTransitions(m: Map<string, PendingSpatialTransitionDr
 
 function abortGenerationForChat(chatId: string, controller?: AbortController) {
   controller?.abort();
-  fetch("/api/generate/abort", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chatId }),
-  }).catch(() => {});
+  void api.post("/generate/abort", { chatId }).catch(() => {});
 }
 
 const notificationAutoDismissTimers = new Map<string, ReturnType<typeof setTimeout>>();
