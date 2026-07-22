@@ -48,7 +48,7 @@ import { useChatStore } from "../../stores/chat.store";
 import { useGameStateStore } from "../../stores/game-state.store";
 import { useThrottledStreamBuffer } from "../../hooks/use-throttled-stream-buffer";
 import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
-import { useCreateMessage } from "../../hooks/use-chats";
+import { useCreateMessage, useUpdateChatMetadata } from "../../hooks/use-chats";
 import { useActiveLorebookEntries, useLorebooks } from "../../hooks/use-lorebooks";
 import { usePresetFull, usePresets } from "../../hooks/use-presets";
 import { ChatMessage } from "./ChatMessage";
@@ -1222,6 +1222,7 @@ export function ChatRoleplaySurface({
   useRenderTimer("rp-surface"); // [#3104 diagnostic]
   const { data: installedCapabilities = [] } = useInstalledCapabilityPackages();
   const createObserverMessage = useCreateMessage(activeChatId);
+  const updateChatMetadata = useUpdateChatMetadata();
   const handleCapabilityObserver = useCallback(
     async ({ text, name }: { text: string; name?: string }) => {
       const observerText = text.trim();
@@ -1231,7 +1232,7 @@ export function ChatRoleplaySurface({
         role: "user",
         content,
         characterId: null,
-        extra: { source: "websim", observer: true },
+        extra: { source: "capability", observer: true },
       });
     },
     [createObserverMessage],
@@ -1240,6 +1241,7 @@ export function ChatRoleplaySurface({
     (item) =>
       item.status === "active" &&
       item.manifest.contributions?.slots?.includes("conversation-toolbar") &&
+      (!item.manifest.contributions.chatModes || item.manifest.contributions.chatModes.includes("roleplay")) &&
       item.manifest.entrypoints.client,
   );
   const [openCapabilitySurfaceId, setOpenCapabilitySurfaceId] = useState<string | null>(null);
@@ -2058,6 +2060,8 @@ export function ChatRoleplaySurface({
                     chatId: activeChatId,
                     connectionId: chat?.connectionId ?? null,
                     metadata: chatMeta,
+                    updateMetadata: (patch: Record<string, unknown>) =>
+                      updateChatMetadata.mutate({ id: activeChatId, ...patch }),
                     context: {
                       mode: "roleplay",
                       recentMessages: (messages ?? []).slice(-12).map((message) => ({
