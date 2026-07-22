@@ -744,6 +744,7 @@ const CHAT_SETTINGS_ORDER = {
   connectedChat: -700,
   connectedNotes: -690,
   lorebooks: -600,
+  capabilities: -550,
   agents: -500,
   widgets: -450,
   impersonate: -400,
@@ -1303,6 +1304,14 @@ export function ChatSettingsDrawer({
       item.status === "active" &&
       item.manifest.kind.includes("conversation-calls") &&
       item.manifest.entrypoints.client,
+  );
+  const chatSettingsPackages = installedCapabilities.filter(
+    (item) =>
+      item.status === "active" &&
+      item.manifest.entrypoints.client &&
+      item.manifest.contributions?.slots?.includes("chat-settings") &&
+      item.id !== mapsPackage?.id &&
+      item.id !== callsPackage?.id,
   );
   const availableConversationCommandOptions = useMemo(() => {
     return CONVERSATION_COMMAND_TOGGLE_OPTIONS.filter((command) => {
@@ -6294,6 +6303,28 @@ export function ChatSettingsDrawer({
               onSetLorebookExcluded={setLorebookExcluded}
             />
           </div>
+
+          {chatSettingsPackages.map((capability) => (
+            <Section
+              key={`${capability.id}-chat-settings`}
+              style={{ order: CHAT_SETTINGS_ORDER.capabilities }}
+              label={capability.manifest.name}
+              icon={<Puzzle size="0.875rem" />}
+              initialOpen
+            >
+              <CapabilityElement
+                packageId={capability.id}
+                view="settings"
+                capabilityProps={{
+                  chatId: chat.id,
+                  metadata,
+                  updateMetadata: (patch: Record<string, unknown>) =>
+                    updateMeta.mutate({ id: chat.id, ...patch }),
+                }}
+                className="block"
+              />
+            </Section>
+          ))}
 
           {/* Agents */}
           {modeCapabilities.sharedSections.includes("agents") && !isConversation && (

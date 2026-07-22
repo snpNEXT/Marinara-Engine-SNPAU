@@ -166,6 +166,7 @@ export function ChatConversationSurface({
           characterNames={characterNames}
           personaInfo={personaInfo}
           chatMeta={chatMeta}
+          connectionId={chat?.connectionId ?? null}
           chatName={chat?.name}
           chatGroupId={chat?.groupId ?? null}
           chatCharIds={chatCharIds}

@@ -26,7 +26,12 @@ import { ConversationGamesPicker } from "./ConversationGamesPicker";
 import { SceneBanner, EndSceneBar } from "./SceneBanner";
 import { ChatBranchSelector } from "./ChatBranchSelector";
 import { ActiveLorebookEntriesButton } from "./ActiveLorebookEntriesButton";
-import { ChatToolbarButton, ChatToolbarMenu } from "./ChatToolbarControls";
+import {
+  CHAT_TOOLBAR_OVERFLOW_BUTTON_SIZE_CLASS,
+  ChatToolbarButton,
+  ChatToolbarMenu,
+  getChatToolbarButtonClass,
+} from "./ChatToolbarControls";
 import { ConversationPresenceCard } from "./ConversationPresenceCard";
 import { PendingTypingDots } from "./PendingTypingDots";
 import { TranscriptWindowControls } from "./TranscriptWindowControls";
@@ -50,8 +55,11 @@ import {
 } from "@marinara-engine/shared";
 import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
 import { CapabilityElement } from "../capabilities/CapabilityElement";
+import { CapabilitySurfacePanel } from "../capabilities/CapabilitySurfacePanel";
 import { TURN_GAME_BOT_REQUEST_EVENT } from "../../lib/capability-turn-game-events";
 import { useGenerate } from "../../hooks/use-generate";
+import { useActiveLorebookEntries } from "../../hooks/use-lorebooks";
+import { useCreateMessage } from "../../hooks/use-chats";
 
 const ConversationAutonomousEffects = lazy(async () => {
   const module = await import("./ConversationAutonomousEffects");
@@ -71,6 +79,7 @@ interface ConversationViewProps {
   characterNames: string[];
   personaInfo?: PersonaInfo;
   chatMeta: Record<string, any>;
+  connectionId?: string | null;
   chatName?: string;
   chatGroupId?: string | null;
   chatCharIds: string[];
@@ -280,6 +289,7 @@ export function ConversationView({
   characterNames,
   personaInfo,
   chatMeta,
+  connectionId,
   chatName,
   chatGroupId,
   chatCharIds,
@@ -309,6 +319,21 @@ export function ConversationView({
   const streamingChatId = useChatStore((s) => s.streamingChatId);
   const isStreaming = useChatStore((s) => s.isStreaming) && streamingChatId === chatId;
   const { generate: generateTurnGameBots } = useGenerate();
+  const createObserverMessage = useCreateMessage(chatId);
+  const handleCapabilityObserver = useCallback(
+    async ({ text, name }: { text: string; name?: string }) => {
+      const observerText = text.trim();
+      if (!observerText) return;
+      const content = name?.trim() ? `${name.trim()}: ${observerText}` : observerText;
+      await createObserverMessage.mutateAsync({
+        role: "user",
+        content,
+        characterId: null,
+        extra: { source: "websim", observer: true },
+      });
+    },
+    [createObserverMessage],
+  );
   useEffect(() => {
     const handleBotRequest = (event: Event) => {
       const requestedChatId = (event as CustomEvent<{ chatId?: string }>).detail?.chatId;
@@ -334,6 +359,21 @@ export function ConversationView({
       item.manifest.kind.includes("turn-game") &&
       item.manifest.entrypoints.client,
   );
+  const conversationToolbarPackages = installedCapabilities.filter(
+    (item) =>
+      item.status === "active" &&
+      item.manifest.contributions?.slots?.includes("conversation-toolbar") &&
+      item.manifest.entrypoints.client,
+  );
+  const conversationSurfacePackages = installedCapabilities.filter(
+    (item) =>
+      item.status === "active" &&
+      item.manifest.contributions?.slots?.includes("conversation-surface") &&
+      item.manifest.entrypoints.client,
+  );
+  const [openCapabilitySurfaceId, setOpenCapabilitySurfaceId] = useState<string | null>(null);
+  const { data: capabilityLoreScan } = useActiveLorebookEntries(chatId, openCapabilitySurfaceId !== null);
+  useEffect(() => setOpenCapabilitySurfaceId(null), [chatId]);
   const isStreamCommitted = useChatStore((s) => s.committedStreamChatIds.has(chatId));
   const hasLiveStream = isStreaming && !isStreamCommitted;
   const streamBuffer = useThrottledStreamBuffer();
@@ -472,6 +512,26 @@ export function ConversationView({
         onOpenSettings={onOpenSettings}
         onOpenScheduleEditor={onOpenScheduleEditor}
       />
+      <div className="ml-2 flex shrink-0 items-center gap-1.5">
+        {conversationToolbarPackages.map((capability) => (
+          <CapabilityElement
+            key={`${capability.id}-toolbar`}
+            packageId={capability.id}
+            view="toolbar"
+            capabilityProps={{
+              chatId,
+              connectionId,
+              metadata: chatMeta,
+              toolbarButtonClass: getChatToolbarButtonClass({
+                sizeClassName: CHAT_TOOLBAR_OVERFLOW_BUTTON_SIZE_CLASS,
+              }),
+              openSurface: () => setOpenCapabilitySurfaceId(capability.id),
+              closeSurface: () => setOpenCapabilitySurfaceId(null),
+            }}
+            className="contents"
+          />
+        ))}
+      </div>
 
       <div className="ml-2 flex min-w-0 flex-1 items-center justify-end gap-2">
         {callsPackage && (
@@ -1118,11 +1178,12 @@ export function ConversationView({
   }, [scrollToMessagesBottom, visiblePartCounts, visibleSegmentCounts]);
 
   return (
-    <div
-      className="mari-chat-area mari-card-css relative flex flex-1 flex-col overflow-hidden"
-      data-chat-mode="conversation"
-      style={{ ...gradientStyle, isolation: "isolate" }}
-    >
+    <div className="flex min-w-0 flex-1 overflow-hidden">
+      <div
+        className="mari-chat-area mari-card-css relative flex min-w-0 flex-1 flex-col overflow-hidden"
+        data-chat-mode="conversation"
+        style={{ ...gradientStyle, isolation: "isolate" }}
+      >
       {/* ── Messages scroll area ── */}
       <div ref={scrollRef} className="mari-messages-scroll flex-1 overflow-y-auto overflow-x-hidden">
         {/* Floating header — character info + action buttons */}
@@ -1448,6 +1509,38 @@ export function ConversationView({
         onIllustrate={onIllustrate}
         onGenerateSelfie={onGenerateSelfie}
       />
+      </div>
+      {conversationSurfacePackages.map(
+        (capability) =>
+          openCapabilitySurfaceId === capability.id && (
+            <CapabilitySurfacePanel key={`${capability.id}-surface-${chatId}`}>
+              <CapabilityElement
+                packageId={capability.id}
+                view="surface"
+                capabilityProps={{
+                  chatId,
+                  connectionId,
+                  metadata: chatMeta,
+                  context: {
+                    mode: "conversation",
+                    recentMessages: (messages ?? []).slice(-12).map((message) => ({
+                      role: message.role,
+                      content: message.content,
+                    })),
+                    chatSummary: typeof chatMeta.summary === "string" ? chatMeta.summary : undefined,
+                    worldInfo: capabilityLoreScan?.entries
+                      .map((entry) => `${entry.name}: ${entry.content}`)
+                      .join("\n\n"),
+                  },
+                  onObserver: handleCapabilityObserver,
+                  open: true,
+                  onClose: () => setOpenCapabilitySurfaceId(null),
+                }}
+                className="block h-full min-h-0 w-full"
+              />
+            </CapabilitySurfacePanel>
+          ),
+      )}
     </div>
   );
 }

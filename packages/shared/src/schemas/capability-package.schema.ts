@@ -4,6 +4,7 @@ import { agentResultTypeSchema } from "./agent.schema.js";
 export const capabilityPackageKindSchema = z.enum(["agent", "maps", "conversation-calls", "turn-game"]);
 export const capabilityPermissionSchema = z.enum([
   "agent-runtime",
+  "image-generation",
   "chat-read",
   "chat-write",
   "network",
@@ -68,7 +69,7 @@ const capabilityPackageManifestBaseSchema = z.object({
   restartRequired: z.boolean().default(false),
 }).strict();
 
-export const supportedCapabilityApi = Object.freeze({ major: 1, minor: 3 } as const);
+export const supportedCapabilityApi = Object.freeze({ major: 1, minor: 4 } as const);
 
 const capabilityApiVersionSchema = z.object({
   major: z.number().int().positive(),

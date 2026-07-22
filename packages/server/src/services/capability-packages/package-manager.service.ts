@@ -53,6 +53,8 @@ const KNOWN_INCOMPATIBLE_RUNTIMES = new Map<string, string>([
       ] as const,
   ),
 ]);
+const LOCAL_CAPABILITY_PATH = process.env.MARINARA_LOCAL_CAPABILITY_PATH?.trim();
+const localCapabilityRoots = new Map<string, string>();
 
 export function normalizeArchivePath(value: string): string {
   if (!value || value.includes("\\") || value.startsWith("/") || value.includes("\0")) {
@@ -216,6 +218,34 @@ async function readInstalledAgentIds(installed: InstalledCapabilityPackage): Pro
   return [...ids];
 }
 
+async function readLocalCapabilityPackage(): Promise<InstalledCapabilityPackage | null> {
+  if (!LOCAL_CAPABILITY_PATH) return null;
+  const root = resolve(LOCAL_CAPABILITY_PATH);
+  const manifestFile = inside(root, join(root, "manifest.json"));
+  const manifest = capabilityPackageManifestSchema.parse(JSON.parse(await readFile(manifestFile, "utf8")));
+  const installIssue = getCapabilityPackageInstallIssue(manifest);
+  if (installIssue) throw new Error(installIssue);
+  if (getCapabilityApiCompatibilityIssue(manifest)) throw new Error(getCapabilityApiCompatibilityIssue(manifest)!);
+  if (
+    compareCapabilityPackageVersions(APP_VERSION, manifest.engine.min) < 0 ||
+    compareCapabilityPackageVersions(APP_VERSION, manifest.engine.maxExclusive) >= 0
+  ) {
+    throw new Error(`Package requires Marinara Engine ${manifest.engine.min} to below ${manifest.engine.maxExclusive}`);
+  }
+  localCapabilityRoots.set(manifest.id, root);
+  return {
+    id: manifest.id,
+    version: manifest.version,
+    manifest,
+    installedAt: new Date().toISOString(),
+    status: "active",
+    error: null,
+    readiness: "ready",
+    readinessError: null,
+    legacy: false,
+  };
+}
+
 export function findCompatibleCapabilityPackageUpdates(
   installedPackages: InstalledCapabilityPackage[],
   catalog: CapabilityCatalog,
@@ -371,7 +401,10 @@ export const capabilityPackageManager = {
   },
 
   async installed() {
-    return (await readRegistry()).packages;
+    const registry = await readRegistry();
+    const local = await readLocalCapabilityPackage();
+    if (!local) return registry.packages;
+    return [...registry.packages.filter((item) => item.id !== local.id), local];
   },
 
   async diagnostics() {
@@ -413,26 +446,36 @@ export const capabilityPackageManager = {
   },
 
   async runtimePackages() {
-    const registry = await readRegistry();
-    return registry.packages
+    const packages = await this.installed();
+    return packages
       .filter((installed) => installed.status !== "error" && installed.manifest.entrypoints.server)
       .map((installed) => ({
         installed,
-        serverEntrypoint: inside(
-          VERSIONS,
-          join(VERSIONS, installed.id, installed.version, normalizeArchivePath(installed.manifest.entrypoints.server!)),
-        ),
+        serverEntrypoint: localCapabilityRoots.has(installed.id)
+          ? inside(
+              localCapabilityRoots.get(installed.id)!,
+              join(localCapabilityRoots.get(installed.id)!, normalizeArchivePath(installed.manifest.entrypoints.server!)),
+            )
+          : inside(
+              VERSIONS,
+              join(VERSIONS, installed.id, installed.version, normalizeArchivePath(installed.manifest.entrypoints.server!)),
+            ),
       }));
   },
 
   async clientEntrypoint(packageId: string) {
-    const installed = (await readRegistry()).packages.find((item) => item.id === packageId);
+    const installed = (await this.installed()).find((item) => item.id === packageId);
     if (!installed || !isInstalledCapabilityReady(installed)) return null;
     const entrypoint = installed.manifest.entrypoints.client;
     if (!entrypoint) return null;
     return {
       installed,
-      file: inside(VERSIONS, join(VERSIONS, installed.id, installed.version, normalizeArchivePath(entrypoint))),
+      file: localCapabilityRoots.has(installed.id)
+        ? inside(
+            localCapabilityRoots.get(installed.id)!,
+            join(localCapabilityRoots.get(installed.id)!, normalizeArchivePath(entrypoint)),
+          )
+        : inside(VERSIONS, join(VERSIONS, installed.id, installed.version, normalizeArchivePath(entrypoint))),
     };
   },
 
