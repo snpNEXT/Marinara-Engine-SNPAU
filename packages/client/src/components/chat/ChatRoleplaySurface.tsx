@@ -2064,6 +2064,7 @@ export function ChatRoleplaySurface({
                       updateChatMetadata.mutate({ id: activeChatId, ...patch }),
                     context: {
                       mode: "roleplay",
+                      characters: characterNames,
                       recentMessages: (messages ?? []).slice(-12).map((message) => ({
                         role: message.role,
                         content: message.content,

@@ -83,7 +83,6 @@ export interface CapabilityImageGenerationRequest {
   width?: number;
   height?: number;
   connectionId?: string | null;
-  cacheKey?: string;
 }
 
 export interface CapabilityGeneratedImage {
@@ -98,6 +97,7 @@ export interface CapabilityGeneratedImage {
 
 export interface CapabilityImageGenerationHost {
   generate(request: CapabilityImageGenerationRequest): Promise<CapabilityGeneratedImage>;
+  getPromptHint(connectionId?: string | null): Promise<string | null>;
 }
 
 export interface CapabilityJsonHost {
