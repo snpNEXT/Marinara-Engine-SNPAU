@@ -67,6 +67,7 @@ import {
   parseDeferredConditionalPayload,
   resolveDeferredCharacterMacros,
   selectConditionalPayloadBranch,
+  SPOTIFY_RECENT_TRACK_HISTORY_LIMIT,
 } from "../../packages/shared/src/index.js";
 import { replaceBuiltInAgentDefinitions as replaceBuiltInAgentDefinitionsDist } from "../../packages/shared/dist/index.js";
 import {
@@ -420,6 +421,7 @@ assert.deepEqual(
 import {
   compactVideoPromptText,
   getSceneVideoPromptLimits,
+  resolveGalleryVideoNarrationSummary,
 } from "../../packages/server/src/services/video/prompt-context.js";
 import { resolveGameGmPromptTemplate } from "../../packages/server/src/services/generation/game-gm-prompt-runtime.js";
 import { countUserMessagesAfterSummaryAnchor } from "../../packages/server/src/services/conversation/auto-summary.service.js";
@@ -1144,6 +1146,75 @@ const cases: RegressionCase[] = [
 
       assert.equal(results[0]?.success, true);
       assert.equal(savedContent, longContent);
+    },
+  },
+  {
+    name: "Spotify playlist candidates suppress the extended recent-track window",
+    async run() {
+      const originalFetch = globalThis.fetch;
+      const recentTrackUris = Array.from(
+        { length: SPOTIFY_RECENT_TRACK_HISTORY_LIMIT },
+        (_, index) => `spotify:track:recent${index}`,
+      );
+      const freshTrackUris = Array.from({ length: 50 }, (_, index) => `spotify:track:fresh${index}`);
+      const allTrackUris = [...recentTrackUris, ...freshTrackUris];
+
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+        const offset = Number(url.searchParams.get("offset") ?? 0);
+        const limit = Number(url.searchParams.get("limit") ?? 50);
+        const pageUris = allTrackUris.slice(offset, offset + limit);
+        const nextOffset = offset + pageUris.length;
+        return new Response(
+          JSON.stringify({
+            items: pageUris.map((uri, index) => ({
+              item: {
+                uri,
+                name: `Track ${offset + index}`,
+                artists: [{ name: "Regression Artist" }],
+                album: { name: "Regression Album" },
+              },
+            })),
+            total: allTrackUris.length,
+            next: nextOffset < allTrackUris.length ? `https://api.spotify.com/next?offset=${nextOffset}` : null,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch;
+
+      try {
+        const results = await executeToolCalls(
+          [
+            {
+              id: "call_spotify_candidates",
+              type: "function",
+              function: {
+                name: "spotify_get_playlist_tracks",
+                arguments: JSON.stringify({ playlistId: "regression-playlist", candidateLimit: 50 }),
+              },
+            },
+          ],
+          {
+            spotify: { accessToken: "regression-token" },
+            chatMeta: { spotifyRecentTracks: recentTrackUris },
+          },
+        );
+
+        assert.equal(results[0]?.success, true);
+        const payload = JSON.parse(results[0]!.result) as {
+          tracks?: Array<{ uri?: string }>;
+          indexedTrackCount?: number;
+          recentAvoidedCount?: number;
+        };
+        assert.equal(payload.indexedTrackCount, allTrackUris.length);
+        assert.equal(payload.recentAvoidedCount, recentTrackUris.length);
+        assert.deepEqual(
+          new Set((payload.tracks ?? []).map((track) => track.uri)),
+          new Set(freshTrackUris),
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     },
   },
   {
@@ -2519,6 +2590,69 @@ const cases: RegressionCase[] = [
       assert.equal(compactVideoPromptText(direction, omniLimits.narrationSummary), direction.trim());
       assert.ok(compactVideoPromptText(direction, defaultLimits.narrationSummary).endsWith("..."));
       assert.equal(xaiLimits.finalPrompt, 3800);
+    },
+  },
+  {
+    name: "Roleplay Gallery Animate uses the selected image's source narration",
+    run() {
+      const messages = [
+        {
+          id: "source-turn",
+          role: "assistant",
+          content: "The active swipe now describes a quiet room.",
+          extra: "{}",
+        },
+        {
+          id: "active-source-turn",
+          role: "assistant",
+          content: "Mira raises the lantern and studies the opening door.",
+          extra: JSON.stringify({ attachments: [{ type: "image", galleryId: "active-gallery-image" }] }),
+        },
+        {
+          id: "latest-turn",
+          role: "assistant",
+          content: "Much later, Sol runs across the moonlit courtyard.",
+          extra: "{malformed",
+        },
+        {
+          id: "later-system-event",
+          role: "system",
+          content: "A system event records a participant joining the chat.",
+          extra: "{}",
+        },
+        {
+          id: "later-narrator-event",
+          role: "narrator",
+          content: "An unrelated narrator event should not become animation direction.",
+          extra: "{}",
+        },
+        {
+          id: "latest-user-turn",
+          role: "user",
+          content: "Follow Sol.",
+          extra: "{}",
+        },
+      ];
+      const swipes = [
+        {
+          messageId: "source-turn",
+          content: "Mira slowly draws the ancient blade as dust falls from the ceiling.",
+          extra: JSON.stringify({ attachments: [{ type: "image", galleryId: "swipe-gallery-image" }] }),
+        },
+      ];
+
+      assert.equal(
+        resolveGalleryVideoNarrationSummary(messages, swipes, "swipe-gallery-image", 650),
+        "Mira slowly draws the ancient blade as dust falls from the ceiling.",
+      );
+      assert.equal(
+        resolveGalleryVideoNarrationSummary(messages, swipes, "active-gallery-image", 650),
+        "Mira raises the lantern and studies the opening door.",
+      );
+      assert.equal(
+        resolveGalleryVideoNarrationSummary(messages, swipes, "legacy-upload-without-source", 650),
+        "Much later, Sol runs across the moonlit courtyard.",
+      );
     },
   },
   {

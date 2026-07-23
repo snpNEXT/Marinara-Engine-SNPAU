@@ -51,7 +51,7 @@ import { resolveBaseUrl } from "./generate/generate-route-utils.js";
 import {
   compactVideoPromptText,
   excerptIllustrationPromptForVideo,
-  summarizeVideoNarration,
+  resolveGalleryVideoNarrationSummary,
 } from "../services/video/prompt-context.js";
 import { resolveSceneVideoPrompt, SceneVideoPromptReviewError } from "../services/video/scene-video-prompt-review.js";
 import { isDebugAgentsEnabled } from "../config/runtime-config.js";
@@ -311,19 +311,6 @@ function readSceneVideoReferenceImage(path: string, url?: string | null): VideoR
   return { base64: readFileSync(path).toString("base64"), mimeType, url };
 }
 
-function latestNarrationSummary(
-  messages: Array<{ role?: string | null; content?: string | null }>,
-  maxLength: number,
-): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (!message || message.role === "user") continue;
-    const summary = summarizeVideoNarration(message.content, maxLength);
-    if (summary) return summary;
-  }
-  return "Animate the latest illustrated roleplay scene with motion that fits the reference image.";
-}
-
 function buildRoleplayVideoSettingLine(chat: ChatRow, meta: Record<string, unknown>, maxPartLength: number): string {
   const parts = [
     readTrimmedString(meta.groupScenarioText),
@@ -536,6 +523,7 @@ export async function galleryRoutes(app: FastifyInstance) {
     );
     const aspectRatio = input.aspectRatio ?? videoRuntime.activeDefaults.aspectRatio;
     const messages = await chats.listMessages(input.chatId);
+    const swipes = await chats.listSwipesByMessageIds(messages.map((message) => message.id));
     const characterNames = await collectChatSceneCharacterNames(chat);
     const promptDraft = await loadGameVideoPrompt({
       promptOverridesStorage,
@@ -543,7 +531,12 @@ export async function galleryRoutes(app: FastifyInstance) {
       debugMode: input.debugMode,
       ctx: {
         sceneTitle: compactVideoPromptText(sceneTitleFromGalleryImage(galleryImage), videoRuntime.promptLimits.title),
-        narrationSummary: latestNarrationSummary(messages, videoRuntime.promptLimits.narrationSummary),
+        narrationSummary: resolveGalleryVideoNarrationSummary(
+          messages,
+          swipes,
+          galleryImage.id,
+          videoRuntime.promptLimits.narrationSummary,
+        ),
         illustrationPrompt:
           excerptIllustrationPromptForVideo(galleryImage.prompt, videoRuntime.promptLimits.illustrationPrompt) ||
           "Use the supplied first-frame gallery image as the visual source.",

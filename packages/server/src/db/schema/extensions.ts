@@ -1,6 +1,8 @@
 // ──────────────────────────────────────────────
-// Schema: Installed Extensions
+// Schema: Retired Extension Records
 // ──────────────────────────────────────────────
+// This table remains registered only so startup can permanently purge rows
+// created by older Marinara versions. No API or runtime consumes its payloads.
 import { fileTable, text } from "../file-schema.js";
 
 export const installedExtensions = fileTable("installed_extensions", {

@@ -4,8 +4,11 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+## [2.3.4]
+
 ### Added
 
+- Added a read-only latest-release check to the Windows, macOS/Linux, and Termux launchers when automatic Engine updates are disabled. A newer published version now produces a console reminder with the installed version and its release-page link, while `--skip-update` still suppresses all update checks for one launch.
 - Added Grouped and Individual response modes to multi-character Conversations, including sequential, smart, manual, mention-directed, and autonomous character selection with a shared daily check-in budget and a token-use warning (#3887).
 - Added the user's current local time to every Noodle timeline refresh and an optional setting for attaching participating characters' existing generated schedules for the current day (#3886).
 - Added disabled-by-default custom GitHub agent repositories to Agents Manager, with manual preview/apply, explicit trust confirmation, stable sync identity, and bounded SSRF-safe archive validation (#3861).
@@ -18,8 +21,16 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Added local ComfyUI video generation for API-format WAN and other workflows, including prompt, size, seed, frame-count, and uploaded first-frame placeholders (#3804).
 - Added an in-app and GitHub ComfyUI workflow guide covering API-format exports, Marinara placeholders, local and RunPod reference-image inputs, character-specific workflows, LAN setup, VRAM constraints, and troubleshooting (#3749).
 
+### Changed
+
+- Synchronized the stable release identity as v2.3.4 across the Engine, PWA manifest, Windows installer, Android bootstrap APK, update checks, Home release link, and Professor Mari's What's New announcement. Android uses `versionName` `2.3.4` with `versionCode` `39` so it updates over every previously published APK.
+
 ### Fixed
 
+- Removed the extension feature completely: all extension CSS, browser, and server payload execution is gone; its Settings surface, client hooks, shared contract, and API routes were deleted; startup now permanently erases every retained server record and `extension-storage:*` setting; and the UI-state migration removes browser-local extension records automatically. The extension authoring guides, examples, and Professor Mari instructions were removed with the feature.
+- Prevented imported agent files from installing bundled custom functions, granting themselves tool access, or overwriting a curated Agent by reusing its internal type. Agent exports no longer bundle function definitions, and imported agents receive a fresh custom identity that requires the user to review and explicitly attach tools afterward (#3953).
+- Kept healthy SSE replies streaming after a backgrounded tab becomes visible again, using a grace period before falling back to the persisted full response only when the resumed stream makes no progress.
+- Expanded Music DJ's shared recent-track history to 250 Spotify tracks so 50-song candidate batches rotate across large playlists instead of repeatedly drawing from the same small recent window.
 - Removed the Background agent's obsolete image-generation toggle and runtime path. The agent now only selects existing library backgrounds, while Illustrator owns automatic and Gallery background generation. Gallery-generated backgrounds are applied to the active Roleplay chat instead of being attached as ordinary illustrations.
 - Stopped Roleplay generation immediately when **Stop** is pressed by sending the explicit server cancellation through the authenticated API client instead of allowing CSRF protection to discard it.
 - Made renamed Chat Summary preset markers use their authored wrapper name and resolved character-dependent summary macros against each individual group responder, allowing conditional summary knowledge to remain scoped to its intended character.
@@ -60,7 +71,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Stopped the macOS/Linux and Termux launchers from sourcing `.env` as Bash code; launcher-owned settings now use Node's non-evaluating dotenv parser while preserving ambient-environment precedence (#3810).
 - Routed the Roleplay Gallery's **Background** action through Illustrator's background prompt mode instead of bypassing the agent with a raw scene-generation prompt (#3809).
 - Kept the full active Roleplay roster available while assembling a targeted character prompt so `{{group}}` lists the other character cards instead of resolving empty in manual group generation.
-- Applied the selected chroma text color to installed theme and extension names in Settings > Addons instead of inheriting the hard-coded pink accent.
+- Applied the selected chroma text color to installed theme names in Settings > Addons instead of inheriting the hard-coded pink accent.
 - Persisted successful Roleplay tracker re-runs against the visible tracker state when a refreshed scene has no assistant reply yet, instead of spending the agent call and then reporting that no tracker changes were returned.
 - Vertically centered the Character editor's Regex Script edit and delete actions against each script's enable toggle.
 - Restored Character and Persona tracker-card color settings so appearance changes update the card preview immediately and persist when saved.

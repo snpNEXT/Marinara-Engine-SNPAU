@@ -82,10 +82,13 @@ test("What's New opens once for each Marinara Engine version", async ({ page }) 
   const announcement = page.getByRole("dialog", { name: "What's New?" });
   await expect(announcement).toBeVisible();
   await expect(announcement.getByText(`Version ${APP_VERSION}`, { exact: true })).toBeVisible();
-  await expect(announcement.getByRole("heading", { name: "We fixed the most glaring issues." })).toBeVisible();
-  await expect(announcement.getByText(/We’re sorry for the inconvenience/)).toBeVisible();
+  await expect(announcement.getByRole("heading", { name: "A safer engine with finer control." })).toBeVisible();
+  await expect(announcement.getByText(/removed Extensions, sealed their unsafe code path/)).toBeVisible();
+  await expect(announcement.getByText(/every old record to be cleared automatically/)).toBeVisible();
+  await expect(announcement.getByText(/new prompt macros/)).toBeVisible();
+  await expect(announcement.getByText(/character-specific Hide From AI controls/)).toBeVisible();
+  await expect(announcement.getByText(/Grouped or Individual response handling/)).toBeVisible();
   await expect(announcement.getByText("Marinara Engine has been updated.", { exact: true })).toHaveCount(0);
-  await expect(announcement.getByText(/Hierarchical Maps/)).toBeVisible();
   await expect(announcement.getByText("Tactical Combat Mode in Games")).toHaveCount(0);
   await expect(announcement.getByRole("link", { name: "View release" })).toHaveAttribute(
     "href",
@@ -938,120 +941,75 @@ test("desktop Tracker stays in the Roleplay gutter without shifting the chat col
   }
 });
 
-test("reinstalling an extension updates the existing record instead of creating a duplicate", async ({ page }) => {
-  const name = "Extension Reinstall Smoke";
-  let extensionId: string | null = null;
+test("extension API routes no longer exist", async ({ page }) => {
+  const requests = [
+    page.request.get("/api/extensions"),
+    page.request.post("/api/extensions", { data: { name: "Removed extension" } }),
+    page.request.patch("/api/extensions/removed-extension", { data: { enabled: true } }),
+    page.request.delete("/api/extensions/removed-extension"),
+  ];
 
-  try {
-    const firstResponse = await page.request.post("/api/extensions", {
-      data: {
-        name,
-        version: "2.0.0",
-        description: "First install",
-        runtime: "client",
-        css: ".extension-reinstall-smoke { color: red; }",
-        enabled: false,
-      },
-    });
-    expect(firstResponse.ok()).toBeTruthy();
-    const first = (await firstResponse.json()) as { id: string; version?: string | null };
-    extensionId = first.id;
-
-    const replacementResponse = await page.request.post("/api/extensions", {
-      data: {
-        name: name.toLowerCase(),
-        version: "3.0.0",
-        description: "Replacement install",
-        runtime: "client",
-        css: ".extension-reinstall-smoke { color: blue; }",
-        enabled: false,
-      },
-    });
-    expect(replacementResponse.ok()).toBeTruthy();
-    const replacement = (await replacementResponse.json()) as { id: string; version?: string | null };
-    expect(replacement.id).toBe(first.id);
-    expect(replacement.version).toBe("3.0.0");
-
-    const listResponse = await page.request.get("/api/extensions");
-    expect(listResponse.ok()).toBeTruthy();
-    const extensions = (await listResponse.json()) as Array<{ id: string; name: string }>;
-    expect(extensions.filter((extension) => extension.name.trim().toLowerCase() === name.toLowerCase())).toEqual([
-      expect.objectContaining({ id: first.id }),
-    ]);
-  } finally {
-    if (extensionId) await page.request.delete(`/api/extensions/${extensionId}`);
+  for (const response of await Promise.all(requests)) {
+    expect(response.status()).toBe(404);
   }
 });
 
-test("extension import warns before replacing a newer installed version", async ({ page }, testInfo) => {
-  test.skip(!testInfo.project.name.includes("desktop"), "The Add-ons downgrade confirmation is covered on desktop.");
+test("retired extension records disappear from local state and Settings", async ({ page }, testInfo) => {
+  test.skip(!testInfo.project.name.includes("desktop"), "One browser proves the shared UI-state migration.");
 
-  const name = "Extension Downgrade Warning Smoke";
-  let extensionId: string | null = null;
-  const importFile = {
-    name: "extension-downgrade-warning.json",
-    mimeType: "application/json",
-    buffer: Buffer.from(
-      JSON.stringify({
-        kind: "marinara.extension",
-        version: 1,
-        config: {
-          name,
-          version: "1.0.0",
-          description: "Older release",
-          enabled: false,
-          css: ".extension-downgrade-warning { color: blue; }",
-        },
-      }),
-    ),
-  };
-
-  try {
-    const installResponse = await page.request.post("/api/extensions", {
-      data: {
-        name,
-        version: "2.0.0",
-        description: "Newer release",
-        runtime: "client",
-        css: ".extension-downgrade-warning { color: red; }",
-        enabled: false,
+  await page.goto("/");
+  await page.evaluate(() => {
+    const stored = JSON.parse(localStorage.getItem("marinara-engine-ui") ?? '{"state":{}}') as {
+      state: Record<string, unknown>;
+      version?: number;
+    };
+    stored.version = 80;
+    stored.state.installedExtensions = [
+      {
+        id: "legacy-browser-code",
+        name: "Legacy browser code",
+        description: "Regression fixture",
+        js: "globalThis.__marinaraBlockedExtensionMarker = true;",
+        enabled: true,
+        installedAt: new Date(0).toISOString(),
       },
-    });
-    expect(installResponse.ok()).toBeTruthy();
-    extensionId = ((await installResponse.json()) as { id: string }).id;
+    ];
+    stored.state.hasMigratedExtensionsToServer = false;
+    localStorage.setItem("marinara-engine-ui", JSON.stringify(stored));
+  });
+  await page.reload();
 
-    await page.goto("/");
-    await page.locator('[data-tour="panel-settings"]').click();
-    await page.getByRole("tab", { name: "Addons" }).click();
-    const importButton = page.getByRole("button", { name: /Import Extension File/ });
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const stored = JSON.parse(localStorage.getItem("marinara-engine-ui") ?? '{"state":{}}') as {
+          state: Record<string, unknown>;
+          version?: number;
+        };
+        return {
+          version: stored.version,
+          hasExtensionRecords: Object.hasOwn(stored.state, "installedExtensions"),
+          hasCleanupFlag: Object.hasOwn(stored.state, "hasMigratedExtensionsToServer"),
+        };
+      }),
+    )
+    .toEqual({ version: 81, hasExtensionRecords: false, hasCleanupFlag: false });
 
-    let fileChooserPromise = page.waitForEvent("filechooser");
-    await importButton.click();
-    await (await fileChooserPromise).setFiles(importFile);
-    let downgradeDialog = page.getByRole("dialog", { name: "Install Older Extension Version?" });
-    await expect(downgradeDialog).toBeVisible();
-    await downgradeDialog.getByRole("button", { name: "Cancel" }).click();
+  expect(
+    await page.evaluate(
+      () =>
+        (globalThis as typeof globalThis & { __marinaraBlockedExtensionMarker?: boolean })
+          .__marinaraBlockedExtensionMarker,
+    ),
+  ).toBeUndefined();
 
-    let extensionResponse = await page.request.get("/api/extensions");
-    let extensions = (await extensionResponse.json()) as Array<{ name: string; version?: string | null }>;
-    expect(extensions.find((extension) => extension.name === name)?.version).toBe("2.0.0");
-
-    fileChooserPromise = page.waitForEvent("filechooser");
-    await importButton.click();
-    await (await fileChooserPromise).setFiles(importFile);
-    downgradeDialog = page.getByRole("dialog", { name: "Install Older Extension Version?" });
-    await downgradeDialog.getByRole("button", { name: "Install Older Version" }).click();
-
-    await expect
-      .poll(async () => {
-        extensionResponse = await page.request.get("/api/extensions");
-        extensions = (await extensionResponse.json()) as Array<{ name: string; version?: string | null }>;
-        return extensions.find((extension) => extension.name === name)?.version;
-      })
-      .toBe("1.0.0");
-  } finally {
-    if (extensionId) await page.request.delete(`/api/extensions/${extensionId}`);
-  }
+  await page.locator('[data-tour="panel-settings"]').click();
+  await page.getByRole("tab", { name: "Addons" }).click();
+  await expect(page.getByText("Theme Library", { exact: true })).toBeVisible();
+  await expect(page.getByText("Legacy Extension Cleanup", { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/Extensions have been removed/i)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Import CSS Extension/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Export extension/i })).toHaveCount(0);
 });
 
 test("Roleplay Active Context shows rich lorebook activation provenance", async ({ page, request }, testInfo) => {
