@@ -602,6 +602,13 @@ export const VIDEO_GENERATION_SOURCES: VideoGenSource[] = [
     requiresApiKey: true,
   },
   {
+    id: "atlas",
+    name: "Atlas Cloud",
+    description: "Atlas Cloud image and video models through its asynchronous media API.",
+    defaultBaseUrl: "https://api.atlascloud.ai/api/v1",
+    requiresApiKey: true,
+  },
+  {
     id: "seedance",
     name: "Seedance 2.0",
     description: "Seedance 2.0 video generation with text, first-frame, and first/last-frame modes.",
@@ -668,6 +675,13 @@ export const IMAGE_GENERATION_SOURCES: ImageGenSource[] = [
     requiresApiKey: true,
   },
   {
+    id: "atlas",
+    name: "Atlas Cloud",
+    description: "Image generation across Atlas Cloud's model catalog.",
+    defaultBaseUrl: "https://api.atlascloud.ai/api/v1",
+    requiresApiKey: true,
+  },
+  {
     id: "pollinations",
     name: "Pollinations",
     description: "Free, no-key-needed image generation via Pollinations AI.",
@@ -726,6 +740,34 @@ export const IMAGE_GENERATION_SOURCES: ImageGenSource[] = [
 ];
 
 // Known image generation models (grouped by service)
+export const ATLAS_CLOUD_IMAGE_MODELS: KnownModel[] = [
+  { id: "google/nano-banana/text-to-image", name: "Nano Banana (Atlas Cloud)", context: 0, maxOutput: 0 },
+  {
+    id: "google/gemini-2.5-flash-image/text-to-image",
+    name: "Gemini 2.5 Flash Image (Atlas Cloud)",
+    context: 0,
+    maxOutput: 0,
+  },
+  { id: "black-forest-labs/flux-1.1-pro", name: "FLUX 1.1 Pro (Atlas Cloud)", context: 0, maxOutput: 0 },
+];
+
+export const ATLAS_CLOUD_VIDEO_MODELS: KnownModel[] = [
+  { id: "google/veo3.1/text-to-video", name: "Veo 3.1 Text to Video (Atlas Cloud)", context: 0, maxOutput: 0 },
+  { id: "google/veo3.1/image-to-video", name: "Veo 3.1 Image to Video (Atlas Cloud)", context: 0, maxOutput: 0 },
+  {
+    id: "bytedance/seedance-2.0-fast/text-to-video",
+    name: "Seedance 2.0 Fast Text to Video (Atlas Cloud)",
+    context: 0,
+    maxOutput: 0,
+  },
+  {
+    id: "bytedance/seedance-2.0-fast/image-to-video",
+    name: "Seedance 2.0 Fast Image to Video (Atlas Cloud)",
+    context: 0,
+    maxOutput: 0,
+  },
+];
+
 const IMAGE_GEN_MODELS: KnownModel[] = [
   // OpenAI
   { id: "gpt-image-2", name: "GPT Image 2", context: 0, maxOutput: 0 },
@@ -774,6 +816,7 @@ const IMAGE_GEN_MODELS: KnownModel[] = [
   { id: "chroma", name: "Chroma (Venice)", context: 0, maxOutput: 0 },
   { id: "flux-2-pro", name: "FLUX 2 Pro (Venice)", context: 0, maxOutput: 0 },
   { id: "venice-sd35", name: "Venice SD3.5", context: 0, maxOutput: 0 },
+  ...ATLAS_CLOUD_IMAGE_MODELS,
   // NovelAI
   { id: "nai-diffusion-4-curated-preview", name: "NAI Diffusion 4 Curated", context: 0, maxOutput: 0 },
   { id: "nai-diffusion-4-5-full", name: "NAI Diffusion 4.5 Full", context: 0, maxOutput: 0 },
@@ -795,12 +838,14 @@ const VIDEO_GEN_MODELS: KnownModel[] = [
   { id: "alibaba/wan-2.7", name: "Alibaba WAN 2.7 (OpenRouter)", context: 0, maxOutput: 0 },
   { id: "seedance-2-0", name: "Seedance 2.0", context: 0, maxOutput: 0 },
   { id: "seedance-2-0-fast", name: "Seedance 2.0 Fast", context: 0, maxOutput: 0 },
+  ...ATLAS_CLOUD_VIDEO_MODELS,
 ];
 
 export function inferVideoSource(model: string, baseUrl: string): string {
   const m = model.toLowerCase();
   const u = baseUrl.toLowerCase();
   if (m === "comfyui" || u.includes(":8188") || u.includes("comfyui")) return "comfyui";
+  if (m === "atlas" || u.includes("atlascloud.ai")) return "atlas";
   if (m === "seedance" || m.startsWith("seedance-") || u.includes("seedance2.ai")) return "seedance";
   if (m === "openrouter" || u.includes("openrouter.ai")) return "openrouter";
   if (m.includes("/") && (m.includes("veo") || m.includes("wan"))) return "openrouter";
@@ -828,6 +873,7 @@ export function inferImageSource(model: string, baseUrl: string): string {
     m === "openrouter" ||
     m === "xai" ||
     m === "venice" ||
+    m === "atlas" ||
     m === "comfyui" ||
     m === "automatic1111" ||
     m === "runpod_comfyui" ||
@@ -840,6 +886,7 @@ export function inferImageSource(model: string, baseUrl: string): string {
   if (u.includes("openrouter.ai")) return "openrouter";
   if (u.includes("api.x.ai") || u.includes("x.ai")) return "xai";
   if (u.includes("venice.ai")) return "venice";
+  if (u.includes("atlascloud.ai")) return "atlas";
   if (m.startsWith("grok-") && m.includes("image")) return "xai";
   if (m.includes("grok") && m.includes("imagine")) return "xai";
   if (m.startsWith("dall-e") || m.startsWith("gpt-image") || u.includes("openai.com")) return "openai";

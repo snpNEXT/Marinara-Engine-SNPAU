@@ -92,7 +92,9 @@ try {
   const concurrentlyUpdatedAccount = await firstNoodle.getAccountById(concurrentAccount.id);
   assert.equal(concurrentlyUpdatedAccount?.settings.profile.bannerUrl, "/banner.png");
   assert.equal(concurrentlyUpdatedAccount?.settings.social.notificationsReadAt, "2026-07-17T09:00:00.000Z");
-  assert.deepEqual(concurrentlyUpdatedAccount?.settings.scheduler, {});
+  assert.deepEqual(concurrentlyUpdatedAccount?.settings.scheduler, {
+    autoPosting: { enabled: false, intensity: 1, nextRunAt: null },
+  });
   assert.deepEqual(concurrentlyUpdatedAccount?.settings.privacy, {
     access: { hiddenFromAccountIds: [], subscriptionIncludesPpv: false },
   });
@@ -140,7 +142,7 @@ try {
       followingAccountTimestamps: { "legacy-follow": "2026-07-17T10:00:00.000Z" },
       notificationsReadAt: "2026-07-17T11:00:00.000Z",
     },
-    scheduler: {},
+    scheduler: { autoPosting: { enabled: false, intensity: 1, nextRunAt: null } },
     privacy: { access: { hiddenFromAccountIds: [], subscriptionIncludesPpv: false } },
   });
   await firstDb
@@ -166,7 +168,7 @@ try {
       followingAccountIds: ["valid-follow"],
       followingAccountTimestamps: { "valid-follow": "2026-07-17T12:00:00.000Z" },
     },
-    scheduler: {},
+    scheduler: { autoPosting: { enabled: false, intensity: 1, nextRunAt: null } },
     privacy: { access: { hiddenFromAccountIds: [], subscriptionIncludesPpv: false } },
   });
   const followTargetA = await firstNoodle.upsertAccountFromProfile({
@@ -279,7 +281,7 @@ try {
   assert.deepEqual(renamedCharacterAccount.settings, {
     profile: { profileGenerated: true, location: "Snezhnaya" },
     social: {},
-    scheduler: {},
+    scheduler: { autoPosting: { enabled: false, intensity: 1, nextRunAt: null } },
     privacy: { access: { hiddenFromAccountIds: [], subscriptionIncludesPpv: false } },
   });
   const creatorSource = await firstNoodle.upsertAccountFromProfile({

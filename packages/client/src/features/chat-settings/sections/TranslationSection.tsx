@@ -13,14 +13,23 @@ interface TranslationSectionProps {
 
 export function TranslationSection({ metadata, textConnections, onMetadataChange }: TranslationSectionProps) {
   const provider = (metadata.translationProvider as string | undefined) ?? "google";
-  const storedPrompt = typeof metadata.translationPrompt === "string" ? metadata.translationPrompt : "";
-  const customPrompt = storedPrompt.trim().length > 0 ? storedPrompt : "";
-  const promptValue = customPrompt || DEFAULT_TRANSLATION_SYSTEM_PROMPT;
-  const hasCustomPrompt = customPrompt.length > 0;
+  const legacyTargetLanguage = (metadata.translationTargetLang as string | undefined) ?? "en";
+  const inputTargetLanguage = (metadata.translationInputTargetLang as string | undefined) ?? legacyTargetLanguage;
+  const outputTargetLanguage = (metadata.translationOutputTargetLang as string | undefined) ?? legacyTargetLanguage;
+  const legacyPrompt = typeof metadata.translationPrompt === "string" ? metadata.translationPrompt : "";
 
-  const updatePrompt = (value: string) => {
+  const readDirectionalPrompt = (key: "translationInputPrompt" | "translationOutputPrompt") => {
+    const value = metadata[key];
+    if (value === null) return "";
+    const stored = typeof value === "string" ? value : legacyPrompt;
+    return stored.trim().length > 0 ? stored : "";
+  };
+  const inputPrompt = readDirectionalPrompt("translationInputPrompt");
+  const outputPrompt = readDirectionalPrompt("translationOutputPrompt");
+
+  const updatePrompt = (key: "translationInputPrompt" | "translationOutputPrompt", value: string) => {
     const nextPrompt = !value.trim() || value.trim() === DEFAULT_TRANSLATION_SYSTEM_PROMPT.trim() ? null : value;
-    onMetadataChange({ translationPrompt: nextPrompt });
+    onMetadataChange({ [key]: nextPrompt });
   };
 
   return (
@@ -44,26 +53,21 @@ export function TranslationSection({ metadata, textConnections, onMetadataChange
           </select>
         </div>
 
-        <div>
-          <label className="text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
-            Target Language
-            <HelpTooltip
-              text={
-                provider === "ai"
-                  ? "Language name (e.g. English, Japanese, Spanish)"
-                  : "Language code (e.g. en, ja, es, de, fr, zh, ko)"
-              }
-              size="0.625rem"
-            />
-          </label>
-          <input
-            type="text"
-            value={(metadata.translationTargetLang as string | undefined) ?? "en"}
-            onChange={(e) => onMetadataChange({ translationTargetLang: e.target.value })}
-            placeholder={provider === "ai" ? "English" : "en"}
-            className="mt-0.5 w-full rounded-lg bg-[var(--secondary)] px-3 py-2 text-xs outline-none ring-1 ring-transparent transition-shadow focus:ring-[var(--primary)]/40"
-          />
-        </div>
+        <TranslationLanguageField
+          label="Model Language"
+          description="Your outgoing messages are translated into this language."
+          provider={provider}
+          value={inputTargetLanguage}
+          onChange={(value) => onMetadataChange({ translationInputTargetLang: value })}
+        />
+
+        <TranslationLanguageField
+          label="My Language"
+          description="Incoming model responses are translated into this language."
+          provider={provider}
+          value={outputTargetLanguage}
+          onChange={(value) => onMetadataChange({ translationOutputTargetLang: value })}
+        />
 
         {provider === "ai" && (
           <>
@@ -86,34 +90,18 @@ export function TranslationSection({ metadata, textConnections, onMetadataChange
               </select>
             </div>
 
-            <div className="space-y-1">
-              <div className="flex items-center justify-between gap-2">
-                <label className="text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
-                  AI Prompt
-                  <HelpTooltip
-                    text="System prompt used by AI translation. Restoring uses Marinara's built-in default."
-                    size="0.625rem"
-                  />
-                </label>
-                {hasCustomPrompt && (
-                  <button
-                    type="button"
-                    onClick={() => onMetadataChange({ translationPrompt: null })}
-                    className="flex shrink-0 items-center gap-1 rounded-md bg-[var(--secondary)] px-2 py-0.5 text-[0.625rem] text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
-                    title="Restore default prompt"
-                  >
-                    <RotateCcw size="0.625rem" />
-                    Restore
-                  </button>
-                )}
-              </div>
-              <textarea
-                value={promptValue}
-                onChange={(e) => updatePrompt(e.target.value)}
-                rows={5}
-                className="min-h-28 w-full resize-y rounded-lg bg-[var(--secondary)] px-3 py-2 font-mono text-xs leading-relaxed outline-none ring-1 ring-transparent transition-shadow focus:ring-[var(--primary)]/40"
-              />
-            </div>
+            <TranslationPromptField
+              label="Outgoing Message Prompt"
+              customPrompt={inputPrompt}
+              onChange={(value) => updatePrompt("translationInputPrompt", value)}
+              onRestore={() => onMetadataChange({ translationInputPrompt: null })}
+            />
+            <TranslationPromptField
+              label="Incoming Response Prompt"
+              customPrompt={outputPrompt}
+              onChange={(value) => updatePrompt("translationOutputPrompt", value)}
+              onRestore={() => onMetadataChange({ translationOutputPrompt: null })}
+            />
           </>
         )}
 
@@ -169,6 +157,86 @@ export function TranslationSection({ metadata, textConnections, onMetadataChange
         />
       </div>
     </ChatSettingsSection>
+  );
+}
+
+function TranslationLanguageField({
+  label,
+  description,
+  provider,
+  value,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  provider: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div>
+      <label className="text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
+        {label}
+        <HelpTooltip
+          text={
+            provider === "ai"
+              ? `${description} Use a language name such as English, Japanese, or Spanish.`
+              : `${description} Use a language code such as en, ja, es, de, fr, zh, or ko.`
+          }
+          size="0.625rem"
+        />
+      </label>
+      <input
+        type="text"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={provider === "ai" ? "English" : "en"}
+        className="mt-0.5 w-full rounded-lg bg-[var(--secondary)] px-3 py-2 text-xs outline-none ring-1 ring-transparent transition-shadow focus:ring-[var(--primary)]/40"
+      />
+    </div>
+  );
+}
+
+function TranslationPromptField({
+  label,
+  customPrompt,
+  onChange,
+  onRestore,
+}: {
+  label: string;
+  customPrompt: string;
+  onChange: (value: string) => void;
+  onRestore: () => void;
+}) {
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between gap-2">
+        <label className="text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
+          {label}
+          <HelpTooltip
+            text="System prompt used by AI translation. {{targetLanguage}} resolves to the matching language above."
+            size="0.625rem"
+          />
+        </label>
+        {customPrompt && (
+          <button
+            type="button"
+            onClick={onRestore}
+            className="flex shrink-0 items-center gap-1 rounded-md bg-[var(--secondary)] px-2 py-0.5 text-[0.625rem] text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+            title="Restore default prompt"
+          >
+            <RotateCcw size="0.625rem" />
+            Restore
+          </button>
+        )}
+      </div>
+      <textarea
+        value={customPrompt || DEFAULT_TRANSLATION_SYSTEM_PROMPT}
+        onChange={(event) => onChange(event.target.value)}
+        rows={5}
+        className="min-h-28 w-full resize-y rounded-lg bg-[var(--secondary)] px-3 py-2 font-mono text-xs leading-relaxed outline-none ring-1 ring-transparent transition-shadow focus:ring-[var(--primary)]/40"
+      />
+    </div>
   );
 }
 

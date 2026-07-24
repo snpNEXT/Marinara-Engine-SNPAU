@@ -23,6 +23,7 @@ import { executeWikiCli } from "../professor-mari/fandom-mediawiki/wiki-cli.js";
 import {
   LIMITS,
   PROFESSOR_MARI_ID,
+  createPersonalExtensionSchema,
   normalizeLorebookCategory,
   type MariDbCommandResult,
   type MariDbDiffSummary,
@@ -32,6 +33,7 @@ import {
   type MariDbValidationIssue,
   type MariDbValidationResult,
 } from "@marinara-engine/shared";
+import { computePersonalExtensionHash } from "../extensions/personal-extension-hash.js";
 
 type Row = Record<string, unknown>;
 type Table = AnyFileTable;
@@ -79,6 +81,7 @@ type ParsedMutationRequest = {
   cwd?: string;
   apply: boolean;
   requiresApproval?: boolean;
+  personalExtensionDraftMutation?: boolean;
   cascade: boolean;
   reason: string | null;
   generatedIds?: string[];
@@ -300,6 +303,7 @@ const JSON_COLUMNS: Record<string, readonly string[]> = {
   agent_runs: ["resultData"],
   agent_memory: ["value"],
   custom_tools: ["parametersSchema"],
+  installed_extensions: ["revisions"],
   game_state_snapshots: [
     "presentCharacters",
     "recentEvents",
@@ -309,7 +313,7 @@ const JSON_COLUMNS: Record<string, readonly string[]> = {
     "fieldLocks",
   ],
   game_checkpoints: ["snapshotData", "spatialSnapshotData"],
-  // chat_images, character_images, assets, custom_themes, and installed_extensions
+  // chat_images, character_images, assets, and custom_themes
   // have no JSON columns; their former entries named columns that do not exist.
   game_engine_state: ["state"],
   regex_scripts: ["trimStrings", "placement", "targetCharacterIds"],
@@ -636,6 +640,7 @@ function normalizeAppDataActionName(action: string): string {
     .replace(/^personas\./, "persona.")
     .replace(/^lorebooks\./, "lorebook.")
     .replace(/^themes\./, "theme.")
+    .replace(/^personalextensions\./, "personalextension.")
     .replace(/^agents\./, "agent.")
     .replace(/^presets\./, "preset.")
     .replace(/^promptpresets\./, "preset.");
@@ -1669,6 +1674,9 @@ export class MariDbService {
       if (key.startsWith("persona.")) return await this.executePersonaAction(key.slice("persona.".length), envelope, context);
       if (key.startsWith("lorebook.")) return await this.executeLorebookAction(key.slice("lorebook.".length), envelope, context);
       if (key.startsWith("theme.")) return await this.executeThemeAction(key.slice("theme.".length), envelope, context);
+      if (key.startsWith("personalextension.")) {
+        return await this.executePersonalExtensionAction(key.slice("personalextension.".length), envelope, context);
+      }
       if (key.startsWith("agent.")) return await this.executeAgentAction(key.slice("agent.".length), envelope, context);
       if (key.startsWith("preset.")) return await this.executePresetAction(key.slice("preset.".length), envelope, context);
       return {
@@ -1676,7 +1684,7 @@ export class MariDbService {
         mode: "read",
         command,
         error:
-          "Unsupported app_data action. Use character.*, persona.*, lorebook.*, theme.*, agent.*, or preset.* actions for structured no-shell app-data work.",
+          "Unsupported app_data action. Use character.*, persona.*, lorebook.*, theme.*, personal_extension.*, agent.*, or preset.* actions for structured no-shell app-data work.",
       };
     } catch (err) {
       logger.warn(err, "[mari-db] structured app_data action failed");
@@ -2412,6 +2420,204 @@ export class MariDbService {
       }
       default:
         return { ok: false, mode: "read", command: context.command, error: "Unsupported theme app_data action." };
+    }
+  }
+
+  private async executePersonalExtensionAction(
+    sub: string,
+    args: Row,
+    context: { command: string; sessionId: string; cwd?: string },
+  ): Promise<MariDbCommandResult> {
+    const table = "installed_extensions";
+    const summarize = (row: Row) => ({
+      id: row.id,
+      name: row.name,
+      version: row.version ?? null,
+      description: row.description ?? "",
+      runtime: row.runtime === "server" ? "server" : "client",
+      enabled: row.enabled === "true",
+      contentHash: row.contentHash ?? null,
+      approvedHash: row.approvedHash ?? null,
+      source: row.source ?? "legacy",
+      updatedAt: row.updatedAt,
+    });
+    const executableFromRow = (row: Row) => {
+      const runtime = row.runtime === "server" ? "server" : "client";
+      return {
+        runtime,
+        css: runtime === "client" && typeof row.css === "string" ? row.css : null,
+        js: runtime === "client" && typeof row.js === "string" ? row.js : null,
+        serverJs: runtime === "server" && typeof row.serverJs === "string" ? row.serverJs : null,
+      } as const;
+    };
+
+    switch (sub) {
+      case "list": {
+        const limit = normalizeLimit(firstNumber(args, ["limit"]), 50, 1000);
+        const rows = (await this.rawRows(table)).sort((left, right) =>
+          String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")),
+        );
+        return { ok: true, mode: "read", command: context.command, output: rows.slice(0, limit).map(summarize) };
+      }
+      case "get": {
+        const id = requiredString(args, ["id", "extensionId"], "Personal Extension id");
+        const row = await this.getRawById(getMeta(table), id);
+        return { ok: Boolean(row), mode: "read", command: context.command, output: row ? parseRow(table, row) : null };
+      }
+      case "search": {
+        const query = requiredString(args, ["query", "search"], "Personal Extension search query").toLowerCase();
+        const limit = normalizeLimit(firstNumber(args, ["limit"]), 50, 1000);
+        const rows = (await this.rawRows(table))
+          .filter((row) => JSON.stringify(row).toLowerCase().includes(query))
+          .slice(0, limit)
+          .map(summarize);
+        return { ok: true, mode: "read", command: context.command, output: rows };
+      }
+      case "create": {
+        const data = actionDataWithTopLevel(args, ["data", "extension", "row"], [
+          "name",
+          "version",
+          "description",
+          "runtime",
+          "css",
+          "js",
+          "serverJs",
+        ]);
+        const parsed = createPersonalExtensionSchema.parse(data);
+        const runtime = parsed.runtime === "server" ? "server" : "client";
+        const executable = {
+          runtime,
+          css: runtime === "client" ? (parsed.css ?? null) : null,
+          js: runtime === "client" ? (parsed.js ?? null) : null,
+          serverJs: runtime === "server" ? (parsed.serverJs ?? null) : null,
+        } as const;
+        const timestamp = now();
+        const id = firstString(args, ["id", "extensionId"]) ?? newId();
+        const row: Row = {
+          id,
+          name: parsed.name,
+          version: parsed.version == null ? null : String(parsed.version),
+          description: parsed.description ?? "",
+          ...executable,
+          enabled: "false",
+          contentHash: computePersonalExtensionHash(executable),
+          approvedHash: null,
+          source: "professor_mari",
+          revisions: [],
+          installedAt: timestamp,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+        return this.executeMutation(
+          {
+            kind: "insert",
+            table,
+            id,
+            row,
+            apply: appDataCreateApply(args),
+            requiresApproval: false,
+            personalExtensionDraftMutation: true,
+            cascade: false,
+            reason: firstString(args, ["reason"]) ?? "Professor Mari created a Personal Extension draft",
+            cwd: context.cwd,
+          },
+          context.command,
+          context.sessionId,
+        );
+      }
+      case "update": {
+        const id = requiredString(args, ["id", "extensionId"], "Personal Extension id");
+        const existingRaw = await this.getRawById(getMeta(table), id);
+        if (!existingRaw) throw new Error(`Personal Extension ${id} not found`);
+        const existing = parseRow(table, existingRaw);
+        const data = actionDataWithTopLevel(args, ["patch", "data", "extension"], [
+          "name",
+          "version",
+          "description",
+          "runtime",
+          "css",
+          "js",
+          "serverJs",
+        ]);
+        if (Object.keys(data).length === 0) throw new Error("personal_extension.update needs a code or metadata patch");
+        const runtime = data.runtime === "server" || (data.runtime === undefined && existing.runtime === "server") ? "server" : "client";
+        const textOrFallback = (key: string, fallback: unknown) =>
+          data[key] === null ? null : typeof data[key] === "string" ? data[key] : fallback;
+        const parsed = createPersonalExtensionSchema.parse({
+          name: textOrFallback("name", existing.name),
+          version: textOrFallback("version", existing.version),
+          description: textOrFallback("description", existing.description),
+          runtime,
+          css: runtime === "client" ? textOrFallback("css", existing.css) : null,
+          js: runtime === "client" ? textOrFallback("js", existing.js) : null,
+          serverJs: runtime === "server" ? textOrFallback("serverJs", existing.serverJs) : null,
+        });
+        const executable = {
+          runtime,
+          css: runtime === "client" ? (parsed.css ?? null) : null,
+          js: runtime === "client" ? (parsed.js ?? null) : null,
+          serverJs: runtime === "server" ? (parsed.serverJs ?? null) : null,
+        } as const;
+        const previousExecutable = executableFromRow(existing);
+        const previousHash =
+          typeof existing.contentHash === "string" && existing.contentHash
+            ? existing.contentHash
+            : computePersonalExtensionHash(previousExecutable);
+        const contentHash = computePersonalExtensionHash(executable);
+        const executableChanged = contentHash !== previousHash;
+        const existingRevisions = Array.isArray(existing.revisions) ? existing.revisions : [];
+        const revisions = executableChanged
+          ? [
+              {
+                contentHash: previousHash,
+                version: typeof existing.version === "string" ? existing.version : null,
+                ...previousExecutable,
+                savedAt: now(),
+              },
+              ...existingRevisions.filter(
+                (revision) => !isRecord(revision) || revision.contentHash !== previousHash,
+              ),
+            ].slice(0, 10)
+          : existingRevisions;
+        const row: Row = {
+          ...existing,
+          id,
+          name: parsed.name,
+          version: parsed.version == null ? null : String(parsed.version),
+          description: parsed.description ?? "",
+          ...executable,
+          enabled: executableChanged ? "false" : existing.enabled,
+          contentHash,
+          approvedHash: executableChanged ? null : existing.approvedHash,
+          source: "professor_mari",
+          revisions,
+          installedAt: existing.installedAt,
+          createdAt: existing.createdAt,
+          updatedAt: now(),
+        };
+        return this.executeMutation(
+          {
+            kind: "replace",
+            table,
+            id,
+            row,
+            apply: firstBoolean(args, ["apply"]) === true,
+            personalExtensionDraftMutation: true,
+            cascade: false,
+            reason: firstString(args, ["reason"]) ?? "Professor Mari updated a Personal Extension draft",
+            cwd: context.cwd,
+          },
+          context.command,
+          context.sessionId,
+        );
+      }
+      default:
+        return {
+          ok: false,
+          mode: "read",
+          command: context.command,
+          error: "Unsupported Personal Extension app_data action.",
+        };
     }
   }
 
@@ -4112,6 +4318,33 @@ export class MariDbService {
     else if (request.kind === "theme-update") changes = await this.planThemeUpdate(request, timestamp, issues);
     else if (request.kind === "theme-set-active") changes = await this.planThemeSetActive(request, timestamp, issues);
     else changes = await this.planTransform(request, timestamp, allocateId);
+
+    const personalExtensionChanges = changes.filter((change) => change.table === "installed_extensions");
+    if (personalExtensionChanges.length > 0 && !request.personalExtensionDraftMutation) {
+      issues.push({
+        level: "error",
+        table: "installed_extensions",
+        message:
+          "Professor Mari cannot mutate Personal Extensions through raw DB actions. Use personal_extension.create or personal_extension.update; only the user can approve execution in Settings > Addons.",
+      });
+    }
+    if (request.personalExtensionDraftMutation) {
+      for (const change of personalExtensionChanges) {
+        const enabledEscalated = change.afterRaw?.enabled === "true" && change.beforeRaw?.enabled !== "true";
+        const approvalEscalated =
+          typeof change.afterRaw?.approvedHash === "string" &&
+          change.afterRaw.approvedHash.length > 0 &&
+          change.afterRaw.approvedHash !== change.beforeRaw?.approvedHash;
+        if (enabledEscalated || approvalEscalated) {
+          issues.push({
+            level: "error",
+            table: "installed_extensions",
+            id: change.id,
+            message: "Professor Mari can save Personal Extension drafts but cannot approve or enable them.",
+          });
+        }
+      }
+    }
 
     const touchedTables = [...new Set(changes.map((change) => change.table))];
     const validation = await this.validateTouchedRows(changes, touchedTables, issues);

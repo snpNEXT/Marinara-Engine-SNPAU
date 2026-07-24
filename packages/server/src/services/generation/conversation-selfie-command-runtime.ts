@@ -10,6 +10,7 @@ import { persistGeneratedImageToEntityGalleries } from "../image/generated-image
 import { resolveConnectionImageDefaults } from "../image/image-generation-defaults.js";
 import { generateImage, saveImageToDisk } from "../image/image-generation.js";
 import { loadImageGenerationUserSettings } from "../image/image-generation-settings.js";
+import { generateIllustratorImageVariants } from "../image/illustrator-image-variants.js";
 import { resolveConversationSelfieSystemPrompt } from "../conversation/selfie-prompt.js";
 import type { CharacterCommand, SelfieCommand } from "../conversation/character-commands.js";
 import { createGalleryStorage } from "../storage/gallery.storage.js";
@@ -264,76 +265,84 @@ async function generateSelfie(
     styleProfileId,
     imageDefaults,
   });
-  const imageResult = await generateImage(imgModel, imgBaseUrl, imgApiKey, serviceHint || imgSource, {
-    prompt: compiledSelfiePrompt.prompt,
-    negativePrompt: compiledSelfiePrompt.negativePrompt || undefined,
-    model: imgModel,
-    width: selfieW || imageSettings.selfie.width,
-    height: selfieH || imageSettings.selfie.height,
-    imageEndpointId: imgConnFull.imageEndpointId || undefined,
-    comfyWorkflow: imgConnFull.comfyuiWorkflow || undefined,
-    imageDefaults,
-    referenceImages: selfieReferenceImages,
-    fallback: imageFallback,
-    onFallback: reportFallback,
+  const imageResults = await generateIllustratorImageVariants({
+    count: args.chatMeta.illustratorImagesPerGeneration,
+    generate: () =>
+      generateImage(imgModel, imgBaseUrl, imgApiKey, serviceHint || imgSource, {
+        prompt: compiledSelfiePrompt.prompt,
+        negativePrompt: compiledSelfiePrompt.negativePrompt || undefined,
+        model: imgModel,
+        width: selfieW || imageSettings.selfie.width,
+        height: selfieH || imageSettings.selfie.height,
+        imageEndpointId: imgConnFull.imageEndpointId || undefined,
+        comfyWorkflow: imgConnFull.comfyuiWorkflow || undefined,
+        imageDefaults,
+        referenceImages: selfieReferenceImages,
+        fallback: imageFallback,
+        onFallback: reportFallback,
+      }),
+    onVariantError: (error, index) =>
+      logger.warn(error, "[commands] Selfie variant %d failed for %s", index + 1, args.charName),
   });
 
-  const filePath = saveImageToDisk(args.chatId, imageResult.base64, imageResult.ext);
-  const effectiveImageProvider =
-    imageResult.effectiveConnection?.provider ?? imgConnFull.provider ?? "image_generation";
-  const effectiveImageModel = imageResult.effectiveConnection?.model || imgModel || "unknown";
-  const galleryEntry = await galleryStore.create({
-    chatId: args.chatId,
-    filePath,
-    prompt: compiledSelfiePrompt.prompt,
-    provider: effectiveImageProvider,
-    model: effectiveImageModel,
-    width: selfieW || imageSettings.selfie.width,
-    height: selfieH || imageSettings.selfie.height,
-  });
-  await persistGeneratedImageToEntityGalleries({
-    sourceFilePath: filePath,
-    characterIds: args.characterId ? [args.characterId] : [],
-    characterGallery: createCharacterGalleryStorage(args.db),
-    personaGallery: createPersonaGalleryStorage(args.db),
-    prompt: compiledSelfiePrompt.prompt,
-    provider: effectiveImageProvider,
-    model: effectiveImageModel,
-    width: selfieW || imageSettings.selfie.width,
-    height: selfieH || imageSettings.selfie.height,
-  });
-
-  const filename = filePath.split("/").pop()!;
-  const imageUrl = `/api/gallery/file/${args.chatId}/${encodeURIComponent(filename)}`;
-  if (args.messageId) {
-    const generationSwipeIndex = Number.isInteger(args.swipeIndex) ? args.swipeIndex! : 0;
-    const attachment = {
-      type: "image",
-      url: imageUrl,
-      filename: `selfie_${args.charName.toLowerCase().replace(/\s+/g, "_")}.${imageResult.ext}`,
+  for (const [variantIndex, imageResult] of imageResults.entries()) {
+    const filePath = saveImageToDisk(args.chatId, imageResult.base64, imageResult.ext);
+    const effectiveImageProvider =
+      imageResult.effectiveConnection?.provider ?? imgConnFull.provider ?? "image_generation";
+    const effectiveImageModel = imageResult.effectiveConnection?.model || imgModel || "unknown";
+    const galleryEntry = await galleryStore.create({
+      chatId: args.chatId,
+      filePath,
       prompt: compiledSelfiePrompt.prompt,
-      galleryId: galleryEntry?.id,
-    };
-    await args.chats.appendSwipeAttachment(args.messageId, generationSwipeIndex, attachment);
+      provider: effectiveImageProvider,
+      model: effectiveImageModel,
+      width: selfieW || imageSettings.selfie.width,
+      height: selfieH || imageSettings.selfie.height,
+    });
+    await persistGeneratedImageToEntityGalleries({
+      sourceFilePath: filePath,
+      characterIds: args.characterId ? [args.characterId] : [],
+      characterGallery: createCharacterGalleryStorage(args.db),
+      personaGallery: createPersonaGalleryStorage(args.db),
+      prompt: compiledSelfiePrompt.prompt,
+      provider: effectiveImageProvider,
+      model: effectiveImageModel,
+      width: selfieW || imageSettings.selfie.width,
+      height: selfieH || imageSettings.selfie.height,
+    });
 
-    const currentMsgRow = await args.chats.getMessage(args.messageId);
-    if (currentMsgRow && (currentMsgRow.activeSwipeIndex ?? 0) === generationSwipeIndex) {
-      await args.chats.appendMessageAttachment(args.messageId, attachment);
+    const filename = filePath.split("/").pop()!;
+    const imageUrl = `/api/gallery/file/${args.chatId}/${encodeURIComponent(filename)}`;
+    if (args.messageId) {
+      const generationSwipeIndex = Number.isInteger(args.swipeIndex) ? args.swipeIndex! : 0;
+      const attachment = {
+        type: "image",
+        url: imageUrl,
+        filename: `selfie_${args.charName.toLowerCase().replace(/\s+/g, "_")}_${variantIndex + 1}.${imageResult.ext}`,
+        prompt: compiledSelfiePrompt.prompt,
+        galleryId: galleryEntry?.id,
+      };
+      await args.chats.appendSwipeAttachment(args.messageId, generationSwipeIndex, attachment);
+
+      const currentMsgRow = await args.chats.getMessage(args.messageId);
+      if (currentMsgRow && (currentMsgRow.activeSwipeIndex ?? 0) === generationSwipeIndex) {
+        await args.chats.appendMessageAttachment(args.messageId, attachment);
+      }
     }
-  }
 
-  args.sendEvent({
-    type: "selfie",
-    data: {
-      characterId: args.characterId,
-      characterName: args.charName,
-      messageId: args.messageId,
-      imageUrl,
-      prompt: compiledSelfiePrompt.prompt,
-      galleryId: galleryEntry?.id,
-    },
-  });
-  logger.debug("[commands] Selfie generated for %s", args.charName);
+    args.sendEvent({
+      type: "selfie",
+      data: {
+        characterId: args.characterId,
+        characterName: args.charName,
+        messageId: args.messageId,
+        imageUrl,
+        prompt: compiledSelfiePrompt.prompt,
+        galleryId: galleryEntry?.id,
+      },
+    });
+    logger.debug("[commands] Selfie generated for %s", args.charName);
+  }
 }
 
 function readNestedString(value: unknown, key: string): string | null {

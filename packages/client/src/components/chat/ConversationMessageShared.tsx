@@ -115,6 +115,7 @@ export interface MessageRenderContext {
   regenerateButtonTitle: string;
   regenerateGuidedClass?: string;
   thinking?: string | null;
+  thinkingButtonRef: RefObject<HTMLButtonElement | null>;
   generationReplay: MessageExtra["generationReplay"] | null;
   canRegenerate: boolean;
   isLastAssistantMessage?: boolean;
@@ -404,15 +405,18 @@ export function MsgAction({
   title,
   className,
   tabIndex,
+  buttonRef,
 }: {
   icon: React.ReactNode;
   onClick: () => void;
   title: string;
   className?: string;
   tabIndex?: number;
+  buttonRef?: RefObject<HTMLButtonElement | null>;
 }) {
   return (
     <button
+      ref={buttonRef}
       onClick={(e) => {
         e.stopPropagation();
         onClick();
@@ -512,7 +516,7 @@ export function ConversationMessageAttachments({
               <img
                 src={att.url || att.data}
                 alt={att.filename || att.name || "image"}
-                className="max-h-80 max-w-full rounded-lg"
+                className="max-h-[70vh] max-w-full rounded-lg object-contain sm:max-h-[32rem]"
                 loading="lazy"
               />
             </button>

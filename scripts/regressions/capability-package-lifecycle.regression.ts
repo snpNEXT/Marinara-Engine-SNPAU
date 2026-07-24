@@ -169,6 +169,8 @@ try {
   const {
     capabilityPackageManager,
     findCompatibleCapabilityPackageUpdates,
+    findPendingCapabilityPackageUpdates,
+    getCapabilityPackageArtifactSourceIssue,
     getCapabilityPackageInstallIssue,
     resolveCapabilityCatalogUrl,
   } = await import(
@@ -205,6 +207,39 @@ try {
     resolveCapabilityCatalogUrl("3.2.2", " https://catalog.example.test/custom.json "),
     "https://catalog.example.test/custom.json",
     "An operator catalog override must remain exact and take precedence over Engine lane selection",
+  );
+  const canonicalArtifactEntry = {
+    manifest: legacyManifest,
+    category: "misc" as const,
+    artifact: {
+      url: "https://raw.githubusercontent.com/Pasta-Devs/Marinara-Agents/main/artifacts/legacy-1.0.0.zip",
+      sha256: "1".repeat(64),
+      bytes: 1,
+    },
+  };
+  const officialCatalogUrl = resolveCapabilityCatalogUrl("development", "");
+  assert.equal(getCapabilityPackageArtifactSourceIssue(canonicalArtifactEntry, officialCatalogUrl), null);
+  assert.match(
+    getCapabilityPackageArtifactSourceIssue(
+      {
+        ...canonicalArtifactEntry,
+        artifact: { ...canonicalArtifactEntry.artifact, url: "https://attacker.example/legacy-1.0.0.zip" },
+      },
+      officialCatalogUrl,
+    ) ?? "",
+    /canonical Marinara-Agents artifact URL/,
+    "The official catalog must not redirect executable packages to another host, regardless of any locally configured MARINARA_AGENT_CATALOG_URL",
+  );
+  assert.equal(
+    getCapabilityPackageArtifactSourceIssue(
+      {
+        ...canonicalArtifactEntry,
+        artifact: { ...canonicalArtifactEntry.artifact, url: "https://packages.example/legacy.zip" },
+      },
+      "https://catalog.example.test/custom.json",
+    ),
+    null,
+    "Explicit custom catalog operators retain control of their artifact host",
   );
   const {
     buildHierarchicalMapsSelectionCorrectionPatch,
@@ -464,7 +499,35 @@ try {
   assert.deepEqual(
     updateCandidates.map(({ installed, entry }) => [installed.id, installed.version, entry.manifest.version]),
     [["conversation-calls", "1.0.0", "1.0.2"]],
-    "Automatic updates must select only newer, compatible, downloadable packages already installed by the user",
+    "Update discovery must select only newer, compatible, downloadable packages already installed by the user",
+  );
+  assert.deepEqual(
+    findPendingCapabilityPackageUpdates(
+      updateCandidates.map(({ installed }) => installed),
+      updateCatalog,
+      { "conversation-calls": "1.0.2" },
+      "2.3.1",
+    ),
+    [],
+    "Declining an exact Agent version must suppress its prompt without changing the installed version",
+  );
+  assert.deepEqual(
+    findPendingCapabilityPackageUpdates(
+      updateCandidates.map(({ installed }) => installed),
+      updateCatalog,
+      {},
+      "2.3.1",
+    ),
+    [
+      {
+        id: "conversation-calls",
+        name: "conversation-calls",
+        installedVersion: "1.0.0",
+        version: "1.0.2",
+        restartRequired: true,
+      },
+    ],
+    "A compatible Agent update must remain available until the user applies or declines that version",
   );
   const unsupportedInstalled = installedCapabilityPackageSchema.parse({
     ...installedPackage("future-contract", ["agent"]),

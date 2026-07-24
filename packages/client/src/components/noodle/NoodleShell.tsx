@@ -43,15 +43,15 @@ export function NoodleLogo({ className, src = NOODLE_LOGO_SRC }: { className?: s
 // Two-way switch between the Noodle and NoodleR apps — reads as picking one of two
 // exclusive modes, not another item in the vertical nav list.
 function NoodleModeToggle({
-  activeView,
+  activeMode,
   onOpenHome,
   onOpenNoodler,
 }: {
-  activeView: NoodleShellView;
+  activeMode: NoodleShellMode;
   onOpenHome: () => void;
   onOpenNoodler: () => void;
 }) {
-  const noodler = activeView === "noodler";
+  const noodler = activeMode === "noodler";
   const segment = (active: boolean) =>
     cn(
       "flex min-h-9 items-center justify-center gap-1.5 rounded-full px-2 text-sm font-bold transition-colors",
@@ -78,9 +78,11 @@ function NoodleModeToggle({
 export function Avatar({
   account,
   size = "md",
+  solid = false,
 }: {
   account: Pick<NoodleAccount, "displayName" | "avatarUrl"> & { avatarCrop?: AvatarCropValue | null };
   size?: "sm" | "md" | "lg";
+  solid?: boolean;
 }) {
   const dimension = size === "sm" ? "h-8 w-8" : size === "lg" ? "h-24 w-24" : "h-11 w-11";
   if (account.avatarUrl) {
@@ -104,7 +106,10 @@ export function Avatar({
     <div
       className={cn(
         dimension,
-        "flex aspect-square flex-none items-center justify-center rounded-full bg-[var(--noodle-blue)]/15 text-xs font-bold text-[var(--noodle-blue)] ring-1 ring-[var(--noodle-blue)]/25",
+        "flex aspect-square flex-none items-center justify-center rounded-full text-xs font-bold text-[var(--noodle-blue)] ring-1 ring-[var(--noodle-blue)]/25",
+        solid
+          ? "bg-[color-mix(in_srgb,var(--noodle-blue)_15%,var(--background))]"
+          : "bg-[var(--noodle-blue)]/15",
       )}
     >
       {initials(account.displayName)}
@@ -113,14 +118,18 @@ export function Avatar({
 }
 
 export type NoodleShellView = "home" | "noodler" | "search" | "notifications" | "profile" | "settings" | null;
+type NoodleShellMode = "noodle" | "noodler";
 
 export interface NoodleShellProps {
   activeView: NoodleShellView;
+  /** App identity is independent from the selected vertical-nav destination. */
+  appMode?: NoodleShellMode;
   /** Overrides whether the Home/Hub destination is selected when app mode and subview are separate. */
   homeActive?: boolean;
   personaAccount: NoodleAccount | null;
   sortedPersonaAccounts: NoodleAccount[];
   visiblePersonaAccounts: NoodleAccount[];
+  linkedPublicAccountIds?: ReadonlySet<string>;
   onLoadMorePersonaAccounts: () => void;
   onSwitchPersona: (account: NoodleAccount, mobile: boolean) => void;
   accountSwitcherOpen: boolean;
@@ -158,10 +167,12 @@ export interface NoodleShellProps {
 
 export function NoodleShell({
   activeView,
+  appMode,
   homeActive: homeActiveOverride,
   personaAccount,
   sortedPersonaAccounts,
   visiblePersonaAccounts,
+  linkedPublicAccountIds,
   onLoadMorePersonaAccounts,
   onSwitchPersona,
   accountSwitcherOpen,
@@ -191,10 +202,12 @@ export function NoodleShell({
   const prefersReducedMotion = Boolean(useReducedMotion());
   const hasMorePersonaAccounts = visiblePersonaAccounts.length < sortedPersonaAccounts.length;
   const notificationBadgeLabel = notificationCount > 99 ? "99+" : String(notificationCount);
-  const homeLabel = activeView === "noodler" ? "Hub" : "Home";
+  const resolvedAppMode = appMode ?? (activeView === "noodler" ? "noodler" : "noodle");
+  const noodlerActive = resolvedAppMode === "noodler";
+  const homeLabel = noodlerActive ? "Hub" : "Home";
   const homeActive = homeActiveOverride ?? (activeView === "home" || activeView === "noodler");
-  const onOpenHomeDestination = activeView === "noodler" ? onOpenNoodler : onOpenHome;
-  const onOpenMobileHomeDestination = activeView === "noodler" ? onOpenNoodler : onOpenMobileHome;
+  const onOpenHomeDestination = noodlerActive ? onOpenNoodler : onOpenHome;
+  const onOpenMobileHomeDestination = noodlerActive ? onOpenNoodler : onOpenMobileHome;
   useDialogFocusScope(mobileDrawerOpen, mobileDrawerRef, mobileDrawerCloseRef);
 
   return (
@@ -260,7 +273,7 @@ export function NoodleShell({
 
               {enableNoodler && (
                 <div className="mt-7">
-                  <NoodleModeToggle activeView={activeView} onOpenHome={onOpenHome} onOpenNoodler={onOpenNoodler} />
+                  <NoodleModeToggle activeMode={resolvedAppMode} onOpenHome={onOpenHome} onOpenNoodler={onOpenNoodler} />
                 </div>
               )}
               <nav className="mt-3 space-y-1" aria-label="Noodle account navigation">
@@ -329,6 +342,11 @@ export function NoodleShell({
                                 <span className="block truncate text-xs text-[var(--muted-foreground)]">
                                   @{account.handle}
                                 </span>
+                                {linkedPublicAccountIds?.has(account.id) && (
+                                  <span className="mt-0.5 block text-[0.65rem] font-semibold text-[var(--noodle-blue)]" aria-label="NoodleR profile linked">
+                                    NoodleR linked
+                                  </span>
+                                )}
                               </span>
                               {selected && <span className="h-2 w-2 rounded-full bg-[var(--noodle-blue)]" />}
                             </button>
@@ -373,13 +391,13 @@ export function NoodleShell({
             <div className="flex min-h-0 flex-1 flex-col px-5 py-4">
               <div className="mb-5 flex h-12 items-center">
                 <NoodleLogo
-                  src={activeView === "noodler" ? NOODLER_LOGO_SRC : NOODLE_LOGO_SRC}
+                  src={noodlerActive ? NOODLER_LOGO_SRC : NOODLE_LOGO_SRC}
                   className="h-10 w-16"
                 />
               </div>
               {enableNoodler && (
                 <div className="mb-3">
-                  <NoodleModeToggle activeView={activeView} onOpenHome={onOpenHome} onOpenNoodler={onOpenNoodler} />
+                  <NoodleModeToggle activeMode={resolvedAppMode} onOpenHome={onOpenHome} onOpenNoodler={onOpenNoodler} />
                 </div>
               )}
               <nav className="space-y-1">
@@ -474,6 +492,11 @@ export function NoodleShell({
                                 <span className="block truncate text-[0.68rem] text-[var(--muted-foreground)]">
                                   @{account.handle}
                                 </span>
+                                {linkedPublicAccountIds?.has(account.id) && (
+                                  <span className="mt-0.5 block text-[0.62rem] font-semibold text-[var(--noodle-blue)]" aria-label="NoodleR profile linked">
+                                    NoodleR linked
+                                  </span>
+                                )}
                               </span>
                               {selected && <span className="h-2 w-2 rounded-full bg-[var(--noodle-blue)]" />}
                             </button>
@@ -518,7 +541,7 @@ export function NoodleShell({
             </div>
           </aside>
 
-          <main className="flex min-h-0 w-full flex-1 flex-col pb-[calc(52px+env(safe-area-inset-bottom))] lg:max-w-[640px] lg:pb-0">
+          <main className="flex min-h-0 w-full flex-1 flex-col pb-[calc(52px+env(safe-area-inset-bottom))] lg:max-w-[640px] lg:border-r lg:border-[var(--noodle-divider)] lg:pb-0">
             {children}
           </main>
           {rightRail}

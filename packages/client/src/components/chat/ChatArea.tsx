@@ -124,6 +124,7 @@ import {
   type ImagePromptOverride,
   type ImagePromptReviewItem,
 } from "../ui/ImagePromptReviewModal";
+import { useTranslation } from "react-i18next";
 
 export type { CharacterMap };
 
@@ -496,6 +497,7 @@ function HomeStarfield() {
 }
 
 export function ChatArea() {
+  const { t } = useTranslation();
   useRenderTimer("chat-area"); // [#3104 diagnostic]
   const activeChatId = useChatStore((s) => s.activeChatId);
   const streamingChatId = useChatStore((s) => s.streamingChatId);
@@ -840,9 +842,7 @@ export function ChatArea() {
   const chatCharIds = useMemo(() => getChatCharacterIds({ characterIds: chatCharacterIdsRaw }), [chatCharacterIdsRaw]);
   const chatPersonaId = useMemo(() => resolveChatPersonaId(chat), [chat]);
   const { data: chatPersona } = usePersona(chatPersonaId);
-  const { data: activePersonaFallback } = useActivePersona(
-    !!chat?.id && !chatPersonaId && chatMode === "conversation",
-  );
+  const { data: activePersonaFallback } = useActivePersona(!!chat?.id && !chatPersonaId && chatMode === "conversation");
 
   const activeCharacterQueries = useQueries({
     queries: chatCharIds.map((id) => ({
@@ -1406,11 +1406,29 @@ export function ChatArea() {
   // Sync translation config from chat metadata to the translation store
   useEffect(() => {
     if (!chat?.id) return;
+    const legacyTargetLanguage = chatMeta.translationTargetLang?.trim() || "en";
+    const legacySystemPrompt = typeof chatMeta.translationPrompt === "string" ? chatMeta.translationPrompt : undefined;
+    const inputSystemPrompt =
+      chatMeta.translationInputPrompt === undefined
+        ? legacySystemPrompt
+        : typeof chatMeta.translationInputPrompt === "string"
+          ? chatMeta.translationInputPrompt
+          : undefined;
+    const outputSystemPrompt =
+      chatMeta.translationOutputPrompt === undefined
+        ? legacySystemPrompt
+        : typeof chatMeta.translationOutputPrompt === "string"
+          ? chatMeta.translationOutputPrompt
+          : undefined;
     useTranslationStore.getState().setConfig({
       provider: chatMeta.translationProvider ?? "google",
-      targetLanguage: chatMeta.translationTargetLang ?? "en",
+      // A cleared settings field stores "" — fall back to the legacy/default
+      // language so translation never runs with an empty target.
+      inputTargetLanguage: chatMeta.translationInputTargetLang?.trim() || legacyTargetLanguage,
+      outputTargetLanguage: chatMeta.translationOutputTargetLang?.trim() || legacyTargetLanguage,
       connectionId: chatMeta.translationConnectionId,
-      systemPrompt: typeof chatMeta.translationPrompt === "string" ? chatMeta.translationPrompt : undefined,
+      inputSystemPrompt,
+      outputSystemPrompt,
       deeplApiKey: chatMeta.translationDeeplApiKey,
       deeplxUrl: chatMeta.translationDeeplxUrl,
     });
@@ -1418,8 +1436,12 @@ export function ChatArea() {
     chat?.id,
     chatMeta.translationProvider,
     chatMeta.translationTargetLang,
+    chatMeta.translationInputTargetLang,
+    chatMeta.translationOutputTargetLang,
     chatMeta.translationConnectionId,
     chatMeta.translationPrompt,
+    chatMeta.translationInputPrompt,
+    chatMeta.translationOutputPrompt,
     chatMeta.translationDeeplApiKey,
     chatMeta.translationDeeplxUrl,
   ]);
@@ -1943,9 +1965,7 @@ export function ChatArea() {
     const types =
       manualTypes.length > 0
         ? manualTypes
-        : Array.from(enabledAgentTypes).filter(
-            (type) => isBuiltInTrackerAgentType(type) || !isBuiltInAgentType(type),
-          );
+        : Array.from(enabledAgentTypes).filter((type) => isBuiltInTrackerAgentType(type) || !isBuiltInAgentType(type));
     if (types.length === 0) return;
     await retryAgents(activeChatId, types);
   }, [activeChatId, isStreaming, agentProcessing, enabledAgentTypes, manualTrackerTypes, retryAgents]);
@@ -2842,7 +2862,7 @@ export function ChatArea() {
                 <div className="flex w-full max-w-2xl flex-col items-center gap-1">
                   <div className="mari-chrome-text-muted flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 text-center text-[0.625rem] leading-tight sm:text-xs">
                     <span>
-                      Created by{" "}
+                      {t("home.footer.createdBy")}{" "}
                       <a
                         href="https://spicymarinara.github.io/"
                         target="_blank"
@@ -2853,7 +2873,7 @@ export function ChatArea() {
                       </a>
                     </span>
                     <span>
-                      Partnered with{" "}
+                      {t("home.footer.partneredWith")}{" "}
                       <a
                         href="https://linkapi.ai/"
                         target="_blank"
@@ -2864,7 +2884,7 @@ export function ChatArea() {
                       </a>
                     </span>
                     <span>
-                      Art and logo by{" "}
+                      {t("home.footer.artBy")}{" "}
                       <a
                         href="https://huntercolliex.carrd.co/"
                         target="_blank"
@@ -2898,7 +2918,7 @@ export function ChatArea() {
                       <svg width="0.875rem" height="0.875rem" viewBox="0 0 24 24" fill="currentColor">
                         <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
                       </svg>
-                      Support
+                      {t("home.actions.support")}
                     </a>
                     <button
                       type="button"
@@ -2909,7 +2929,7 @@ export function ChatArea() {
                       className="mari-chrome-control mari-chrome-control--small text-xs"
                     >
                       <List size="0.875rem" />
-                      Credits
+                      {t("home.actions.credits")}
                     </button>
                   </div>
 
@@ -2919,10 +2939,10 @@ export function ChatArea() {
                       type="button"
                       onClick={() => useUIStore.getState().openModal("docs-viewer")}
                       className="mari-chrome-control mari-chrome-control--small text-xs"
-                      title="Browse the documentation"
+                      title={t("home.actions.documentationHelp")}
                     >
                       <BookOpen size="0.875rem" />
-                      Documentation
+                      {t("home.actions.documentation")}
                     </button>
 
                     {/* Restart tutorial */}
@@ -2930,10 +2950,10 @@ export function ChatArea() {
                       type="button"
                       onClick={() => useUIStore.getState().setHasCompletedOnboarding(false)}
                       className="mari-chrome-control mari-chrome-control--small text-xs"
-                      title="Replay tutorial"
+                      title={t("home.actions.replayTutorialHelp")}
                     >
                       <HelpCircle size="0.875rem" />
-                      Replay Tutorial
+                      {t("home.actions.replayTutorial")}
                     </button>
                   </div>
                 </div>
@@ -3074,7 +3094,11 @@ export function ChatArea() {
             onCloseSettings={handleCloseSettingsPanel}
             onCloseGallery={handleCloseGalleryPanel}
             onOpenScheduleEditor={handleOpenScheduleEditor}
-            onIllustrate={() => retryAgents(activeChatId, ["illustrator"])}
+            onIllustrate={() =>
+              retryAgents(activeChatId, ["illustrator"], {
+                illustratorRetryTargets: ["illustration"],
+              })
+            }
             onWizardFinish={() => {
               setWizardOpen(false);
               handleOpenSettingsPanel();
@@ -3285,7 +3309,11 @@ export function ChatArea() {
           onCloseSettings={handleCloseSettingsPanel}
           onCloseGallery={handleCloseGalleryPanel}
           onOpenScheduleEditor={handleOpenScheduleEditor}
-          onIllustrate={() => retryAgents(activeChatId, ["illustrator"])}
+          onIllustrate={() =>
+            retryAgents(activeChatId, ["illustrator"], {
+              illustratorRetryTargets: ["illustration"],
+            })
+          }
           onGenerateBackground={handleGenerateRoleplayBackground}
           onGenerateVideo={() => handleGenerateRoleplaySceneVideo()}
           onAnimateImage={(image) => handleGenerateRoleplaySceneVideo({ galleryImageId: image.id })}

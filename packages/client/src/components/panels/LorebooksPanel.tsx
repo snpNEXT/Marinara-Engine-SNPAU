@@ -62,6 +62,7 @@ import { useTouchFolderDrag } from "../../hooks/use-touch-folder-drag";
 import { SelectionActionBar } from "../ui/SelectionActionBar";
 import { SmoothFolderContent } from "../ui/SmoothFolderContent";
 import { TouchDragHandle } from "../ui/TouchDragHandle";
+import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 
 const CATEGORIES: Array<{ id: LorebookCategory | "all" | "active"; label: string }> = [
   { id: "all", label: "All" },
@@ -117,6 +118,7 @@ function remapLorebookEntryRelationships(
 }
 
 export function LorebooksPanel() {
+  const localize = useLocalizedUiText();
   const activeCategory = useUIStore((s) => s.lorebookPanelCategory);
   const setActiveCategory = useUIStore((s) => s.setLorebookPanelCategory);
   const searchQuery = useUIStore((s) => s.lorebookPanelSearch);
@@ -730,7 +732,7 @@ export function LorebooksPanel() {
           />
           <input
             type="text"
-            placeholder="Search lorebooks"
+            placeholder={localize("Search lorebooks")}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="mari-chrome-field h-10 w-full py-0 pl-8 pr-3 text-xs md:h-9"

@@ -2,10 +2,11 @@ import { mkdir, rename, unlink, writeFile } from "fs/promises";
 import { join } from "path";
 import { DATA_DIR } from "../../utils/data-dir.js";
 import { newId } from "../../utils/id-generator.js";
-import { logger } from "../../lib/logger.js";
+import { logger, logDebugOverride } from "../../lib/logger.js";
 import { assertInsideDir, safeFetch } from "../../utils/security.js";
 import { notifyGenerationFallback, type GenerationFallbackNotifier } from "../generation/fallback-notification.js";
 import { runMediaGenerationRequest } from "../image/image-generation-queue.js";
+import { buildAtlasCloudVideoRequest, runAtlasCloudPrediction } from "../media/atlas-cloud.js";
 
 export interface VideoReferenceImage {
   base64: string;
@@ -33,6 +34,8 @@ export interface VideoGenerationRequest {
   lastFrameImage?: VideoReferenceImage | null;
   publicReferenceUpload?: VideoReferencePublicUploadOptions | null;
   signal?: AbortSignal;
+  /** UI debug mode: surface provider payload logging without LOG_LEVEL=debug. */
+  debugMode?: boolean;
   /** Serialize this request with other media jobs using the same configured connection. */
   queue?: boolean;
   /** Stable configured connection ID used to scope queued media jobs. */
@@ -65,6 +68,7 @@ const DEFAULT_GEMINI_OMNI_MODEL = "gemini-omni-flash-preview";
 const DEFAULT_GOOGLE_VEO_MODEL = "veo-3.1-generate-preview";
 const DEFAULT_XAI_VIDEO_MODEL = "grok-imagine-video-1.5";
 const DEFAULT_OPENROUTER_VIDEO_MODEL = "google/veo-3.1";
+const DEFAULT_ATLAS_CLOUD_VIDEO_MODEL = "google/veo3.1/text-to-video";
 const DEFAULT_SEEDANCE_VIDEO_MODEL = "seedance-2-0";
 const DEFAULT_GOOGLE_VEO_RESOLUTION = "720p";
 const DEFAULT_XAI_VIDEO_RESOLUTION = "720p";
@@ -140,6 +144,11 @@ async function generateVideoUnqueued(
     if (resolvedService === "openrouter") {
       return await withVideoGenerationDeadline(request.signal, VIDEO_GEN_TIMEOUT, (signal) =>
         generateOpenRouterVideo(baseUrl, apiKey, { ...primaryRequest, signal }),
+      );
+    }
+    if (resolvedService === "atlas") {
+      return await withVideoGenerationDeadline(request.signal, VIDEO_GEN_TIMEOUT, (signal) =>
+        generateAtlasCloudVideo(baseUrl, apiKey, { ...primaryRequest, signal }),
       );
     }
     if (resolvedService === "seedance") {
@@ -219,6 +228,9 @@ export function resolveVideoRequestDuration(
   if (resolvedService === "seedance") {
     return Math.min(15, Math.max(4, durationSeconds));
   }
+  if (resolvedService === "atlas") {
+    return Math.min(60, durationSeconds);
+  }
   return durationSeconds;
 }
 
@@ -267,6 +279,9 @@ function normalizeVideoService(value: string): string {
   }
   if (normalized === "openrouter" || normalized === "open-router") {
     return "openrouter";
+  }
+  if (normalized === "atlas" || normalized === "atlas-cloud" || normalized === "atlascloud") {
+    return "atlas";
   }
   if (normalized === "seedance" || normalized === "seedance2" || normalized === "seedance-2") {
     return "seedance";
@@ -968,6 +983,37 @@ async function generateSeedanceVideo(
   throw new Error("Seedance video generation failed after retrying an opaque provider task failure");
 }
 
+async function generateAtlasCloudVideo(
+  baseUrl: string,
+  apiKey: string,
+  request: VideoGenerationRequest,
+): Promise<VideoGenerationResult> {
+  const referenceImageDataUrl = request.referenceImage
+    ? `data:${request.referenceImage.mimeType};base64,${stripDataUrl(request.referenceImage.base64)}`
+    : undefined;
+  const body = buildAtlasCloudVideoRequest({
+    model: request.model?.trim() || DEFAULT_ATLAS_CLOUD_VIDEO_MODEL,
+    prompt: request.prompt,
+    durationSeconds: request.durationSeconds,
+    aspectRatio: request.aspectRatio,
+    resolution: request.resolution,
+    referenceImageDataUrl,
+  });
+  logDebugOverride(
+    request.debugMode === true,
+    "[video-gen/atlas-cloud] final request payload:\n%s",
+    JSON.stringify(body, null, 2),
+  );
+  const outputUrl = await runAtlasCloudPrediction({
+    baseUrl,
+    apiKey,
+    kind: "video",
+    body,
+    signal: request.signal,
+  });
+  return downloadAtlasCloudVideo(outputUrl, baseUrl, apiKey, request.signal);
+}
+
 function withVideoGenerationDeadline<T>(
   externalSignal: AbortSignal | undefined,
   timeoutMs: number,
@@ -1204,6 +1250,42 @@ async function downloadSeedanceVideo(
   }
   const buffer = Buffer.from(await res.arrayBuffer());
   if (!isMp4Buffer(buffer)) throw new Error("Seedance returned a non-MP4 video payload");
+  return { base64: buffer.toString("base64"), mimeType: "video/mp4", ext: "mp4" };
+}
+
+async function downloadAtlasCloudVideo(
+  url: string,
+  baseUrl: string,
+  apiKey: string,
+  signal: AbortSignal | undefined,
+): Promise<VideoGenerationResult> {
+  const headers: Record<string, string> = { Accept: "video/mp4,video/*;q=0.9,*/*;q=0.1" };
+  try {
+    if (new URL(url).origin === new URL(baseUrl).origin) {
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+  } catch {
+    throw new Error("Atlas Cloud returned an invalid video URL");
+  }
+  const res = await safeFetch(url, {
+    method: "GET",
+    headers,
+    signal,
+    policy: {
+      allowLocal: false,
+      allowLoopback: false,
+      allowMdns: false,
+      allowedProtocols: ["https:"],
+    },
+    maxResponseBytes: MAX_VIDEO_RESPONSE_BYTES,
+    decodeCompressedResponse: true,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Failed to download Atlas Cloud video (${res.status}): ${formatProviderError(text)}`);
+  }
+  const buffer = Buffer.from(await res.arrayBuffer());
+  if (!isMp4Buffer(buffer)) throw new Error("Atlas Cloud returned a non-MP4 video payload");
   return { base64: buffer.toString("base64"), mimeType: "video/mp4", ext: "mp4" };
 }
 

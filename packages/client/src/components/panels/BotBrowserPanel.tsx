@@ -11,10 +11,12 @@ import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { sortBasicPanelItems } from "../../lib/panel-sort";
 import { ContextMenu, type ContextMenuItem } from "../ui/ContextMenu";
 import { showConfirmDialog } from "../../lib/app-dialogs";
+import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 
 type CharacterRow = { id: string; data: string; avatarPath: string | null; createdAt: string; updatedAt: string };
 
 export function BotBrowserPanel() {
+  const localize = useLocalizedUiText();
   const { data: characters, isLoading } = useCharacters();
   const deleteCharacter = useDeleteCharacter();
   const openCharacterDetail = useUIStore((s) => s.openCharacterDetail);
@@ -135,7 +137,7 @@ export function BotBrowserPanel() {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search imported..."
+            placeholder={localize("Search imported...")}
             className="mari-chrome-field h-10 w-full py-0 pl-8 pr-3 text-xs md:h-9"
           />
         </div>

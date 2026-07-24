@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type UIEvent } from "react";
 import { ArrowLeft, ArrowUpDown, Check, Download, Hash, Pencil, Plus, Search, Star, User } from "lucide-react";
 import { includesTextForMatch, normalizeTextForMatch, type CharacterData } from "@marinara-engine/shared";
+import { useTranslation } from "react-i18next";
 import {
   flattenCharacterPages,
   flattenPersonaPages,
@@ -10,6 +11,7 @@ import {
 import { getCharacterTitle } from "../../lib/character-display";
 import { estimateCharacterCardTokens, formatEstimatedTokens } from "../../lib/character-token-count";
 import { cn, getAvatarCropStyle, parseAvatarCropJson, type AvatarCropValue } from "../../lib/utils";
+import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 import {
   useUIStore,
   type CardLibraryKind,
@@ -367,6 +369,8 @@ function CardLibraryDetailCard({
 }
 
 export function CharacterLibraryView() {
+  const { t } = useTranslation();
+  const localize = useLocalizedUiText();
   const kind = useUIStore((s) => s.cardLibraryKind);
   const copy = LIBRARY_COPY[kind];
   const isPersonaLibrary = kind === "personas";
@@ -606,7 +610,11 @@ export function CharacterLibraryView() {
               <input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder={isPersonaLibrary ? "Search personas" : 'Search characters or -tag:"tag name"'}
+                placeholder={
+                  isPersonaLibrary
+                    ? localize("Search personas")
+                    : t("search.panels.charactersWithExcludedTag", { query: '-tag:"tag name"' })
+                }
                 className={cn(libraryToolbarFieldClass, "pl-7 pr-2.5")}
               />
             </div>

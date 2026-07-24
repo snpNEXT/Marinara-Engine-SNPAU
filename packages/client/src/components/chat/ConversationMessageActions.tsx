@@ -15,6 +15,8 @@ import {
   Trash2,
 } from "lucide-react";
 import type { MessageExtra } from "@marinara-engine/shared";
+import type { RefObject } from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 import { MsgAction } from "./ConversationMessageShared";
 import { ReactionAddButton } from "./ReactionAddButton";
@@ -26,6 +28,7 @@ export interface ConversationMessageActionsProps {
   // Visibility
   showActions: boolean;
   forceShowActions?: boolean;
+  thinkingOnly?: boolean;
   // State
   copied: boolean;
   translatedText?: string | null;
@@ -33,6 +36,7 @@ export interface ConversationMessageActionsProps {
   canRegenerate: boolean;
   isLastAssistantMessage?: boolean;
   thinking?: string | null;
+  thinkingButtonRef: RefObject<HTMLButtonElement | null>;
   generationReplay: MessageExtra["generationReplay"] | null;
   isGuided: boolean;
   regenerateButtonTitle: string;
@@ -57,12 +61,14 @@ export function ConversationMessageActions({
   isUser,
   showActions,
   forceShowActions,
+  thinkingOnly,
   copied,
   translatedText,
   isHiddenFromAI,
   canRegenerate,
   isLastAssistantMessage,
   thinking,
+  thinkingButtonRef,
   generationReplay,
   regenerateButtonTitle,
   regenerateGuidedClass,
@@ -78,6 +84,7 @@ export function ConversationMessageActions({
   onShowThinking,
   onPickReaction,
 }: ConversationMessageActionsProps) {
+  const { t } = useTranslation();
   const visible = showActions || forceShowActions;
   const tabIdx = visible ? undefined : -1;
   return (
@@ -88,6 +95,7 @@ export function ConversationMessageActions({
           ? "visible pointer-events-auto opacity-100"
           : "invisible pointer-events-none opacity-0 group-hover:visible group-hover:pointer-events-auto group-hover:opacity-100 focus-within:visible focus-within:pointer-events-auto focus-within:opacity-100",
         isBubbleStyle && !isUser ? "left-12" : "right-4",
+        thinkingOnly && "[&>*:not(.mari-message-thinking-action)]:hidden",
       )}
       aria-hidden={!visible}
     >
@@ -137,7 +145,14 @@ export function ConversationMessageActions({
         />
       )}
       {thinking && !isUser && (
-        <MsgAction icon={<Brain size="0.75rem" />} onClick={onShowThinking} title="View thoughts" tabIndex={tabIdx} />
+        <MsgAction
+          icon={<Brain size="0.75rem" />}
+          onClick={onShowThinking}
+          title={t("chat.message.thoughts.view")}
+          tabIndex={tabIdx}
+          className="mari-message-thinking-action"
+          buttonRef={thinkingButtonRef}
+        />
       )}
       {onDelete && (
         <MsgAction

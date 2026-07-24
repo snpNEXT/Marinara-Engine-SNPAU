@@ -11,7 +11,7 @@ import type { AvatarCropValue } from "../lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../lib/api-client";
-import { toAutonomousPresenceStatus } from "../lib/user-status";
+import { shouldSuppressAutonomousMessages, toAutonomousPresenceStatus } from "../lib/user-status";
 import { useChatStore } from "../stores/chat.store";
 import { useUIStore } from "../stores/ui.store";
 import { showLocalMessageNotification, showNativeMessageNotification } from "../lib/local-notifications";
@@ -113,8 +113,8 @@ export function useBackgroundAutonomousPolling() {
       const autonomousPresenceStatus = toAutonomousPresenceStatus(userStatus);
 
       // Don't trigger autonomous messages when user is DND
-      if (userStatus === "dnd" || backgroundChats.length === 0) {
-        if (userStatus === "dnd" && backgroundChats.length > 0) {
+      if (shouldSuppressAutonomousMessages(userStatus) || backgroundChats.length === 0) {
+        if (shouldSuppressAutonomousMessages(userStatus) && backgroundChats.length > 0) {
           await Promise.allSettled(
             backgroundChats.map((chat) =>
               api
@@ -151,6 +151,17 @@ export function useBackgroundAutonomousPolling() {
               let receivedTokens = false;
               let shouldClearAutonomousFlag = true;
               try {
+                const currentUserStatus = useUIStore.getState().userStatus;
+                if (shouldSuppressAutonomousMessages(currentUserStatus)) {
+                  await api
+                    .post("/conversation/activity/presence", {
+                      chatId: chat.id,
+                      userStatus: toAutonomousPresenceStatus(currentUserStatus),
+                    })
+                    .catch(() => {});
+                  return;
+                }
+
                 // Re-check guard — a generation may have started for this chat
                 // during the busy delay.
                 if (useChatStore.getState().abortControllers.has(chat.id)) {

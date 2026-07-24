@@ -75,6 +75,7 @@ import { resolveImageConnectionFallback } from "../../services/generation/media-
 import type { GenerationFallbackNotifier } from "../../services/generation/fallback-notification.js";
 import { createReplyFallbackNotifier } from "./fallback-notification.js";
 import { runImageGenerationRequest } from "../../services/image/image-generation-queue.js";
+import { generateIllustratorImageVariants } from "../../services/image/illustrator-image-variants.js";
 import { resolveImagePromptReviewSize } from "../../services/image/image-prompt-review.js";
 import {
   parseIllustratorPromptReviewOverride,
@@ -160,6 +161,7 @@ import {
   illustratorTrackerLocationChanged,
 } from "../../services/generation/illustrator-background-generation.js";
 import {
+  isExclusiveIllustratorRetryTarget,
   parseIllustratorRetryTargets,
   shouldRetryIllustratorTarget,
   type IllustratorRetryTarget,
@@ -546,6 +548,7 @@ async function buildRetryAgentContext(args: {
   streaming: boolean;
   wrapFormat: WrapFormat;
   forceIllustratorBackgroundGeneration: boolean;
+  forceIllustratorImageGeneration: boolean;
   /**
    * When retrying agents for a specific assistant message (e.g. refreshing cached prompt injections),
    * use the game-state snapshot committed for that message+swipe — not the latest chat snapshot.
@@ -571,6 +574,7 @@ async function buildRetryAgentContext(args: {
     streaming,
     wrapFormat,
     forceIllustratorBackgroundGeneration,
+    forceIllustratorImageGeneration,
     historicalGameStateAnchor,
     useLatestGameStateFallback = true,
   } = args;
@@ -955,6 +959,10 @@ async function buildRetryAgentContext(args: {
     agentContext.memory._currentBackground = currentBackground;
   }
 
+  if (resolvedAgentTypes.has("illustrator") && forceIllustratorImageGeneration) {
+    agentContext.memory._forceIllustratorImageGeneration = true;
+  }
+
   const spotifyRetryConfig = enabledConfigs.find((config) => config.type === "spotify");
   const spotifyMusicSettings = parseSettingsRecord(spotifyRetryConfig?.settings);
   const spotifyMusicUsesYoutube = musicAgentUsesYoutube(spotifyMusicSettings);
@@ -1198,8 +1206,9 @@ async function resolveRetryAgents(args: {
   const resolvedAgents: ResolvedRetryAgent[] = [];
   const skippedLocalSidecarAgents: string[] = [];
   const defaultAgentConnectionAgents: string[] = [];
-  const localSidecarAvailableForTrackers =
-    sidecarModelService.getConfig().useForTrackers && sidecarModelService.getConfiguredModelRef() !== null;
+  // Explicit per-agent sidecar selection is valid independently of the global
+  // tracker default; the provider starts the configured model on demand.
+  const localSidecarAvailableForTrackers = sidecarModelService.getConfiguredModelRef() !== null;
   const unavailableConnectionWarnings = new Map<
     string,
     { reason: string; connectionName?: string; agentNames: string[] }
@@ -2517,8 +2526,11 @@ async function applyRetryResultEffects(args: {
   const chats = createChatsStorage(app.db);
   const agentsStore = createAgentsStorage(app.db);
   const chatMeta = parseExtra(chat.metadata) as Record<string, unknown>;
-  const isManualIllustratorBackgroundRequest =
-    illustratorRetryTargets?.length === 1 && illustratorRetryTargets[0] === "background";
+  const isManualIllustratorBackgroundRequest = isExclusiveIllustratorRetryTarget(
+    illustratorRetryTargets,
+    "background",
+  );
+  const isManualIllustratorImageRequest = isExclusiveIllustratorRetryTarget(illustratorRetryTargets, "illustration");
   let currentResponseForRewrite = agentContext.mainResponse;
   const retryOwnerSpatialProjection =
     (retryMessageId
@@ -3023,7 +3035,7 @@ async function applyRetryResultEffects(args: {
         "Illustrator";
       try {
         const illData = result.data as Record<string, unknown>;
-        const shouldGenerate = illData.shouldGenerate === true;
+        const shouldGenerate = isManualIllustratorImageRequest || illData.shouldGenerate === true;
         const imagePrompt = ((illData.prompt as string) ?? "").trim();
         const negativePrompt = ((illData.negativePrompt as string) ?? "").trim();
         const style = ((illData.style as string) ?? "").trim();
@@ -3221,79 +3233,93 @@ async function applyRetryResultEffects(args: {
               type: "illustration_queued",
               data: { messageId: retryMessageId },
             });
-            const imageResult = await runImageGenerationRequest({
-              connectionKey: imageConnectionQueueKey,
-              queue: queueImageGenerationRequests,
-              signal: agentContext.signal,
-              task: () =>
-                generateImage(imgModel, imgBaseUrl, imgApiKey, imgServiceHint, {
-                  prompt: promptSubmission.prompt,
-                  negativePrompt: promptSubmission.negativePrompt || undefined,
-                  model: imgModel,
-                  width: imgWidth,
-                  height: imgHeight,
-                  imageEndpointId: imgConnFull.imageEndpointId || undefined,
-                  comfyWorkflow: (imgConnFull as any).comfyuiWorkflow || undefined,
-                  imageDefaults,
-                  referenceImages,
+            const imageResults = await generateIllustratorImageVariants({
+              count: chatMeta.illustratorImagesPerGeneration,
+              generate: () =>
+                runImageGenerationRequest({
+                  connectionKey: imageConnectionQueueKey,
+                  queue: queueImageGenerationRequests,
                   signal: agentContext.signal,
-                  fallback: imageFallback,
-                  onFallback: createReplyFallbackNotifier(reply),
+                  task: () =>
+                    generateImage(imgModel, imgBaseUrl, imgApiKey, imgServiceHint, {
+                      prompt: promptSubmission.prompt,
+                      negativePrompt: promptSubmission.negativePrompt || undefined,
+                      model: imgModel,
+                      width: imgWidth,
+                      height: imgHeight,
+                      imageEndpointId: imgConnFull.imageEndpointId || undefined,
+                      comfyWorkflow: (imgConnFull as any).comfyuiWorkflow || undefined,
+                      imageDefaults,
+                      referenceImages,
+                      signal: agentContext.signal,
+                      fallback: imageFallback,
+                      onFallback: createReplyFallbackNotifier(reply),
+                    }),
                 }),
+              onVariantError: (error, index) =>
+                logger.warn(error, "[retry-agents] Illustrator image variant %d failed", index + 1),
             });
 
-            const filePath = saveImageToDisk(chatId, imageResult.base64, imageResult.ext);
-            const galleryEntry = await galleryStore.create({
-              chatId,
-              filePath,
-              prompt: promptSubmission.prompt,
-              provider: "image_generation",
-              model: imgModel || "unknown",
-              width: imgWidth,
-              height: imgHeight,
-            });
-            await persistGeneratedImageToEntityGalleries({
-              sourceFilePath: filePath,
-              characterIds: referenceResolution.characterIds,
-              personaIds: referenceResolution.personaId ? [referenceResolution.personaId] : [],
-              characterGallery: createCharacterGalleryStorage(app.db),
-              personaGallery: createPersonaGalleryStorage(app.db),
-              prompt: promptSubmission.prompt,
-              provider: imgConnFull.provider ?? "image_generation",
-              model: imgModel || "unknown",
-              width: imgWidth,
-              height: imgHeight,
-            });
-
-            const filename = filePath.split("/").pop()!;
-            const imageUrl = `/api/gallery/file/${chatId}/${encodeURIComponent(filename)}`;
-
-            // Attach to message
-            if (retryMessageId) {
-              const chatsDb = createChatsStorage(app.db);
-              const attachment = {
-                type: "image",
-                url: imageUrl,
-                filename: `illustration.${imageResult.ext}`,
+            for (const [variantIndex, imageResult] of imageResults.entries()) {
+              const filePath = saveImageToDisk(chatId, imageResult.base64, imageResult.ext);
+              // A fallback connection may have rendered this variant; record
+              // the connection that actually produced it.
+              const effectiveImageProvider =
+                imageResult.effectiveConnection?.provider ?? imgConnFull.provider ?? "image_generation";
+              const effectiveImageModel = imageResult.effectiveConnection?.model || imgModel || "unknown";
+              const galleryEntry = await galleryStore.create({
+                chatId,
+                filePath,
                 prompt: promptSubmission.prompt,
-                galleryId: (galleryEntry as any)?.id,
-              };
-              await chatsDb.appendSwipeAttachment(retryMessageId, retrySwipeIndex, attachment);
-              await chatsDb.appendMessageAttachmentForActiveSwipe(retryMessageId, retrySwipeIndex, attachment);
+                provider: effectiveImageProvider,
+                model: effectiveImageModel,
+                width: imgWidth,
+                height: imgHeight,
+              });
+              await persistGeneratedImageToEntityGalleries({
+                sourceFilePath: filePath,
+                characterIds: referenceResolution.characterIds,
+                personaIds: referenceResolution.personaId ? [referenceResolution.personaId] : [],
+                characterGallery: createCharacterGalleryStorage(app.db),
+                personaGallery: createPersonaGalleryStorage(app.db),
+                prompt: promptSubmission.prompt,
+                provider: effectiveImageProvider,
+                model: effectiveImageModel,
+                width: imgWidth,
+                height: imgHeight,
+              });
+
+              const filename = filePath.split("/").pop()!;
+              const imageUrl = `/api/gallery/file/${chatId}/${encodeURIComponent(filename)}`;
+
+              // Attach to message
+              if (retryMessageId) {
+                const chatsDb = createChatsStorage(app.db);
+                const attachment = {
+                  type: "image",
+                  url: imageUrl,
+                  filename: `illustration_${variantIndex + 1}.${imageResult.ext}`,
+                  prompt: promptSubmission.prompt,
+                  galleryId: (galleryEntry as any)?.id,
+                };
+                await chatsDb.appendSwipeAttachment(retryMessageId, retrySwipeIndex, attachment);
+                await chatsDb.appendMessageAttachmentForActiveSwipe(retryMessageId, retrySwipeIndex, attachment);
+              }
+
+              sendSseEvent(reply, {
+                type: "illustration",
+                data: {
+                  messageId: retryMessageId,
+                  imageUrl,
+                  prompt: promptSubmission.prompt,
+                  reason: illData.reason,
+                  galleryId: (galleryEntry as any)?.id,
+                },
+              });
             }
-
-            sendSseEvent(reply, {
-              type: "illustration",
-              data: {
-                messageId: retryMessageId,
-                imageUrl,
-                prompt: promptSubmission.prompt,
-                reason: illData.reason,
-                galleryId: (galleryEntry as any)?.id,
-              },
-            });
             logger.info(
-              "[retry-agents] Illustrator generated: %s...",
+              "[retry-agents] Illustrator generated %d image(s): %s...",
+              imageResults.length,
               (illData.reason as string | undefined)?.slice(0, 80) ?? imagePrompt.slice(0, 80),
             );
             if (retryMessageId) {
@@ -3586,8 +3612,14 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
     if (illustratorRetryTargets && !agentTypes.includes("illustrator")) {
       return reply.status(400).send({ error: "Illustrator retry targets require an Illustrator retry" });
     }
-    const isManualIllustratorBackgroundRequest =
-      illustratorRetryTargets?.length === 1 && illustratorRetryTargets[0] === "background";
+    const isManualIllustratorBackgroundRequest = isExclusiveIllustratorRetryTarget(
+      illustratorRetryTargets,
+      "background",
+    );
+    const isManualIllustratorImageRequest = isExclusiveIllustratorRetryTarget(
+      illustratorRetryTargets,
+      "illustration",
+    );
 
     startSseReply(reply, { "X-Accel-Buffering": "no" });
     const onFallback = createReplyFallbackNotifier(reply);
@@ -3757,6 +3789,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
         streaming,
         wrapFormat: retryWrapFormat,
         forceIllustratorBackgroundGeneration: isManualIllustratorBackgroundRequest,
+        forceIllustratorImageGeneration: isManualIllustratorImageRequest,
         historicalGameStateAnchor,
       });
       agentContext.signal = abortController.signal;
@@ -3780,6 +3813,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
               streaming,
               wrapFormat: retryWrapFormat,
               forceIllustratorBackgroundGeneration: isManualIllustratorBackgroundRequest,
+              forceIllustratorImageGeneration: isManualIllustratorImageRequest,
               historicalGameStateAnchor: preGenerationGameStateAnchor,
               useLatestGameStateFallback: false,
             })

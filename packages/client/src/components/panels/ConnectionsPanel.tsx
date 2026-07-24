@@ -90,6 +90,7 @@ import { SettingsSwitch } from "./settings/SettingControls";
 import { SelectionActionBar } from "../ui/SelectionActionBar";
 import { SmoothFolderContent } from "../ui/SmoothFolderContent";
 import { TouchDragHandle } from "../ui/TouchDragHandle";
+import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 
 const CONNECTION_ICON_COLORS = {
   from: "from-sky-400",
@@ -1250,6 +1251,7 @@ function ConnectionFolderRow({
 }
 
 export function ConnectionsPanel() {
+  const localize = useLocalizedUiText();
   const { data: connections, isLoading } = useConnections();
   const uploadConnectionImage = useUploadConnectionImage();
   const deleteConnection = useDeleteConnection();
@@ -1700,7 +1702,7 @@ export function ConnectionsPanel() {
           />
           <input
             type="text"
-            placeholder="Search connections..."
+            placeholder={localize("Search connections...")}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             className="mari-chrome-field h-10 w-full py-0 pl-8 pr-3 text-xs md:h-9"

@@ -2,11 +2,14 @@ import {
   createElement,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
 } from "react";
+import { useTranslation } from "react-i18next";
 import { AlertTriangle, RefreshCw, X } from "lucide-react";
+import type { CapabilityLocalizationContext } from "@marinara-engine/shared";
 import {
   retryCapabilityClientModule,
   useCapabilityClientModuleState,
@@ -55,8 +58,9 @@ function CapabilityLoadingState({
   name?: string | null;
   onClose?: () => void;
 }) {
+  const { t } = useTranslation();
   const displayName = capabilityName(packageId, name);
-  const statusCopy = `Loading ${displayName}`;
+  const statusCopy = t("capabilities.loading", { name: displayName });
   if (view === "surface") {
     return (
       <span
@@ -105,7 +109,7 @@ function CapabilityLoadingState({
               onClick={onClose}
               className="inline-flex min-h-11 items-center gap-1.5 rounded-md px-3 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/60"
             >
-              <X size="0.75rem" /> Close
+              <X size="0.75rem" /> {t("capabilities.actions.close")}
             </button>
           ) : null}
         </div>
@@ -134,7 +138,7 @@ function CapabilityLoadingState({
               onClick={onClose}
               className="inline-flex min-h-11 items-center gap-1.5 rounded-md px-3 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/60"
             >
-              <X size="0.75rem" /> Back to Agents
+              <X size="0.75rem" /> {t("capabilities.actions.backToAgents")}
             </button>
           ) : null}
         </div>
@@ -174,12 +178,16 @@ function CapabilityFailureState({
   onClose?: () => void;
   name?: string | null;
 }) {
+  const { t } = useTranslation();
   const displayName = capabilityName(packageId, name);
-  const title = kind === "load" ? `${displayName} didn't load` : `${displayName} stopped`;
+  const title = t(
+    kind === "load" ? "capabilities.failure.load.title" : "capabilities.failure.runtime.title",
+    { name: displayName },
+  );
   const description =
     kind === "load"
-      ? "The downloaded interface could not start. Your chat and saved data are unchanged."
-      : "The downloaded interface hit an error. Your chat and saved data are unchanged.";
+      ? t("capabilities.failure.load.description")
+      : t("capabilities.failure.runtime.description");
   if (view === "toolbar") {
     return (
       <button
@@ -189,7 +197,11 @@ function CapabilityFailureState({
           className === "contents" ? undefined : className,
           "inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--destructive)]/30 bg-[var(--destructive)]/10 text-[var(--destructive)] transition-colors hover:bg-[var(--destructive)]/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/60",
         )}
-        aria-label={`Try loading ${displayName} again`}
+        aria-label={
+          kind === "load"
+            ? t("capabilities.failure.load.retryLabel", { name: displayName })
+            : t("capabilities.actions.tryAgain")
+        }
         title={title}
         data-capability-client-state="error"
         data-capability-package-id={packageId}
@@ -223,7 +235,7 @@ function CapabilityFailureState({
             onClick={onRetry}
             className="inline-flex min-h-11 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--secondary)] px-3 text-xs font-medium text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/60"
           >
-            <RefreshCw size="0.75rem" /> Try again
+            <RefreshCw size="0.75rem" /> {t("capabilities.actions.tryAgain")}
           </button>
           {onClose ? (
             <button
@@ -231,7 +243,7 @@ function CapabilityFailureState({
               onClick={onClose}
               className="inline-flex min-h-11 items-center gap-1.5 rounded-md px-3 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/60"
             >
-              <X size="0.75rem" /> Close
+              <X size="0.75rem" /> {t("capabilities.actions.close")}
             </button>
           ) : null}
         </div>
@@ -257,6 +269,7 @@ function CapabilityFailureState({
 }
 
 export function CapabilityElement({ packageId, view, capabilityProps, className }: CapabilityElementProps) {
+  const { i18n: localization } = useTranslation();
   const ref = useRef<CapabilityElementNode | null>(null);
   const clientModule = useCapabilityClientModuleState(packageId);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
@@ -264,6 +277,18 @@ export function CapabilityElement({ packageId, view, capabilityProps, className 
   const registered = typeof customElements !== "undefined" && Boolean(customElements.get(tag));
   const close = capabilityProps?.onClose;
   const onClose = typeof close === "function" ? (close as () => void) : undefined;
+  const locale = localization.resolvedLanguage ?? localization.language;
+  const direction = localization.dir(locale);
+  const localizedCapabilityProps = useMemo(
+    () => ({
+      ...(capabilityProps ?? {}),
+      localization: {
+        locale,
+        direction,
+      } satisfies CapabilityLocalizationContext,
+    }),
+    [capabilityProps, direction, locale],
+  );
 
   useEffect(() => {
     setRuntimeError(null);
@@ -278,10 +303,10 @@ export function CapabilityElement({ packageId, view, capabilityProps, className 
     };
     node.addEventListener("marinara-capability-runtime-error", onRuntimeError);
     if (node.capabilityRuntimeError) setRuntimeError(node.capabilityRuntimeError);
-    node.capabilityProps = capabilityProps;
+    node.capabilityProps = localizedCapabilityProps;
     node.dispatchEvent(new CustomEvent("marinara-capability-props"));
     return () => node.removeEventListener("marinara-capability-runtime-error", onRuntimeError);
-  }, [capabilityProps, clientModule.attempt, clientModule.status, runtimeError, tag]);
+  }, [clientModule.attempt, clientModule.status, localizedCapabilityProps, runtimeError, tag]);
 
   if (clientModule.status === "error") {
     return (
@@ -327,6 +352,8 @@ export function CapabilityElement({ packageId, view, capabilityProps, className 
   return createElement(tag, {
     ref,
     view,
+    lang: locale,
+    dir: direction,
     class: className,
     key: `${packageId}:${clientModule.version ?? "registered"}:${clientModule.attempt}:${runtimeError ?? "ready"}`,
   });

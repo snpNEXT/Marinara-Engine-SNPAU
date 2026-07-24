@@ -3,9 +3,11 @@ import { create } from "zustand";
 // ── Translation config (set from chat metadata) ──
 export interface TranslationConfig {
   provider: "ai" | "deeplx" | "deepl" | "google";
-  targetLanguage: string;
+  inputTargetLanguage: string;
+  outputTargetLanguage: string;
   connectionId?: string;
-  systemPrompt?: string;
+  inputSystemPrompt?: string;
+  outputSystemPrompt?: string;
   deeplApiKey?: string;
   deeplxUrl?: string;
 }
@@ -31,7 +33,7 @@ interface TranslationStore {
 }
 
 export const useTranslationStore = create<TranslationStore>((set) => ({
-  config: { provider: "google", targetLanguage: "en" },
+  config: { provider: "google", inputTargetLanguage: "en", outputTargetLanguage: "en" },
   setConfig: (config) => set({ config }),
   translations: {},
   hiddenTranslationIds: {},

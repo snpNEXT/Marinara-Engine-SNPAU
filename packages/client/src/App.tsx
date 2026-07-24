@@ -5,8 +5,10 @@ import {
   Component,
   lazy,
   Suspense,
+  useCallback,
   useEffect,
   useMemo,
+  useState,
   type CSSProperties,
   type ErrorInfo,
   type ReactNode,
@@ -14,11 +16,13 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { APP_VERSION } from "@marinara-engine/shared";
 import { CustomThemeInjector } from "./components/layout/CustomThemeInjector";
+import { PersonalExtensionInjector } from "./components/layout/PersonalExtensionInjector";
 import { ModelDownloadModal } from "./components/modals/ModelDownloadModal";
 import { WhatsNewModal } from "./components/modals/WhatsNewModal";
 import { AppDialogRenderer } from "./components/ui/AppDialogRenderer";
 import { ChibiProfessorMariEasterEgg } from "./components/ui/ChibiProfessorMariEasterEgg";
 import { CsrfOriginWarningBanner } from "./components/diagnostics/CsrfOriginWarningBanner";
+import { AgentUpdatePrompter } from "./components/agents/AgentUpdatePrompter";
 import { Toaster, toast } from "sonner";
 import {
   getDefaultAppAccentColor,
@@ -39,7 +43,9 @@ import {
 import { normalizeThemeCss } from "./lib/theme-css";
 import { useLegacyThemeMigration, useThemes } from "./hooks/use-themes";
 import { useSettingsSync } from "./hooks/use-settings-sync";
+import { useCustomNotificationSoundStatus } from "./hooks/use-custom-notification-sound";
 import { installLongTaskWarner } from "./lib/perf-diagnostics";
+import { setCustomNotificationSoundUrl } from "./lib/notification-sound";
 
 const VERSION_RECOVERY_KEY = "marinara:pwa-version-recovery";
 const VERSION_CHECK_INTERVAL_MS = 5 * 60_000;
@@ -462,19 +468,31 @@ export function App() {
   const rightPanel = useUIStore((s) => s.rightPanel);
   const settingsTab = useUIStore((s) => s.settingsTab);
   const appearanceSettingsActive = rightPanelOpen && rightPanel === "settings" && settingsTab === "appearance";
-  const pauseChromeEffectsForAppearance = appearanceSettingsActive && !appAccentRgbMode;
   const { data: syncedThemes = [] } = useThemes();
+  const { data: customNotificationSound } = useCustomNotificationSoundStatus();
   const activeCustomTheme = useMemo(() => syncedThemes.find((themeItem) => themeItem.isActive) ?? null, [syncedThemes]);
   const themeAccentPulseConfig = useMemo(
     () => getThemeAccentPulseConfig(activeCustomTheme?.css),
     [activeCustomTheme?.css],
   );
+  const pauseChromeEffectsForAppearance =
+    appearanceSettingsActive &&
+    !appAccentRgbMode &&
+    !appAccentPulseMode &&
+    !themeAccentPulseConfig.enabled;
   useLegacyThemeMigration();
   useSettingsSync();
   const showDownloadModal = useSidecarStore((s) => s.showDownloadModal);
   const setShowDownloadModal = useSidecarStore((s) => s.setShowDownloadModal);
   const fetchSidecarStatus = useSidecarStore((s) => s.fetchStatus);
   const hasAppDialogOpen = useDialogStore((s) => s.dialog !== null);
+  const [whatsNewOpen, setWhatsNewOpen] = useState(false);
+  const [whatsNewResolved, setWhatsNewResolved] = useState(false);
+  const handleWhatsNewResolved = useCallback(() => setWhatsNewResolved(true), []);
+
+  useEffect(() => {
+    setCustomNotificationSoundUrl(customNotificationSound?.url ?? null);
+  }, [customNotificationSound?.url]);
 
   // [#3104 diagnostic] warn on long main-thread tasks (see lib/perf-diagnostics.ts)
   useEffect(() => {
@@ -947,11 +965,21 @@ export function App() {
   return (
     <>
       <CustomThemeInjector />
+      <PersonalExtensionInjector />
       <ChibiProfessorMariEasterEgg />
       <Suspense fallback={null}>
         <LazyAppShell />
       </Suspense>
-      <WhatsNewModal presentationAllowed={!hasModalOpen && !hasAppDialogOpen && (isLite || !showDownloadModal)} />
+      <WhatsNewModal
+        presentationAllowed={!hasModalOpen && !hasAppDialogOpen && (isLite || !showDownloadModal)}
+        onOpenChange={setWhatsNewOpen}
+        onResolved={handleWhatsNewResolved}
+      />
+      <AgentUpdatePrompter
+        presentationAllowed={
+          whatsNewResolved && !hasModalOpen && !hasAppDialogOpen && !whatsNewOpen && (isLite || !showDownloadModal)
+        }
+      />
       {!isLite && <ModelDownloadModal open={showDownloadModal} onClose={() => setShowDownloadModal(false)} />}
       {hasModalOpen && (
         <Suspense fallback={null}>

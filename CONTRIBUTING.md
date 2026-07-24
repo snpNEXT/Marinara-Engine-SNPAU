@@ -198,6 +198,15 @@ The overlay is not a substitute for this guide. When instructions conflict, foll
 - `docs/FAQ.md` is the user-facing FAQ for common questions like LAN access.
 - If a change makes any existing doc misleading, fix that doc in the same PR.
 
+## Localization
+
+UI translations live in one JSON file per locale and fall back to the canonical English catalog. See
+[`docs/development/localization.md`](docs/development/localization.md) for the translation boundary, file format,
+semantic-key conventions, downloadable Agent handoff, and validation command.
+
+Keep prompts, authored content, identifiers, protocol values, and persisted machine values out of UI localization.
+Run `pnpm localization:check` whenever a locale file or localization key changes.
+
 ## Versioning and Releases
 
 Current policy:

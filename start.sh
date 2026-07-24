@@ -82,6 +82,10 @@ run_pnpm() {
     fi
 }
 
+install_workspace_dependencies() {
+    run_pnpm install --frozen-lockfile --prefer-offline
+}
+
 if command -v corepack &> /dev/null; then
     echo "  [..] Aligning pnpm to ${PNPM_VERSION} via Corepack..."
     CURRENT_PNPM_VERSION=$(corepack "pnpm@${PNPM_VERSION}" --version 2>/dev/null || true)
@@ -169,7 +173,14 @@ elif [ -d ".git" ]; then
         STASHED=0
         STASH_REF=""
         SKIP_UPDATE_FOR_LOCAL_CHANGES=0
-        if has_git_worktree_changes; then
+        DATA_SNAPSHOT_READY=0
+        if node scripts/protect-launcher-data.mjs snapshot; then
+            DATA_SNAPSHOT_READY=1
+        else
+            SKIP_UPDATE_FOR_LOCAL_CHANGES=1
+            echo "  [WARN] Could not create an update snapshot. Skipping auto-update to protect your data."
+        fi
+        if [ "$SKIP_UPDATE_FOR_LOCAL_CHANGES" != "1" ] && has_git_worktree_changes; then
             if git stash push -u -q -m "auto-stash before update" 2>/dev/null; then
                 STASHED=1
                 STASH_REF=$(git stash list -1 --format=%gd 2>/dev/null || true)
@@ -206,7 +217,7 @@ elif [ -d ".git" ]; then
             else
                 echo "  [OK] Updated to $(git log -1 --format='%h %s' 2>/dev/null)"
                 echo "  [..] Reinstalling dependencies and refreshing native packages..."
-                run_pnpm install --force
+                install_workspace_dependencies
                 # Force rebuild
                 rm -rf packages/shared/dist packages/server/dist packages/client/dist
                 rm -f packages/shared/tsconfig.tsbuildinfo packages/server/tsconfig.tsbuildinfo packages/client/tsconfig.tsbuildinfo
@@ -225,6 +236,11 @@ elif [ -d ".git" ]; then
     fi
 fi
 
+if [ "${DATA_SNAPSHOT_READY:-0}" = "1" ] && ! node scripts/protect-launcher-data.mjs restore-if-missing; then
+    echo "  [ERROR] User data verification failed after the update attempt. Startup stopped to avoid creating empty data."
+    exit 1
+fi
+
 # ── Detect stale dist (source updated but dist not rebuilt) ──
 if [ -f "packages/shared/dist/constants/defaults.js" ]; then
     SOURCE_VER=$(node -p "require('./package.json').version" 2>/dev/null || true)
@@ -234,14 +250,14 @@ if [ -f "packages/shared/dist/constants/defaults.js" ]; then
     if [ -n "$SOURCE_VER" ] && [ -n "$DIST_VER" ] && [ "$SOURCE_VER" != "$DIST_VER" ]; then
         echo "  [WARN] Version mismatch: source v$SOURCE_VER but dist has v$DIST_VER"
         echo "  [..] Forcing rebuild to apply update..."
-        run_pnpm install --force
+        install_workspace_dependencies
         rm -rf packages/shared/dist packages/server/dist packages/client/dist
         rm -f packages/shared/tsconfig.tsbuildinfo packages/server/tsconfig.tsbuildinfo packages/client/tsconfig.tsbuildinfo
     fi
     if [ -n "$SOURCE_COMMIT" ] && [ "$SOURCE_COMMIT" != "$DIST_COMMIT" ]; then
         echo "  [WARN] Build commit mismatch: source $SOURCE_COMMIT but dist has ${DIST_COMMIT:-<missing>}"
         echo "  [..] Forcing rebuild to apply update..."
-        run_pnpm install --force
+        install_workspace_dependencies
         rm -rf packages/shared/dist packages/server/dist packages/client/dist
         rm -f packages/shared/tsconfig.tsbuildinfo packages/server/tsconfig.tsbuildinfo packages/client/tsconfig.tsbuildinfo
     fi
@@ -253,7 +269,7 @@ if [ ! -d "node_modules" ] || ! node scripts/check-workspace-install.mjs >/dev/n
     echo "  [..] Installing dependencies..."
     echo "       This may take a few minutes."
     echo ""
-    run_pnpm install --force
+    install_workspace_dependencies
 fi
 
 # ── Optional AI sprite background remover ──

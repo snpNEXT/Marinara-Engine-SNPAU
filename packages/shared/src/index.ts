@@ -32,6 +32,8 @@ export * from "./types/conversation-call.js";
 export * from "./types/noodle.js";
 export * from "./types/spatial-context.js";
 export * from "./types/capability-runtime.js";
+export * from "./types/localization.js";
+export * from "./types/personal-extension.js";
 
 // Schemas
 export * from "./schemas/chat.schema.js";
@@ -51,6 +53,7 @@ export * from "./schemas/conversation-call.schema.js";
 export * from "./schemas/noodle.schema.js";
 export * from "./schemas/spatial-context.schema.js";
 export * from "./schemas/capability-package.schema.js";
+export * from "./schemas/personal-extension.schema.js";
 export * from "./schemas/folder.schema.js";
 export * from "./schemas/scene-analysis.schema.js";
 
@@ -110,6 +113,7 @@ export * from "./utils/lorebook-keyword-matching.js";
 export * from "./utils/regex-safety.js";
 export * from "./utils/game-state-text.js";
 export * from "./utils/custom-tracker-fields.js";
+export * from "./utils/illustrator-generation-count.js";
 export * from "./utils/tracker-field-locks.js";
 export * from "./utils/chat-summary-entries.js";
 export * from "./utils/chat-summary-prompt-settings.js";

@@ -1,5 +1,6 @@
 import { ExternalLink } from "lucide-react";
 import { Modal } from "../ui/Modal";
+import { Trans, useTranslation } from "react-i18next";
 
 const FONT_AWESOME_D20_SOURCE_URL = "https://github.com/FortAwesome/Font-Awesome/blob/5.15.4/svgs/solid/dice-d20.svg";
 const CC_BY_4_0_LICENSE_URL = "https://creativecommons.org/licenses/by/4.0/";
@@ -103,16 +104,17 @@ const SPECIAL_THANKS = [
 ];
 
 export function HomeCreditsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { t } = useTranslation();
   return (
-    <Modal open={open} onClose={onClose} title="Credits" width="max-w-2xl">
+    <Modal open={open} onClose={onClose} title={t("home.actions.credits")} width="max-w-2xl">
       <div className="space-y-5">
         <section className="space-y-2">
           <div>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
-              GitHub Contributors
+              {t("home.credits.contributors")}
             </h3>
             <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-              Synced from the Marinara Engine GitHub contributors list.
+              {t("home.credits.contributorsDescription")}
             </p>
           </div>
           <div className="grid max-h-[18rem] grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
@@ -136,35 +138,33 @@ export function HomeCreditsModal({ open, onClose }: { open: boolean; onClose: ()
 
         <section className="space-y-2">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
-            Special Thanks
+            {t("home.credits.specialThanks")}
           </h3>
           <p className="text-xs leading-relaxed text-[var(--muted-foreground)]">{SPECIAL_THANKS.join(", ")}.</p>
         </section>
 
         <section className="space-y-2">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
-            Third-Party Assets
+            {t("home.credits.thirdPartyAssets")}
           </h3>
           <p className="text-xs leading-relaxed text-[var(--muted-foreground)]">
-            The tracker panel d20 icon uses the path geometry from{" "}
-            <a
-              href={FONT_AWESOME_D20_SOURCE_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="font-medium text-[var(--primary)] underline-offset-2 hover:underline"
-            >
-              Font Awesome Free 5.15.4 dice-d20
-            </a>{" "}
-            by Fonticons, Inc., licensed under{" "}
-            <a
-              href={CC_BY_4_0_LICENSE_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="font-medium text-[var(--primary)] underline-offset-2 hover:underline"
-            >
-              CC BY 4.0
-            </a>
-            {". The path formatting was adapted for React; the geometry is unchanged."}
+            <Trans
+              i18nKey="home.credits.thirdPartyAssetsDescription"
+              components={[
+                <a
+                  href={FONT_AWESOME_D20_SOURCE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-[var(--primary)] underline-offset-2 hover:underline"
+                />,
+                <a
+                  href={CC_BY_4_0_LICENSE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-[var(--primary)] underline-offset-2 hover:underline"
+                />,
+              ]}
+            />
           </p>
         </section>
       </div>

@@ -12,5 +12,7 @@ export type NoodleNavigationState =
     }
   | { mode: "private"; view: "hub" }
   | { mode: "private"; view: "profiles" }
+  | { mode: "private"; view: "profile"; accountId: string }
+  | { mode: "private"; view: "create-profile"; publicAccountId: string }
   | { mode: "verification" }
   | { mode: "settings" };

@@ -28,6 +28,7 @@ import {
   Link,
   Loader2,
   MessageCircle,
+  PackagePlus,
   Palette,
   Paperclip,
   Plus,
@@ -52,11 +53,14 @@ import {
   type Chat,
   type MariDbHistoryEntry,
   type MariDbPendingApproval,
+  type MariDependencyInstallApproval,
   type MariGuidedPlanStep,
   type MariSuggestionChip,
   type MariWorkspaceSkillDetail,
   type MariWorkspaceSkillsResponse,
   type MariWorkspaceStatus,
+  type MariWorkspacePendingApproval,
+  type MariSensitiveFileApproval,
   type MariWorkspaceTraceItem,
   type Message,
 } from "@marinara-engine/shared";
@@ -84,6 +88,7 @@ import {
   rememberProfessorMariFloatingEnabled,
 } from "./professor-mari-floating-events";
 import { MariSuggestionChips } from "./MariSuggestionChips";
+import { useTranslation } from "react-i18next";
 
 const MARI_AVATAR_URL = "/sprites/mari/Mari_profile.png";
 const MARI_CHIBI_URL = "/sprites/mari/chibi-professor-mari.png";
@@ -162,9 +167,11 @@ const PROFESSOR_MARI_FLOATING_MOBILE_TOP_GAP = 64;
 
 type WorkspaceApprovalResponse = {
   ok: boolean;
-  approval?: MariDbPendingApproval;
+  approval?: MariWorkspacePendingApproval;
   history?: MariDbHistoryEntry | null;
   completed?: boolean;
+  outcome?: "applied" | "discarded" | "state_changed" | "failed";
+  error?: string | null;
 };
 
 type WorkspaceSkillMutationResponse = {
@@ -1551,12 +1558,16 @@ function WorkspaceErrorEvent({ message }: { message: string }) {
   );
 }
 
-function WorkspaceApprovalCard({
+function DatabaseWorkspaceApprovalCard({
   approval,
+  busy,
+  disabled,
   onKeep,
   onRestore,
 }: {
   approval: MariDbPendingApproval;
+  busy: boolean;
+  disabled: boolean;
   onKeep: (id: string) => void;
   onRestore: (id: string) => void;
 }) {
@@ -1617,7 +1628,8 @@ function WorkspaceApprovalCard({
           <button
             type="button"
             onClick={() => onRestore(approval.id)}
-            className="rounded-md border border-[var(--border)] px-2.5 py-1 text-[0.6875rem] font-semibold text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+            disabled={busy || disabled}
+            className="rounded-md border border-[var(--border)] px-2.5 py-1 text-[0.6875rem] font-semibold text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-45"
           >
             <span className="inline-flex items-center gap-1">
               <RefreshCw size="0.7rem" />
@@ -1627,16 +1639,206 @@ function WorkspaceApprovalCard({
           <button
             type="button"
             onClick={() => onKeep(approval.id)}
-            className="rounded-md bg-[var(--primary)] px-2.5 py-1 text-[0.6875rem] font-semibold text-[var(--primary-foreground)] transition-opacity hover:opacity-90"
+            disabled={busy || disabled}
+            className="rounded-md bg-[var(--primary)] px-2.5 py-1 text-[0.6875rem] font-semibold text-[var(--primary-foreground)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
           >
             <span className="inline-flex items-center gap-1">
-              <Check size="0.7rem" />
-              Keep
+              {busy ? <Loader2 size="0.7rem" className="animate-spin" /> : <Check size="0.7rem" />}
+              {busy ? "Saving..." : "Keep"}
             </span>
           </button>
         </div>
       </div>
     </TranscriptRow>
+  );
+}
+
+function DependencyWorkspaceApprovalCard({
+  approval,
+  busy,
+  disabled,
+  onApprove,
+  onDiscard,
+}: {
+  approval: MariDependencyInstallApproval;
+  busy: boolean;
+  disabled: boolean;
+  onApprove: (id: string) => void;
+  onDiscard: (id: string) => void;
+}) {
+  return (
+    <TranscriptRow marker={<PackagePlus size="0.85rem" className="mt-1 text-[var(--primary)]" />}>
+      <div className="rounded-xl border border-[var(--primary)]/30 bg-[var(--primary)]/5 p-3 text-xs text-[var(--foreground)]">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span className="font-semibold">Install this dependency?</span>
+          <span className="rounded-full bg-[var(--primary)]/10 px-1.5 py-0.5 text-[0.625rem] text-[var(--primary)]">
+            not installed
+          </span>
+        </div>
+        <p className="mt-1 max-w-[70ch] text-[0.6875rem] text-[var(--muted-foreground)]">
+          Professor Mari requested an exact public npm package. Marinara will install it without lifecycle scripts only
+          after you approve.
+        </p>
+        <div className="mt-2 rounded-lg bg-[var(--background)]/80 p-2">
+          <div className="break-all font-mono text-[0.75rem] font-semibold text-[var(--foreground)]">
+            {approval.packageName}@{approval.version}
+          </div>
+          <div className="mt-1 text-[0.6875rem] text-[var(--muted-foreground)]">
+            {approval.target} · {approval.dependencyType}
+          </div>
+          <div className="mt-2 break-all font-mono text-[0.625rem] text-[var(--muted-foreground)]">
+            {approval.integrity}
+          </div>
+          <div className="mt-2 break-words text-[0.6875rem] text-[var(--muted-foreground)]">
+            {approval.directDependencies.length === 0
+              ? "No direct dependencies declared."
+              : `${approval.directDependencies.length} direct ${approval.directDependencies.length === 1 ? "dependency" : "dependencies"}: ${approval.directDependencies
+                  .slice(0, 6)
+                  .map((dependency) => `${dependency.name} ${dependency.range}`)
+                  .join(", ")}${approval.directDependencies.length > 6 ? ", and more" : ""}`}
+          </div>
+        </div>
+        {approval.reason && (
+          <p className="mt-2 text-[0.6875rem] text-[var(--muted-foreground)]">{approval.reason}</p>
+        )}
+        <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button
+            type="button"
+            onClick={() => onDiscard(approval.id)}
+            disabled={busy || disabled}
+            className="min-h-9 rounded-md border border-[var(--border)] px-3 py-1.5 text-[0.6875rem] font-semibold text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            Not now
+          </button>
+          <button
+            type="button"
+            onClick={() => onApprove(approval.id)}
+            disabled={busy || disabled}
+            className="min-h-9 rounded-md bg-[var(--primary)] px-3 py-1.5 text-[0.6875rem] font-semibold text-[var(--primary-foreground)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            <span className="inline-flex items-center justify-center gap-1">
+              {busy ? <Loader2 size="0.75rem" className="animate-spin" /> : <PackagePlus size="0.75rem" />}
+              {busy ? "Installing..." : "Install"}
+            </span>
+          </button>
+        </div>
+      </div>
+    </TranscriptRow>
+  );
+}
+
+function SensitiveFileWorkspaceApprovalCard({
+  approval,
+  busy,
+  disabled,
+  onApprove,
+  onDiscard,
+}: {
+  approval: MariSensitiveFileApproval;
+  busy: boolean;
+  disabled: boolean;
+  onApprove: (id: string) => void;
+  onDiscard: (id: string) => void;
+}) {
+  return (
+    <TranscriptRow marker={<ShieldAlert size="0.85rem" className="mt-1 text-[var(--primary)]" />}>
+      <div className="rounded-xl border border-[var(--primary)]/30 bg-[var(--primary)]/5 p-3 text-xs text-[var(--foreground)]">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span className="font-semibold">Apply sensitive file change?</span>
+          <span className="rounded-full bg-[var(--primary)]/10 px-1.5 py-0.5 text-[0.625rem] text-[var(--primary)]">
+            staged
+          </span>
+        </div>
+        <p className="mt-1 max-w-[70ch] text-[0.6875rem] text-[var(--muted-foreground)]">
+          This file can affect dependencies, startup, installation, or automation. Nothing has changed yet.
+        </p>
+        <div className="mt-2 break-all rounded-lg bg-[var(--background)]/80 p-2 font-mono text-[0.75rem] font-semibold">
+          {approval.path}
+        </div>
+        <p className="mt-1 text-[0.6875rem] text-[var(--muted-foreground)]">
+          {approval.changeType === "create"
+            ? "This file does not exist yet; approving creates it."
+            : "This will overwrite the existing file."}
+        </p>
+        <details className="mt-2 rounded-lg border border-[var(--border)] bg-[var(--background)]/60 p-2">
+          <summary className="cursor-pointer text-[0.6875rem] font-semibold">Review proposed content</summary>
+          <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words font-mono text-[0.625rem] text-[var(--muted-foreground)]">
+            {approval.preview}
+            {approval.previewTruncated ? "\n\nPreview truncated." : ""}
+          </pre>
+        </details>
+        {approval.reason && (
+          <p className="mt-2 text-[0.6875rem] text-[var(--muted-foreground)]">{approval.reason}</p>
+        )}
+        <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button
+            type="button"
+            onClick={() => onDiscard(approval.id)}
+            disabled={busy || disabled}
+            className="min-h-9 rounded-md border border-[var(--border)] px-3 py-1.5 text-[0.6875rem] font-semibold text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            Discard
+          </button>
+          <button
+            type="button"
+            onClick={() => onApprove(approval.id)}
+            disabled={busy || disabled}
+            className="min-h-9 rounded-md bg-[var(--primary)] px-3 py-1.5 text-[0.6875rem] font-semibold text-[var(--primary-foreground)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            <span className="inline-flex items-center justify-center gap-1">
+              {busy ? <Loader2 size="0.75rem" className="animate-spin" /> : <Check size="0.75rem" />}
+              {busy ? "Applying..." : "Apply change"}
+            </span>
+          </button>
+        </div>
+      </div>
+    </TranscriptRow>
+  );
+}
+
+function WorkspaceApprovalCard({
+  approval,
+  busy,
+  disabled,
+  onKeep,
+  onRestore,
+}: {
+  approval: MariWorkspacePendingApproval;
+  busy: boolean;
+  disabled: boolean;
+  onKeep: (id: string) => void;
+  onRestore: (id: string) => void;
+}) {
+  if (approval.kind === "dependency_install") {
+    return (
+      <DependencyWorkspaceApprovalCard
+        approval={approval}
+        busy={busy}
+        disabled={disabled}
+        onApprove={onKeep}
+        onDiscard={onRestore}
+      />
+    );
+  }
+  if (approval.kind === "sensitive_file") {
+    return (
+      <SensitiveFileWorkspaceApprovalCard
+        approval={approval}
+        busy={busy}
+        disabled={disabled}
+        onApprove={onKeep}
+        onDiscard={onRestore}
+      />
+    );
+  }
+  return (
+    <DatabaseWorkspaceApprovalCard
+      approval={approval}
+      busy={busy}
+      disabled={disabled}
+      onKeep={onKeep}
+      onRestore={onRestore}
+    />
   );
 }
 
@@ -1677,6 +1879,7 @@ function ProfessorMariSkillsMenu({
   onToggle: (skill: MariWorkspaceSkillDetail) => void;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const enabledCount = skills.filter((skill) => skill.enabled).length;
   const hasSkills = skills.length > 0;
 
@@ -1703,8 +1906,8 @@ function ProfessorMariSkillsMenu({
           type="button"
           onClick={onClose}
           className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
-          aria-label="Close skills"
-          title="Close"
+          aria-label={t("home.professorMari.skills.close")}
+          title={t("home.professorMari.skills.close")}
         >
           <X size="0.95rem" />
         </button>
@@ -1886,6 +2089,7 @@ export function HomeProfessorMariChat({
   onChatWindowExitComplete,
   onFloatingDismiss,
 }: HomeProfessorMariChatProps) {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const { data: connectionsRaw, isLoading: connectionsLoading } = useConnections();
   const sidecarModelDownloaded = useSidecarStore((state) => state.modelDownloaded);
@@ -1903,6 +2107,7 @@ export function HomeProfessorMariChat({
   const [workspaceActive, setWorkspaceActive] = useState(false);
   const [workspaceActivity, setWorkspaceActivity] = useState<string | null>(null);
   const [workspaceTimeline, setWorkspaceTimeline] = useState<WorkspaceTimelineItem[]>([]);
+  const [workspaceReviewActionId, setWorkspaceReviewActionId] = useState<string | null>(null);
   const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
   const [chatHistory, setChatHistory] = useState<ProfessorMariChatSummary[]>([]);
   const [chatHistoryLoading, setChatHistoryLoading] = useState(false);
@@ -2225,12 +2430,15 @@ export function HomeProfessorMariChat({
     });
   }, [selectedSkill]);
 
-  const pendingChangeReviews = workspaceStatus?.pendingApprovals ?? [];
+  const pendingChangeReviews = useMemo(
+    () => workspaceStatus?.pendingApprovals ?? [],
+    [workspaceStatus?.pendingApprovals],
+  );
 
   // Alert the user when Professor Mari finished her work and is now blocked
   // waiting on an approval. The notification helpers no-op while the app is
-  // focused, so a present user just sees the in-app review card. Approvals are
-  // DB-backed and re-fetched on re-entry, so the card is already waiting too.
+  // focused, so a present user just sees the in-app review card. Reviews are
+  // re-fetched from the workspace service on re-entry, so the card is already waiting too.
   useEffect(() => {
     const fresh = pendingChangeReviews.filter((approval) => !notifiedApprovalIdsRef.current.has(approval.id));
     const liveIds = new Set(pendingChangeReviews.map((approval) => approval.id));
@@ -2544,29 +2752,60 @@ export function HomeProfessorMariChat({
 
   const keepWorkspaceChange = useCallback(
     async (id: string) => {
+      if (workspaceReviewActionId) return;
+      setWorkspaceReviewActionId(id);
       try {
         const result = await api.post<WorkspaceApprovalResponse>(`/professor-mari/workspace/approvals/${id}/approve`);
         await refreshWorkspaceStatus().catch(() => undefined);
-        if (result.history?.status === "kept") toast.success("Kept Mari's workspace change.");
+        if (result.outcome === "applied") {
+          await invalidateWorkspaceData();
+          toast.success(
+            result.approval?.kind === "dependency_install"
+              ? `Installed ${result.approval.packageName}@${result.approval.version}.`
+              : "Applied Professor Mari's sensitive file change.",
+          );
+        } else if (result.history?.status === "kept") {
+          toast.success("Kept Mari's workspace change.");
+        } else {
+          toast.error(
+            result.outcome === "state_changed"
+              ? "The workspace changed after Professor Mari staged this proposal."
+              : "Professor Mari could not apply that workspace change.",
+            { description: result.error ?? undefined, duration: 12_000 },
+          );
+        }
       } catch (error) {
         console.error("[Professor Mari] Failed to keep workspace change", error);
         toast.error("Professor Mari could not keep that workspace change.", {
           description: describeProfessorMariError(error),
           duration: 12_000,
         });
+      } finally {
+        setWorkspaceReviewActionId((current) => (current === id ? null : current));
       }
     },
-    [refreshWorkspaceStatus],
+    [invalidateWorkspaceData, refreshWorkspaceStatus, workspaceReviewActionId],
   );
 
   const restoreWorkspaceChange = useCallback(
     async (id: string) => {
+      if (workspaceReviewActionId) return;
+      setWorkspaceReviewActionId(id);
       try {
         const result = await api.post<WorkspaceApprovalResponse>(`/professor-mari/workspace/approvals/${id}/reject`);
         await refreshWorkspaceStatus().catch(() => undefined);
-        if (result.history?.status === "restored") {
+        if (result.outcome === "discarded") {
+          toast.success("Discarded Professor Mari's proposed change.");
+        } else if (result.history?.status === "restored") {
           await invalidateWorkspaceData();
           toast.success("Restored the previous app data snapshot.");
+        } else {
+          toast.error(
+            result.outcome === "state_changed"
+              ? "The workspace changed after Professor Mari staged this proposal."
+              : "Professor Mari could not restore that workspace change.",
+            { description: result.error ?? undefined, duration: 12_000 },
+          );
         }
       } catch (error) {
         console.error("[Professor Mari] Failed to restore workspace change", error);
@@ -2574,9 +2813,11 @@ export function HomeProfessorMariChat({
           description: describeProfessorMariError(error),
           duration: 12_000,
         });
+      } finally {
+        setWorkspaceReviewActionId((current) => (current === id ? null : current));
       }
     },
-    [invalidateWorkspaceData, refreshWorkspaceStatus],
+    [invalidateWorkspaceData, refreshWorkspaceStatus, workspaceReviewActionId],
   );
 
   const stopWorkspace = useCallback(async () => {
@@ -3032,6 +3273,8 @@ export function HomeProfessorMariChat({
               <WorkspaceApprovalCard
                 key={approval.id}
                 approval={approval}
+                busy={workspaceReviewActionId === approval.id}
+                disabled={workspaceReviewActionId !== null}
                 onKeep={(id) => void keepWorkspaceChange(id)}
                 onRestore={(id) => void restoreWorkspaceChange(id)}
               />
@@ -3174,7 +3417,7 @@ export function HomeProfessorMariChat({
               }
             }}
             rows={1}
-            placeholder="Ask Professor Mari..."
+            placeholder={t("home.professorMari.placeholder")}
             className="mari-chat-input-textarea min-h-8 max-h-32 flex-1 resize-none overflow-y-auto bg-transparent px-1 py-1.5 text-sm leading-normal text-foreground/90 outline-hidden placeholder:text-foreground/30 disabled:cursor-not-allowed disabled:opacity-40"
             disabled={isBusy}
           />
@@ -3185,8 +3428,8 @@ export function HomeProfessorMariChat({
               "mari-chat-send-btn inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-white transition-all duration-200",
               canSubmitMessage && !isBusy ? "hover:text-white active:scale-90" : "cursor-not-allowed opacity-40",
             )}
-            aria-label="Send to Professor Mari"
-            title="Send"
+            aria-label={t("home.professorMari.send")}
+            title={t("home.professorMari.send")}
           >
             <Send size="0.9375rem" className={cn(canSubmitMessage && "translate-x-[1px]")} />
           </button>
@@ -3212,7 +3455,7 @@ export function HomeProfessorMariChat({
             type="button"
             onClick={handleFloatingButtonClick}
             className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full border border-[var(--primary)]/40 bg-[var(--background)] shadow-lg shadow-black/35 ring-1 ring-black/20"
-            aria-label="Open Professor Mari chat"
+            aria-label={t("home.professorMari.open")}
           >
             <img
               src={MARI_AVATAR_URL}
@@ -3227,8 +3470,8 @@ export function HomeProfessorMariChat({
             type="button"
             onClick={onFloatingDismiss}
             className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] shadow-lg"
-            aria-label="Dismiss Professor Mari floating chat"
-            title="Dismiss"
+            aria-label={t("home.professorMari.dismiss")}
+            title={t("home.professorMari.dismiss")}
           >
             <X size="0.65rem" />
           </button>
@@ -3251,8 +3494,8 @@ export function HomeProfessorMariChat({
               type="button"
               onClick={closeChatWindow}
               className="mari-chrome-control mari-chrome-control--small mari-accent-animated inline-flex h-8 w-8 items-center justify-center rounded-md p-0"
-              aria-label="Close Professor Mari chat"
-              title="Close"
+              aria-label={t("home.professorMari.close")}
+              title={t("home.professorMari.close")}
             >
               <X size="0.9rem" />
             </button>
@@ -3279,15 +3522,15 @@ export function HomeProfessorMariChat({
           onPointerCancel={endFloatingDrag}
         >
           <div className="min-w-0 truncate text-xs font-semibold text-[var(--marinara-chat-chrome-accent)]">
-            Ask Professor Mari
+            {t("home.professorMari.ask")}
           </div>
           <button
             data-professor-mari-floating-action
             type="button"
             onClick={onFloatingDismiss}
             className="mari-chrome-control mari-chrome-control--small mari-accent-animated inline-flex h-7 w-7 items-center justify-center rounded-md p-0"
-            aria-label="Dismiss Professor Mari floating chat"
-            title="Dismiss"
+            aria-label={t("home.professorMari.dismiss")}
+            title={t("home.professorMari.dismiss")}
           >
             <X size="0.85rem" />
           </button>
@@ -3357,7 +3600,7 @@ export function HomeProfessorMariChat({
               className="mari-chrome-control mari-chrome-control--primary w-full justify-center gap-2 text-xs"
             >
               <MessageCircle size="0.9rem" />
-              Ask Professor Mari
+              {t("home.professorMari.ask")}
             </button>
           </div>
         </div>
@@ -3390,7 +3633,7 @@ export function HomeProfessorMariChat({
                       <div className="flex items-center justify-between gap-2 border-b border-[var(--border)]/60 px-3 py-2">
                         <div className="min-w-0">
                           <div className="truncate text-xs font-semibold text-[var(--foreground)]">
-                            Professor Mari Chats
+                            {t("home.professorMari.chats")}
                           </div>
                           <div className="truncate text-[0.625rem] text-[var(--muted-foreground)]">
                             Restart saves the current chat here.
@@ -3400,8 +3643,8 @@ export function HomeProfessorMariChat({
                           type="button"
                           onClick={() => setChatHistoryOpen(false)}
                           className="mari-chrome-control mari-chrome-control--small h-8 w-8 p-0"
-                          aria-label="Close chats"
-                          title="Close"
+                          aria-label={t("home.professorMari.closeChats")}
+                          title={t("home.professorMari.closeChats")}
                         >
                           <X size="0.85rem" />
                         </button>
@@ -3414,7 +3657,7 @@ export function HomeProfessorMariChat({
                           </div>
                         ) : chatHistory.length === 0 ? (
                           <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-6 text-center text-xs text-[var(--muted-foreground)]">
-                            No previous Professor Mari chats yet.
+                            {t("home.professorMari.noPreviousChats")}
                           </div>
                         ) : (
                           <div className="space-y-1.5">
@@ -3552,7 +3795,7 @@ export function HomeProfessorMariChat({
                               "inline-flex h-8 items-center gap-1 rounded-md px-2 text-[0.6875rem] font-semibold transition-colors hover:bg-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50",
                               "mari-chrome-accent-text-muted mari-accent-animated hover:text-[var(--marinara-chat-chrome-button-text-hover)]",
                             )}
-                            title="Open previous Professor Mari chats"
+                            title={t("home.professorMari.openPreviousChats")}
                             aria-expanded={chatHistoryOpen}
                           >
                             <BookOpen size="0.75rem" />
@@ -3591,8 +3834,8 @@ export function HomeProfessorMariChat({
                             onClick={() => void runRestart()}
                             disabled={isBusy}
                             className="mari-chrome-accent-text-muted mari-accent-animated inline-flex items-center gap-1 rounded-md px-2 py-1 text-[0.6875rem] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-                            aria-label="Restart Professor Mari chat"
-                            title="Restart Professor Mari chat"
+                            aria-label={t("home.professorMari.restart")}
+                            title={t("home.professorMari.restart")}
                           >
                             <RefreshCw size="0.75rem" />
                             <span className="max-[380px]:hidden">Restart</span>
@@ -3601,8 +3844,8 @@ export function HomeProfessorMariChat({
                             type="button"
                             onClick={closeChatWindow}
                             className="mari-chrome-control mari-chrome-control--small mari-accent-animated inline-flex h-8 w-8 items-center justify-center rounded-md p-0"
-                            aria-label="Close Professor Mari chat"
-                            title="Close"
+                            aria-label={t("home.professorMari.close")}
+                            title={t("home.professorMari.close")}
                           >
                             <X size="0.9rem" />
                           </button>
@@ -3642,6 +3885,8 @@ export function HomeProfessorMariChat({
                               <WorkspaceApprovalCard
                                 key={approval.id}
                                 approval={approval}
+                                busy={workspaceReviewActionId === approval.id}
+                                disabled={workspaceReviewActionId !== null}
                                 onKeep={(id) => void keepWorkspaceChange(id)}
                                 onRestore={(id) => void restoreWorkspaceChange(id)}
                               />
@@ -3796,7 +4041,7 @@ export function HomeProfessorMariChat({
                               }
                             }}
                             rows={1}
-                            placeholder="Ask Professor Mari..."
+                            placeholder={t("home.professorMari.placeholder")}
                             className="mari-chat-input-textarea min-h-8 max-h-32 flex-1 resize-none overflow-y-auto bg-transparent px-1 py-1.5 text-sm leading-normal text-foreground/90 outline-hidden placeholder:text-foreground/30 disabled:cursor-not-allowed disabled:opacity-40"
                             disabled={isBusy}
                           />
@@ -3809,8 +4054,8 @@ export function HomeProfessorMariChat({
                                 ? "hover:text-white active:scale-90"
                                 : "cursor-not-allowed opacity-40",
                             )}
-                            aria-label="Send to Professor Mari"
-                            title="Send"
+                            aria-label={t("home.professorMari.send")}
+                            title={t("home.professorMari.send")}
                           >
                             <Send size="0.9375rem" className={cn(canSubmitMessage && "translate-x-[1px]")} />
                           </button>

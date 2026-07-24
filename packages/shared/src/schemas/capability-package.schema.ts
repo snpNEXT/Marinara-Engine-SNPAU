@@ -172,6 +172,14 @@ export type CapabilityCatalog = z.infer<typeof capabilityCatalogSchema>;
 export type InstalledCapabilityPackage = z.infer<typeof installedCapabilityPackageSchema>;
 export type PackagedAgentDefinition = z.infer<typeof packagedAgentDefinitionSchema>;
 
+export interface CapabilityPackageUpdate {
+  id: string;
+  name: string;
+  installedVersion: string;
+  version: string;
+  restartRequired: boolean;
+}
+
 export interface CustomAgentRepository {
   id: string;
   url: string;

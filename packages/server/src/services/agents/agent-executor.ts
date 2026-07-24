@@ -2350,6 +2350,14 @@ function buildAgentExtras(context: AgentContext, agentTypes: string[] = []): str
   // Injected for any agent type that can produce image prompts so the connection owner
   // can specify exact formatting rules once (tag style, quality tokens, etc.).
   // NOTE: injected into the final user message in buildAgentMessages for maximum recency.
+  if (agentTypes.includes("illustrator") && context.memory._forceIllustratorImageGeneration === true) {
+    parts.push(`<illustrator_manual_image_request>`);
+    parts.push(
+      `The user explicitly requested an illustration. Set the Illustrator JSON field "shouldGenerate" to true and provide the best fitting image prompt for the current scene.`,
+    );
+    parts.push(`</illustrator_manual_image_request>`);
+  }
+
   if (agentTypes.includes("illustrator") && context.memory._illustratorBackgroundGenerationEnabled === true) {
     parts.push(`<illustrator_background_generation enabled="true">`);
     parts.push(

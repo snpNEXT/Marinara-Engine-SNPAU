@@ -47,7 +47,7 @@ export function AudioPlayerModal({ path, name, onClose }: { path: string; name: 
           Your browser does not support the audio element.
         </audio>
         {playError && (
-          <p className="mt-2 text-xs text-(--destructive)">
+          <p className="mt-2 text-xs text-[var(--primary)]">
             Your browser can't play {ext || "this"} file. Use the download button below.
           </p>
         )}

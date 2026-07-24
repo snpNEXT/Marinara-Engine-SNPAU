@@ -17,7 +17,12 @@ export const DEFAULT_CONNECTION_ID = "__default_openrouter__";
 
 /** Default system prompt for AI-backed translation. */
 export const DEFAULT_TRANSLATION_SYSTEM_PROMPT =
-  "You are a translator. Translate the given text accurately, preserving formatting, markdown, and any special characters like *asterisks* for actions. Output ONLY the translated text, nothing else -- no explanations, no extra commentary.";
+  "You are a translator. Translate the given text accurately into {{targetLanguage}}, preserving formatting, markdown, and any special characters like *asterisks* for actions. Output ONLY the translated text, nothing else -- no explanations, no extra commentary.";
+
+/** Resolve the documented language placeholder in a custom translation prompt. */
+export function resolveTranslationSystemPrompt(prompt: string, targetLanguage: string): string {
+  return prompt.replaceAll("{{targetLanguage}}", targetLanguage.trim());
+}
 
 /** Default generation parameters for new presets. */
 export const DEFAULT_GENERATION_PARAMS: GenerationParameters = {

@@ -81,6 +81,7 @@ import {
   type SkillCheckResult,
 } from "@marinara-engine/shared";
 import type { CharacterMap, PersonaInfo } from "../chat/chat-area.types";
+import { MESSAGE_SELECTION_SURFACE_CLASS } from "../chat/message-selection-styles";
 
 const GamePeekPromptButton = lazy(() => import("./GamePeekPromptButton"));
 
@@ -1012,12 +1013,9 @@ export function GameNarration({
   const gameDialogueDisplayMode = useUIStore((s) => s.gameDialogueDisplayMode);
   const gameTextEffectsEnabled = useUIStore((s) => s.gameTextEffectsEnabled);
   const quoteFormat = useUIStore((s) => s.quoteFormat);
-  const defaultDialogueColorEnabled = useUIStore((s) => s.defaultDialogueColorEnabled);
   const defaultDialogueColor = useUIStore((s) => s.defaultDialogueColor);
   const theme = useUIStore((s) => s.theme);
-  const fallbackDialogueColor = defaultDialogueColorEnabled
-    ? defaultDialogueColor || getDefaultChatTextColor(theme)
-    : undefined;
+  const fallbackDialogueColor = defaultDialogueColor || getDefaultChatTextColor(theme);
   const personaDialogueColor =
     personaInfo?.dialogueColor || fallbackDialogueColor || personaInfo?.nameColor || "#a5b4fc";
   const useStackedLogDisplay = gameDialogueDisplayMode === "stacked";
@@ -3887,7 +3885,10 @@ export function GameNarration({
             onDeleteSegment?.(sourceMessageId, sourceSegmentIndex);
           }
         }}
-        className={cn(stackedActionButtonClass, "hover:bg-red-500/20 hover:text-red-400")}
+        className={cn(
+          stackedActionButtonClass,
+          "hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]",
+        )}
         title={canDeleteThisSegment ? "Delete segment" : "Delete message"}
       >
         <Trash2 size={11} />
@@ -5112,7 +5113,7 @@ export function GameNarration({
                               onDeleteSegment?.(sourceMessageId, sourceSegmentIndex);
                             }
                           }}
-                          className="rounded p-1 text-white/45 opacity-100 transition-all hover:bg-red-500/20 hover:text-red-400 md:text-white/20 md:opacity-0 md:group-hover/logseg:opacity-100"
+                          className="rounded p-1 text-[var(--marinara-chat-chrome-button-text)] opacity-100 transition-all hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] md:opacity-0 md:group-hover/logseg:opacity-100"
                           title={canDeleteThisSegment ? "Delete segment" : "Delete message"}
                         >
                           <Trash2 size={11} />
@@ -5344,7 +5345,7 @@ export function GameNarration({
                                     ? "border-sky-400/10 bg-sky-950/15"
                                     : "border-white/5 bg-black/20",
                               isActiveSeg && "ring-1 ring-[var(--primary)]/40",
-                              isSelectedForDeletion && "bg-[var(--destructive)]/10 ring-2 ring-[var(--destructive)]/55",
+                              isSelectedForDeletion && MESSAGE_SELECTION_SURFACE_CLASS,
                               jumpRowClasses,
                             )}
                           >
@@ -5463,7 +5464,7 @@ export function GameNarration({
                             className={cn(
                               "group/logseg relative rounded-lg border border-cyan-400/15 bg-cyan-950/15 px-3 py-2",
                               isActiveSeg && "ring-1 ring-[var(--primary)]/40",
-                              isSelectedForDeletion && "bg-[var(--destructive)]/10 ring-2 ring-[var(--destructive)]/55",
+                              isSelectedForDeletion && MESSAGE_SELECTION_SURFACE_CLASS,
                               jumpRowClasses,
                             )}
                           >
@@ -5492,7 +5493,7 @@ export function GameNarration({
                             className={cn(
                               "group/logseg relative rounded-lg border border-amber-400/15 bg-amber-950/15 px-3 py-2",
                               isActiveSeg && "ring-1 ring-[var(--primary)]/40",
-                              isSelectedForDeletion && "bg-[var(--destructive)]/10 ring-2 ring-[var(--destructive)]/55",
+                              isSelectedForDeletion && MESSAGE_SELECTION_SURFACE_CLASS,
                               jumpRowClasses,
                             )}
                           >
@@ -5527,7 +5528,7 @@ export function GameNarration({
                           className={cn(
                             "group/logseg relative rounded-lg border border-white/5 bg-black/20 px-3 py-2",
                             isActiveSeg && "ring-1 ring-[var(--primary)]/40",
-                            isSelectedForDeletion && "bg-[var(--destructive)]/10 ring-2 ring-[var(--destructive)]/55",
+                            isSelectedForDeletion && MESSAGE_SELECTION_SURFACE_CLASS,
                             jumpRowClasses,
                           )}
                         >

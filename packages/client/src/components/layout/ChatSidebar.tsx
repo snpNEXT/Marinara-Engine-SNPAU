@@ -64,6 +64,8 @@ import { getCurrentGameGroupRepresentative } from "../../lib/game-session-resolu
 import { api } from "../../lib/api-client";
 import { SelectionActionBar } from "../ui/SelectionActionBar";
 import { SmoothFolderContent } from "../ui/SmoothFolderContent";
+import { useTranslation } from "react-i18next";
+import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 
 type ChatSortOption = "newest" | "oldest" | "name-asc" | "name-desc";
 const CHAT_LIST_PAGE_SIZE = 100;
@@ -202,6 +204,8 @@ function ChatSidebarTitleIcon() {
 }
 
 export function ChatSidebar() {
+  const { t } = useTranslation();
+  const localize = useLocalizedUiText();
   const { data: chats, isError: chatsError, isLoading, isFetching, refetch: refetchChats } = useChats();
   const { data: connections } = useConnections();
   const createChat = useCreateChat();
@@ -1111,7 +1115,7 @@ export function ChatSidebar() {
   return (
     <nav
       data-component="ChatSidebar"
-      aria-label="Chat navigation"
+      aria-label={localize("Chat navigation")}
       className="mari-chat-sidebar mari-chrome-token-scope flex h-full flex-col"
     >
       {/* Header */}
@@ -1119,14 +1123,14 @@ export function ChatSidebar() {
         <div className="absolute inset-x-0 bottom-0 h-px bg-[var(--border)]/30" />
         <div className="flex items-center gap-2.5">
           <ChatSidebarTitleIcon />
-          <h2 className="mari-chrome-text-strong text-sm font-semibold">Chats</h2>
+          <h2 className="mari-chrome-text-strong text-sm font-semibold">{localize("Chats")}</h2>
         </div>
         <div className="flex items-center gap-1">
           <button
             onClick={() => setSidebarOpen(false)}
             className="mari-chrome-control mari-chrome-control--small mari-accent-animated p-1.5 active:scale-90 md:hidden"
-            title="Close"
-            aria-label="Close chats"
+            title={localize("Close")}
+            aria-label={localize("Close chats")}
           >
             <X size="0.875rem" />
           </button>
@@ -1157,7 +1161,7 @@ export function ChatSidebar() {
               >
                 <span className="shrink-0 leading-none">{cfg.icon}</span>
                 <span className="inline-flex min-h-[1rem] items-center whitespace-nowrap pb-px leading-normal">
-                  {cfg.shortLabel}
+                  {localize(cfg.shortLabel)}
                 </span>
                 {tabUnread > 0 && !isActive && (
                   <span className="absolute -top-1 -right-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-md bg-red-500 px-0.5 text-[0.5rem] font-bold leading-none text-white">
@@ -1185,8 +1189,8 @@ export function ChatSidebar() {
             "mari-chrome-control mari-chrome-control--primary mari-chat-mode-action flex-1 text-xs",
             activeModeConfig.logoModeClass,
           )}
-          title={`New ${activeModeConfig.label}`}
-          aria-label={`New ${activeModeConfig.label}`}
+          title={t(`navigation.chatSidebar.new.${activeTab}`)}
+          aria-label={t(`navigation.chatSidebar.new.${activeTab}`)}
         >
           <Plus size="0.8125rem" className="mari-chrome-accent-icon mari-accent-animated" />
         </button>
@@ -1194,8 +1198,8 @@ export function ChatSidebar() {
           onClick={() => chatImportInputRef.current?.click()}
           disabled={isImportingChat}
           className="mari-chrome-control mari-chrome-control--primary flex-1 text-xs"
-          title={isImportingChat ? "Importing chat" : "Import SillyTavern or Marinara chat JSONL"}
-          aria-label={isImportingChat ? "Importing chat" : "Import SillyTavern or Marinara chat JSONL"}
+          title={localize(isImportingChat ? "Importing chat" : "Import SillyTavern or Marinara chat JSONL")}
+          aria-label={localize(isImportingChat ? "Importing chat" : "Import SillyTavern or Marinara chat JSONL")}
         >
           <Download size="0.8125rem" />
         </button>
@@ -1206,8 +1210,8 @@ export function ChatSidebar() {
             "mari-chrome-control mari-chrome-control--primary flex-1 text-xs",
             multiSelectMode && "mari-chrome-control--selected",
           )}
-          title={multiSelectMode ? "Cancel selection" : "Select chats"}
-          aria-label={multiSelectMode ? "Cancel selection" : "Select chats"}
+          title={localize(multiSelectMode ? "Cancel selection" : "Select chats")}
+          aria-label={localize(multiSelectMode ? "Cancel selection" : "Select chats")}
         >
           <Check size="0.8125rem" />
         </button>
@@ -1223,7 +1227,7 @@ export function ChatSidebar() {
             />
             <input
               type="text"
-              placeholder={`Search ${activeTab === "conversation" ? "conversations" : activeTab === "game" ? "games" : "roleplays"}...`}
+              placeholder={t(`navigation.chatSidebar.search.${activeTab}`)}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="mari-chrome-field h-10 w-full py-0 pl-8 pr-3 text-xs md:h-9"
@@ -1234,10 +1238,10 @@ export function ChatSidebar() {
               value={sort}
               onChange={(e) => setSort(e.target.value as ChatSortOption)}
               className="mari-chrome-field mari-chrome-sort-field mari-accent-animated h-10 w-[6.5rem] appearance-none py-0 pl-2.5 pr-7 text-[0.6875rem] md:h-9"
-              title="Sort chats"
+              title={localize("Sort chats")}
             >
-              <option value="newest">Newest</option>
-              <option value="oldest">Oldest</option>
+              <option value="newest">{localize("Newest")}</option>
+              <option value="oldest">{localize("Oldest")}</option>
               <option value="name-asc">A-Z</option>
               <option value="name-desc">Z-A</option>
             </select>
@@ -1258,7 +1262,7 @@ export function ChatSidebar() {
                   ? "mari-chrome-accent-surface mari-accent-animated"
                   : "mari-chrome-text-muted hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]",
               )}
-              title={tagsExpanded ? "Collapse tags" : "Expand tags"}
+              title={localize(tagsExpanded ? "Collapse tags" : "Expand tags")}
             >
               <Tag size="0.6875rem" className="shrink-0" />
               <span className="max-w-full truncate">
@@ -1275,7 +1279,7 @@ export function ChatSidebar() {
                 onClick={() => setActiveTag(null)}
                 className="mari-chrome-control mari-chrome-control--compact mari-chrome-control--danger"
               >
-                Clear
+                {localize("Clear")}
               </button>
             )}
             {(tagsExpanded ? allTags : allTags.slice(0, 4)).map((tag) => (
@@ -1366,7 +1370,7 @@ export function ChatSidebar() {
               disabled={isFetching}
               className="mari-chrome-control mari-chrome-control--compact mt-1 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isFetching ? "Checking..." : "Try Again"}
+              {localize(isFetching ? "Checking..." : "Try Again")}
             </button>
           </div>
         )}
@@ -1383,9 +1387,9 @@ export function ChatSidebar() {
               )}
             </div>
             <p className="mari-chrome-text-muted text-xs">
-              {searchQuery.trim() || activeTag
-                ? `No ${activeTab === "conversation" ? "conversations" : activeTab === "game" ? "games" : "roleplays"} match the current filters`
-                : `No ${activeTab === "conversation" ? "conversations" : activeTab === "game" ? "games" : "roleplays"} yet`}
+              {t(
+                `navigation.chatSidebar.empty.${searchQuery.trim() || activeTag ? "filtered" : "initial"}.${activeTab}`,
+              )}
             </p>
             <button
               onClick={handleNewChatFromTab}
@@ -1396,7 +1400,7 @@ export function ChatSidebar() {
               )}
             >
               <span className="mari-chrome-accent-icon mari-accent-animated">+</span>
-              New {activeTab === "conversation" ? "Conversation" : activeTab === "game" ? "Game" : "Roleplay"}
+              {t(`navigation.chatSidebar.new.${activeTab}`)}
             </button>
           </div>
         )}
@@ -1409,13 +1413,15 @@ export function ChatSidebar() {
                 className="mari-chrome-control mari-chrome-control--small flex-1 justify-center text-[0.6875rem]"
               >
                 <FolderPlus size="0.75rem" />
-                New Folder
+                {localize("New Folder")}
               </button>
             </div>
           )}
 
           {modeFolders.length > 0 && activeModeHasChats && (
-            <p className="mari-folder-helper">Drag and drop chats to folders, double-click or double-tap to rename</p>
+            <p className="mari-folder-helper">
+              {localize("Drag and drop chats to folders, double-click or double-tap to rename")}
+            </p>
           )}
 
           {/* Folders (drag-to-reorder) */}
@@ -1461,7 +1467,7 @@ export function ChatSidebar() {
               onClick={() => setVisibleChatLimit((limit) => limit + CHAT_LIST_PAGE_SIZE)}
               className="mari-chrome-control mari-chrome-control--primary justify-center text-xs"
             >
-              Load more ({visibleDisplayChats.length} loaded)
+              {t("navigation.chatSidebar.loadMore", { count: visibleDisplayChats.length })}
             </button>
           )}
         </div>

@@ -34,11 +34,8 @@ import {
   findMissingComfyReferenceSlots,
   numberedComfyReferencePlaceholder,
 } from "./comfyui-reference-placeholders.js";
-import {
-  buildVeniceApiUrl,
-  buildVeniceImageRequest,
-  parseVeniceImageResponse,
-} from "./venice-image.js";
+import { buildVeniceApiUrl, buildVeniceImageRequest, parseVeniceImageResponse } from "./venice-image.js";
+import { buildAtlasCloudImageRequest, runAtlasCloudPrediction } from "../media/atlas-cloud.js";
 
 // sharp is an optional native module (no prebuilds on some platforms like Termux).
 // Lazy-load so the server boots even when sharp is missing. The Draw Things img2img
@@ -159,6 +156,7 @@ const EXPLICIT_IMAGE_SOURCES = new Set([
   "horde",
   "xai",
   "venice",
+  "atlas",
   "comfyui",
   "automatic1111",
   "runpod_comfyui",
@@ -240,6 +238,8 @@ export async function generateImage(
           return generateXAI(normalizedBaseUrl, apiKey, scopedRequest);
         case "venice":
           return generateVenice(normalizedBaseUrl, apiKey, scopedRequest);
+        case "atlas":
+          return generateAtlasCloudImage(normalizedBaseUrl, apiKey, scopedRequest);
         case "comfyui":
           return generateComfyUI(normalizedBaseUrl, scopedRequest);
         case "runpod_comfyui": {
@@ -1020,6 +1020,34 @@ async function generateVenice(baseUrl: string, apiKey: string, request: ImageGen
   return parseVeniceImageResponse(response);
 }
 
+async function generateAtlasCloudImage(
+  baseUrl: string,
+  apiKey: string,
+  request: ImageGenRequest,
+): Promise<ImageGenResult> {
+  const reference = openAIReferenceImages(request)[0];
+  const body = buildAtlasCloudImageRequest({
+    model: request.model ?? "",
+    prompt: request.prompt,
+    width: request.width,
+    height: request.height,
+    referenceImageDataUrl: reference ? imageDataUrlFromReference(reference) : undefined,
+  });
+  logDebugOverride(
+    request.debugMode === true,
+    "[debug/image/atlas-cloud] final request payload:\n%s",
+    JSON.stringify(body, null, 2),
+  );
+  const outputUrl = await runAtlasCloudPrediction({
+    baseUrl,
+    apiKey,
+    kind: "image",
+    body,
+    signal: imageRequestSignal(request),
+  });
+  return downloadImageUrl(outputUrl, false, request.signal);
+}
+
 async function generateNanoGPT(baseUrl: string, apiKey: string, request: ImageGenRequest): Promise<ImageGenResult> {
   const url = nanoGPTImagesUrl(baseUrl);
   const size = isOpenAIGptImageModel(request.model)
@@ -1762,9 +1790,14 @@ async function generateNovelAI(baseUrl: string, apiKey: string, request: ImageGe
     model,
   );
   const seed = resolveSeed(request.imageDefaults);
-  const styleReferenceImage = isNovelAiPreciseReferenceModel(model) && defaults.styleReferenceImage
-    ? collectNovelAiReferenceImages({ ...request, referenceImage: defaults.styleReferenceImage, referenceImages: [] })[0]
-    : undefined;
+  const styleReferenceImage =
+    isNovelAiPreciseReferenceModel(model) && defaults.styleReferenceImage
+      ? collectNovelAiReferenceImages({
+          ...request,
+          referenceImage: defaults.styleReferenceImage,
+          referenceImages: [],
+        })[0]
+      : undefined;
   const characterReferenceImages = collectNovelAiReferenceImages(request)
     .filter((reference) => reference !== styleReferenceImage)
     .slice(0, styleReferenceImage ? 15 : 16);

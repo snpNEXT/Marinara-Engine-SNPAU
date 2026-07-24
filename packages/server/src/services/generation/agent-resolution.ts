@@ -304,8 +304,9 @@ export async function resolveAgentPipelineAgents({
   );
   const resolvedAgents: ResolvedAgent[] = [];
   const agentProviderCache = new Map<string | null, AgentProviderCacheEntry>();
-  const localSidecarAvailableForTrackers =
-    sidecarModelService.getConfig().useForTrackers && sidecarModelService.getConfiguredModelRef() !== null;
+  // An agent may explicitly select the local sidecar even when the global
+  // "use for trackers" switch is off. The provider starts it on demand.
+  const localSidecarAvailableForTrackers = sidecarModelService.getConfiguredModelRef() !== null;
 
   if (localSidecarAvailableForTrackers) {
     agentProviderCache.set(LOCAL_SIDECAR_CONNECTION_ID, {

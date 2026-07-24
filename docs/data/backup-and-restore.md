@@ -7,7 +7,7 @@ This guide shows the two ways to save a copy of everything in Marinara Engine, a
 Marinara gives you two save options. They live in different places and do different jobs.
 
 - **Download Backup** makes a full **.zip** archive of everything on disk. A **.zip** is a single compressed file that holds many files inside it. This is the most complete copy, and the best guard against data loss.
-- **Export Profile** makes a lighter file that holds your account data (characters, personas, chats, lorebooks, presets, agents, and themes). A profile is Marinara's portable copy of your account. You can restore it later inside Marinara.
+- **Export Profile** makes a lighter file that holds your account data (characters, personas, chats, lorebooks, presets, agents, themes, and Personal Extensions). A profile is Marinara's portable copy of your account. You can restore it later inside Marinara.
 
 If you just want one safe copy of everything, use **Download Backup**. Use **Export Profile** when you want a smaller file or a version other roleplay tools can read.
 
@@ -21,7 +21,7 @@ From a phone, tablet, or any other device, backup and restore need the **Admin A
 
 ## Download Backup
 
-**Download Backup** creates one **.zip** file with your database, your settings, and all your media folders (avatars, sprites, backgrounds, gallery images, fonts, and more).
+**Download Backup** creates one **.zip** file with your database, your settings, and all your media folders (avatars, sprites, backgrounds, gallery images, fonts, your custom notification sound, and more).
 
 1. Open **Settings**.
 2. Go to the **Advanced** tab.
@@ -39,7 +39,7 @@ The **.zip** also contains a plain text file named `RESTORE.txt`. It explains ho
 
 ## Export Profile
 
-**Export Profile** creates a smaller file with your account data. Media is included, so avatars and images come along too.
+**Export Profile** creates a smaller file with your account data. Media is included, so avatars, images, and your custom notification sound come along too.
 
 1. Open **Settings**.
 2. Go to the **Advanced** tab.
@@ -53,10 +53,12 @@ The dialog offers two formats:
 
 | Format | What it is | Restorable in Marinara? |
 | --- | --- | --- |
-| **Marinara Native** | Keeps Marinara fields, lorebook folders, character and persona data, presets, agents, themes, and inline media. | Yes |
+| **Marinara Native** | Keeps Marinara fields, lorebook folders, character and persona data, presets, agents, themes, Personal Extension drafts, and inline media. | Yes |
 | **Compatible JSON** | Plain character, persona, and lorebook files for other roleplay tools. | No |
 
 Choose **Marinara Native** to keep a copy you can restore in Marinara later. It downloads a file named `marinara-profile.json`.
+
+Personal Extension code is preserved in a native profile, but its enabled state and execution approval are not. Every restored extension arrives disabled and must be reviewed again in **Settings** > **Addons**.
 
 Choose **Compatible JSON** only when you want to move characters or lorebooks to another tool. It downloads a **.zip** of plain files. You cannot restore this file back into Marinara with **Import Profile**.
 

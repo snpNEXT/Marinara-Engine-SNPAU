@@ -48,6 +48,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import { downloadJsonFile, sanitizeExportFilenamePart } from "../../lib/download-json";
@@ -130,6 +131,7 @@ const DEFAULT_VIDEO_MODELS: Record<VideoDefaultsService, string> = {
   google_veo: "veo-3.1-generate-preview",
   xai: "grok-imagine-video-1.5",
   openrouter: "google/veo-3.1",
+  atlas: "google/veo3.1/text-to-video",
   seedance: "seedance-2-0",
   comfyui: "",
 };
@@ -148,6 +150,7 @@ const VIDEO_REFERENCE_UPLOAD_EXPIRY_OPTIONS: Array<{ value: VideoReferenceUpload
 function videoSourceToDefaultsService(value: string | null | undefined): VideoDefaultsService {
   return value === "xai" ||
     value === "openrouter" ||
+    value === "atlas" ||
     value === "seedance" ||
     value === "google_veo" ||
     value === "comfyui"
@@ -240,6 +243,7 @@ function normalizeMaxParallelJobs(value: unknown): number {
 // ═══════════════════════════════════════════════
 
 export function ConnectionEditor() {
+  const { t } = useTranslation();
   const connectionDetailId = useUIStore((s) => s.connectionDetailId);
   const closeConnectionDetail = useUIStore((s) => s.closeConnectionDetail);
 
@@ -521,15 +525,21 @@ export function ConnectionEditor() {
   const apiKeyLink =
     localProvider === "image_generation" && selectedImageService === "venice"
       ? { label: "Get your Venice API key", url: "https://venice.ai/settings/api" }
-      : localProvider === "video_generation" && selectedVideoDefaultsService === "xai"
-        ? API_KEY_LINKS.xai
-        : localProvider === "video_generation" && selectedVideoDefaultsService === "openrouter"
-          ? API_KEY_LINKS.openrouter
-          : localProvider === "video_generation" && selectedVideoDefaultsService === "seedance"
-            ? { label: "Open Seedance API docs", url: "https://seedance2.ai/api-docs" }
-            : localProvider === "video_generation" && selectedVideoDefaultsService === "comfyui"
-              ? undefined
-              : API_KEY_LINKS[localProvider];
+      : (localProvider === "image_generation" && selectedImageService === "atlas") ||
+          (localProvider === "video_generation" && selectedVideoDefaultsService === "atlas")
+        ? {
+            label: t("connections.mediaSources.atlas.apiKeyLink"),
+            url: "https://www.atlascloud.ai/user/api-keys",
+          }
+        : localProvider === "video_generation" && selectedVideoDefaultsService === "xai"
+          ? API_KEY_LINKS.xai
+          : localProvider === "video_generation" && selectedVideoDefaultsService === "openrouter"
+            ? API_KEY_LINKS.openrouter
+            : localProvider === "video_generation" && selectedVideoDefaultsService === "seedance"
+              ? { label: "Open Seedance API docs", url: "https://seedance2.ai/api-docs" }
+              : localProvider === "video_generation" && selectedVideoDefaultsService === "comfyui"
+                ? undefined
+                : API_KEY_LINKS[localProvider];
 
   useEffect(() => {
     if (localProvider !== "image_generation" || !selectedImageDefaultsService) {
@@ -684,7 +694,8 @@ export function ConnectionEditor() {
       payload.apiKey = "";
     }
     try {
-      await updateConnection.mutateAsync(payload as { id: string } & Record<string, unknown>);
+      // Persist media/default parameters first. The main connection save runs
+      // last so its query refresh cannot race in an older defaults snapshot.
       if (!isMediaProvider) {
         await saveConnectionDefaults.mutateAsync({
           id: connectionDetailId,
@@ -714,6 +725,7 @@ export function ConnectionEditor() {
           ),
         });
       }
+      await updateConnection.mutateAsync(payload as { id: string } & Record<string, unknown>);
       if (isLocalAuthProvider && localBaseUrl) {
         setLocalBaseUrl("");
       } else if (baseUrlValidation.value !== localBaseUrl.trim()) {
@@ -1562,6 +1574,9 @@ export function ConnectionEditor() {
               <div className="grid grid-cols-2 gap-1.5">
                 {IMAGE_GENERATION_SOURCES.map((src) => {
                   const isActive = selectedImageService === src.id;
+                  const sourceName = src.id === "atlas" ? t("connections.mediaSources.atlas.name") : src.name;
+                  const sourceDescription =
+                    src.id === "atlas" ? t("connections.mediaSources.atlas.imageDescription") : src.description;
                   return (
                     <button
                       key={src.id}
@@ -1585,10 +1600,10 @@ export function ConnectionEditor() {
                       )}
                     >
                       <div className="flex items-center gap-1.5">
-                        <span className="font-medium">{src.name}</span>
+                        <span className="font-medium">{sourceName}</span>
                         {isActive && <Check size="0.625rem" />}
                       </div>
-                      <span className="text-[0.5625rem] opacity-70">{src.description}</span>
+                      <span className="text-[0.5625rem] opacity-70">{sourceDescription}</span>
                     </button>
                   );
                 })}
@@ -1617,6 +1632,9 @@ export function ConnectionEditor() {
               <div className="grid grid-cols-2 gap-1.5">
                 {VIDEO_GENERATION_SOURCES.map((src) => {
                   const isActive = selectedVideoProvider === src.id;
+                  const sourceName = src.id === "atlas" ? t("connections.mediaSources.atlas.name") : src.name;
+                  const sourceDescription =
+                    src.id === "atlas" ? t("connections.mediaSources.atlas.videoDescription") : src.description;
                   return (
                     <button
                       key={src.id}
@@ -1652,10 +1670,10 @@ export function ConnectionEditor() {
                       )}
                     >
                       <div className="flex items-center gap-1.5">
-                        <span className="font-medium">{src.name}</span>
+                        <span className="font-medium">{sourceName}</span>
                         {isActive && <Check size="0.625rem" />}
                       </div>
-                      <span className="text-[0.5625rem] opacity-70">{src.description}</span>
+                      <span className="text-[0.5625rem] opacity-70">{sourceDescription}</span>
                     </button>
                   );
                 })}
@@ -1894,91 +1912,91 @@ export function ConnectionEditor() {
 
           {/* ── ComfyUI Workflow ── */}
           {usesComfyUiWorkflow && (
-              <FieldGroup
-                label={`ComfyUI Workflow (${
-                  localProvider === "video_generation" || selectedImageService === "runpod_comfyui"
-                    ? "Required"
-                    : "Optional"
-                })`}
-                icon={<Zap size="0.875rem" className="text-sky-400" />}
-                help={
-                  localProvider === "video_generation"
-                    ? "Paste a ComfyUI video workflow in API format. Use %prompt%, %width%, %height%, %seed%, and %length% for the 16 fps frame count. Use %reference_image_name% in image-to-video workflows so Marinara can upload the first frame to ComfyUI."
-                    : selectedImageService === "runpod_comfyui"
+            <FieldGroup
+              label={`ComfyUI Workflow (${
+                localProvider === "video_generation" || selectedImageService === "runpod_comfyui"
+                  ? "Required"
+                  : "Optional"
+              })`}
+              icon={<Zap size="0.875rem" className="text-sky-400" />}
+              help={
+                localProvider === "video_generation"
+                  ? "Paste a ComfyUI video workflow in API format. Use %prompt%, %width%, %height%, %seed%, and %length% for the 16 fps frame count. Use %reference_image_name% in image-to-video workflows so Marinara can upload the first frame to ComfyUI."
+                  : selectedImageService === "runpod_comfyui"
                     ? "Paste your ComfyUI workflow JSON (API format). RunPod needs the full workflow to execute; the endpoint sends this workflow to your serverless endpoint. Use placeholders like %prompt%, %seed%, %width%, %height%, %reference_image%, and %reference_image_01% through %reference_image_04% to let Marinara inject generation parameters."
                     : "Paste a custom ComfyUI workflow JSON (API format). Use placeholders like %prompt%, %negative_prompt%, %width%, %height%, %seed%, %model%, %steps%, %cfg%, %sampler%, %scheduler%, and %denoise%. For reference images, use %reference_image% / %reference_image_01% through %reference_image_04% to inject base64 strings, or %reference_image_name% / %reference_image_name_01% through %reference_image_name_04% to upload images to ComfyUI's input directory and inject filenames for LoadImage nodes. Leave empty to use the built-in default txt2img workflow."
-                }
-              >
-                <textarea
-                  ref={comfyWorkflowTextareaRef}
-                  value={localComfyuiWorkflow}
-                  onChange={(e) => {
-                    setLocalComfyuiWorkflow(e.target.value);
-                    markDirty();
-                  }}
-                  placeholder='Paste workflow JSON here (exported from ComfyUI via "Save (API Format)")…'
-                  className={cn(
-                    "w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-xs font-mono outline-none ring-1 transition-shadow placeholder:text-[var(--muted-foreground)]/50 min-h-[120px] max-h-[300px] resize-y",
-                    comfyWorkflowValidation?.parseError
-                      ? "ring-red-400/60 focus:ring-red-400"
-                      : "ring-[var(--border)] focus:ring-sky-400/50",
-                  )}
-                />
-                {comfyWorkflowValidation?.parseError && (
-                  <p className="mt-1 flex items-start gap-1 text-[0.625rem] text-red-400">
-                    <AlertCircle size="0.625rem" className="mt-px shrink-0" />
-                    {comfyWorkflowValidation.charPos !== null ? (
-                      <button
-                        onClick={handleJumpToJsonError}
-                        className="underline decoration-dotted cursor-pointer text-left hover:text-red-300"
-                      >
-                        {comfyWorkflowValidation.label}
-                      </button>
-                    ) : (
-                      comfyWorkflowValidation.label
-                    )}
-                  </p>
+              }
+            >
+              <textarea
+                ref={comfyWorkflowTextareaRef}
+                value={localComfyuiWorkflow}
+                onChange={(e) => {
+                  setLocalComfyuiWorkflow(e.target.value);
+                  markDirty();
+                }}
+                placeholder='Paste workflow JSON here (exported from ComfyUI via "Save (API Format)")…'
+                className={cn(
+                  "w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-xs font-mono outline-none ring-1 transition-shadow placeholder:text-[var(--muted-foreground)]/50 min-h-[120px] max-h-[300px] resize-y",
+                  comfyWorkflowValidation?.parseError
+                    ? "ring-red-400/60 focus:ring-red-400"
+                    : "ring-[var(--border)] focus:ring-sky-400/50",
                 )}
-                {comfyWorkflowValidation &&
-                  !comfyWorkflowValidation.parseError &&
-                  comfyWorkflowValidation.missing.length > 0 && (
-                    <p className="mt-1 flex items-start gap-1 text-[0.625rem] text-amber-400">
-                      <AlertCircle size="0.625rem" className="mt-px shrink-0" />
-                      <span>
-                        {comfyWorkflowValidation.missing.some((m) => m.critical) && (
-                          <>
-                            <strong>%prompt%</strong> placeholder not found — prompts won&apos;t be injected.{" "}
-                          </>
-                        )}
-                        {comfyWorkflowValidation.missing.some((m) => !m.critical) && (
-                          <>
-                            Unused:{" "}
-                            {comfyWorkflowValidation.missing
-                              .filter((m) => !m.critical)
-                              .map((m) => m.label)
-                              .join(", ")}
-                            .
-                          </>
-                        )}
-                      </span>
-                    </p>
-                  )}
-                <p className="text-[0.55rem] text-[var(--muted-foreground)] mt-1">
-                  Export your workflow from ComfyUI using <strong>Save (API Format)</strong> in the menu.{" "}
-                  {localProvider === "video_generation" ? (
-                    <>
-                      Use a video output node such as <strong>SaveVideo</strong>. Marinara downloads the MP4 reported in
-                      the workflow&apos;s <code>gifs</code> or <code>images</code> output.
-                    </>
+              />
+              {comfyWorkflowValidation?.parseError && (
+                <p className="mt-1 flex items-start gap-1 text-[0.625rem] text-red-400">
+                  <AlertCircle size="0.625rem" className="mt-px shrink-0" />
+                  {comfyWorkflowValidation.charPos !== null ? (
+                    <button
+                      onClick={handleJumpToJsonError}
+                      className="underline decoration-dotted cursor-pointer text-left hover:text-red-300"
+                    >
+                      {comfyWorkflowValidation.label}
+                    </button>
                   ) : (
-                    <>
-                      Placeholders like <code>%prompt%</code>, <code>%steps%</code>, <code>%sampler%</code>, and
-                      reference-image placeholders will be replaced at generation time.
-                    </>
+                    comfyWorkflowValidation.label
                   )}
                 </p>
-              </FieldGroup>
-            )}
+              )}
+              {comfyWorkflowValidation &&
+                !comfyWorkflowValidation.parseError &&
+                comfyWorkflowValidation.missing.length > 0 && (
+                  <p className="mt-1 flex items-start gap-1 text-[0.625rem] text-amber-400">
+                    <AlertCircle size="0.625rem" className="mt-px shrink-0" />
+                    <span>
+                      {comfyWorkflowValidation.missing.some((m) => m.critical) && (
+                        <>
+                          <strong>%prompt%</strong> placeholder not found — prompts won&apos;t be injected.{" "}
+                        </>
+                      )}
+                      {comfyWorkflowValidation.missing.some((m) => !m.critical) && (
+                        <>
+                          Unused:{" "}
+                          {comfyWorkflowValidation.missing
+                            .filter((m) => !m.critical)
+                            .map((m) => m.label)
+                            .join(", ")}
+                          .
+                        </>
+                      )}
+                    </span>
+                  </p>
+                )}
+              <p className="text-[0.55rem] text-[var(--muted-foreground)] mt-1">
+                Export your workflow from ComfyUI using <strong>Save (API Format)</strong> in the menu.{" "}
+                {localProvider === "video_generation" ? (
+                  <>
+                    Use a video output node such as <strong>SaveVideo</strong>. Marinara downloads the MP4 reported in
+                    the workflow&apos;s <code>gifs</code> or <code>images</code> output.
+                  </>
+                ) : (
+                  <>
+                    Placeholders like <code>%prompt%</code>, <code>%steps%</code>, <code>%sampler%</code>, and
+                    reference-image placeholders will be replaced at generation time.
+                  </>
+                )}
+              </p>
+            </FieldGroup>
+          )}
 
           {localProvider === "image_generation" && selectedImageDefaultsService && localImageDefaults && (
             <ImageGenerationDefaultsPanel
@@ -3223,7 +3241,8 @@ function ImageGenerationDefaultsPanel({
                     <div>
                       <p className="text-[0.625rem] font-medium text-[var(--foreground)]">NovelAI V4.5 style plate</p>
                       <p className="text-[0.55rem] text-[var(--muted-foreground)]">
-                        A persistent style-only reference applied first to every V4.5 generation, including scenes without characters.
+                        A persistent style-only reference applied first to every V4.5 generation, including scenes
+                        without characters.
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -3325,9 +3344,11 @@ function VideoGenerationDefaultsPanel({
   onChange: (next: VideoGenerationDefaultsProfile) => void;
   onReset: () => void;
 }) {
+  const { t } = useTranslation();
   const service =
     value.service === "xai" ||
     value.service === "openrouter" ||
+    value.service === "atlas" ||
     value.service === "seedance" ||
     value.service === "comfyui" ||
     value.service === "google_veo"
@@ -3340,11 +3361,13 @@ function VideoGenerationDefaultsPanel({
         ? `${value.googleVeo.durationSeconds}s, ${value.googleVeo.aspectRatio}, ${value.googleVeo.resolution}`
         : service === "openrouter"
           ? `${value.openrouter.durationSeconds}s, ${value.openrouter.aspectRatio}, ${value.openrouter.resolution}`
-          : service === "seedance"
-            ? `${value.seedance.durationSeconds}s, ${value.seedance.aspectRatio}, ${value.seedance.resolution}`
-            : service === "comfyui"
-              ? `${value.comfyui.durationSeconds}s, ${value.comfyui.aspectRatio}, ${value.comfyui.resolution}`
-              : `${value.geminiOmni.durationSeconds}s, ${value.geminiOmni.aspectRatio}`;
+          : service === "atlas"
+            ? `${value.atlas.durationSeconds}s, ${value.atlas.aspectRatio}, ${value.atlas.resolution}`
+            : service === "seedance"
+              ? `${value.seedance.durationSeconds}s, ${value.seedance.aspectRatio}, ${value.seedance.resolution}`
+              : service === "comfyui"
+                ? `${value.comfyui.durationSeconds}s, ${value.comfyui.aspectRatio}, ${value.comfyui.resolution}`
+                : `${value.geminiOmni.durationSeconds}s, ${value.geminiOmni.aspectRatio}`;
   const serviceLabel =
     service === "xai"
       ? "xAI Imagine"
@@ -3352,11 +3375,13 @@ function VideoGenerationDefaultsPanel({
         ? "Google AI Studio Veo"
         : service === "openrouter"
           ? "OpenRouter Video"
-          : service === "seedance"
-            ? "Seedance 2.0"
-            : service === "comfyui"
-              ? "ComfyUI"
-              : "Google AI Studio Gemini Omni";
+          : service === "atlas"
+            ? t("connections.mediaSources.atlas.name")
+            : service === "seedance"
+              ? "Seedance 2.0"
+              : service === "comfyui"
+                ? "ComfyUI"
+                : "Google AI Studio Gemini Omni";
 
   const updateGeminiOmni = (patch: Partial<VideoGenerationDefaultsProfile["geminiOmni"]>) => {
     onChange({
@@ -3386,6 +3411,13 @@ function VideoGenerationDefaultsPanel({
       openrouter: { ...value.openrouter, ...patch },
     });
   };
+  const updateAtlas = (patch: Partial<VideoGenerationDefaultsProfile["atlas"]>) => {
+    onChange({
+      ...value,
+      service: "atlas",
+      atlas: { ...value.atlas, ...patch },
+    });
+  };
   const updateSeedance = (patch: Partial<VideoGenerationDefaultsProfile["seedance"]>) => {
     onChange({
       ...value,
@@ -3412,11 +3444,13 @@ function VideoGenerationDefaultsPanel({
             ? "Connection-scoped defaults for Google AI Studio Veo video generation."
             : service === "openrouter"
               ? "Connection-scoped defaults for OpenRouter asynchronous video generation."
-              : service === "seedance"
-                ? "Connection-scoped defaults for Seedance 2.0 asynchronous video generation."
-                : service === "comfyui"
-                  ? "Connection-scoped dimensions and duration for local ComfyUI video workflows."
-                  : "Connection-scoped defaults for scene video generation. Duration is rendered into the Omni prompt."
+              : service === "atlas"
+                ? t("connections.mediaSources.atlas.videoDefaultsHelp")
+                : service === "seedance"
+                  ? "Connection-scoped defaults for Seedance 2.0 asynchronous video generation."
+                  : service === "comfyui"
+                    ? "Connection-scoped dimensions and duration for local ComfyUI video workflows."
+                    : "Connection-scoped defaults for scene video generation. Duration is rendered into the Omni prompt."
       }
     >
       <div className="rounded-xl bg-[var(--secondary)]/40 ring-1 ring-[var(--border)]">
@@ -3426,7 +3460,9 @@ function VideoGenerationDefaultsPanel({
           className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition-colors hover:bg-[var(--accent)]"
         >
           <div className="min-w-0">
-            <div className="text-xs font-medium text-[var(--foreground)]">{serviceLabel} setup</div>
+            <div className="text-xs font-medium text-[var(--foreground)]">
+              {service === "atlas" ? t("connections.mediaSources.atlas.videoSetupLabel") : `${serviceLabel} setup`}
+            </div>
             <div className="text-[0.625rem] text-[var(--muted-foreground)]">{summary}</div>
           </div>
           <ChevronDown
@@ -3451,6 +3487,7 @@ function VideoGenerationDefaultsPanel({
             {service === "xai" ||
             service === "google_veo" ||
             service === "openrouter" ||
+            service === "atlas" ||
             service === "seedance" ||
             service === "comfyui" ? (
               <>
@@ -3462,11 +3499,13 @@ function VideoGenerationDefaultsPanel({
                         ? value.xai.durationSeconds
                         : service === "google_veo"
                           ? value.googleVeo.durationSeconds
-                          : service === "seedance"
-                            ? value.seedance.durationSeconds
-                            : service === "comfyui"
-                              ? value.comfyui.durationSeconds
-                              : value.openrouter.durationSeconds
+                          : service === "atlas"
+                            ? value.atlas.durationSeconds
+                            : service === "seedance"
+                              ? value.seedance.durationSeconds
+                              : service === "comfyui"
+                                ? value.comfyui.durationSeconds
+                                : value.openrouter.durationSeconds
                     }
                     min={service === "google_veo" || service === "seedance" ? 4 : 1}
                     max={service === "xai" || service === "seedance" ? 15 : service === "google_veo" ? 8 : 60}
@@ -3476,6 +3515,8 @@ function VideoGenerationDefaultsPanel({
                         updateGoogleVeo({ durationSeconds: durationSeconds <= 5 ? 4 : durationSeconds <= 7 ? 6 : 8 });
                       } else if (service === "seedance") {
                         updateSeedance({ durationSeconds });
+                      } else if (service === "atlas") {
+                        updateAtlas({ durationSeconds });
                       } else if (service === "comfyui") {
                         updateComfyUi({ durationSeconds });
                       } else updateOpenRouter({ durationSeconds });
@@ -3489,16 +3530,19 @@ function VideoGenerationDefaultsPanel({
                           ? value.xai.aspectRatio
                           : service === "google_veo"
                             ? value.googleVeo.aspectRatio
-                            : service === "seedance"
-                              ? value.seedance.aspectRatio
-                              : service === "comfyui"
-                                ? value.comfyui.aspectRatio
-                                : value.openrouter.aspectRatio
+                            : service === "atlas"
+                              ? value.atlas.aspectRatio
+                              : service === "seedance"
+                                ? value.seedance.aspectRatio
+                                : service === "comfyui"
+                                  ? value.comfyui.aspectRatio
+                                  : value.openrouter.aspectRatio
                       }
                       onChange={(event) => {
                         const aspectRatio = event.target.value === "9:16" ? "9:16" : "16:9";
                         if (service === "xai") updateXai({ aspectRatio });
                         else if (service === "google_veo") updateGoogleVeo({ aspectRatio });
+                        else if (service === "atlas") updateAtlas({ aspectRatio });
                         else if (service === "seedance") updateSeedance({ aspectRatio });
                         else if (service === "comfyui") updateComfyUi({ aspectRatio });
                         else updateOpenRouter({ aspectRatio });
@@ -3517,16 +3561,19 @@ function VideoGenerationDefaultsPanel({
                           ? value.xai.resolution
                           : service === "google_veo"
                             ? value.googleVeo.resolution
-                            : service === "seedance"
-                              ? value.seedance.resolution
-                              : service === "comfyui"
-                                ? value.comfyui.resolution
-                                : value.openrouter.resolution
+                            : service === "atlas"
+                              ? value.atlas.resolution
+                              : service === "seedance"
+                                ? value.seedance.resolution
+                                : service === "comfyui"
+                                  ? value.comfyui.resolution
+                                  : value.openrouter.resolution
                       }
                       onChange={(event) => {
                         const resolution = event.target.value as VideoResolution;
                         if (service === "xai") updateXai({ resolution });
                         else if (service === "google_veo") updateGoogleVeo({ resolution });
+                        else if (service === "atlas") updateAtlas({ resolution });
                         else if (service === "seedance") updateSeedance({ resolution });
                         else if (service === "comfyui") updateComfyUi({ resolution });
                         else updateOpenRouter({ resolution });
@@ -3550,11 +3597,13 @@ function VideoGenerationDefaultsPanel({
                     ? "These values are sent to the xAI Videos API. xAI accepts 1-15 seconds for generated videos."
                     : service === "google_veo"
                       ? "Veo accepts 4, 6, or 8 seconds. Character loop references use the avatar as the first and last frame and run at 8 seconds."
-                      : service === "seedance"
-                        ? "Seedance accepts 4-15 seconds. Reference-image jobs send matching first and last frames when the provider can fetch the reference URL."
-                        : service === "comfyui"
-                          ? "ComfyUI receives width, height, and a 16 fps frame count through workflow placeholders."
-                          : "These values are sent to OpenRouter's asynchronous Videos API. OpenRouter model support varies, so keep the model's own limits in mind."}
+                      : service === "atlas"
+                        ? t("connections.mediaSources.atlas.videoDefaultsNote")
+                        : service === "seedance"
+                          ? "Seedance accepts 4-15 seconds. Reference-image jobs send matching first and last frames when the provider can fetch the reference URL."
+                          : service === "comfyui"
+                            ? "ComfyUI receives width, height, and a 16 fps frame count through workflow placeholders."
+                            : "These values are sent to OpenRouter's asynchronous Videos API. OpenRouter model support varies, so keep the model's own limits in mind."}
                 </p>
               </>
             ) : (

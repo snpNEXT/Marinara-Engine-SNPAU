@@ -64,6 +64,7 @@ import { getChatInputShellClass } from "./chat-input-styles";
 import { MariSuggestionChips } from "./MariSuggestionChips";
 import { CapabilityElement } from "../capabilities/CapabilityElement";
 import type { PendingSpatialTransitionDraft } from "../../stores/chat.store";
+import { useTranslation } from "react-i18next";
 
 interface Attachment {
   type: string; // MIME type
@@ -211,6 +212,7 @@ export const ChatInput = memo(function ChatInput({
   onStartEncounter,
   interactionsLocked = false,
 }: ChatInputProps) {
+  const { t } = useTranslation();
   const [hasInput, setHasInput] = useState(false);
   const [completions, setCompletions] = useState<SlashCommand[]>([]);
   const [selectedCompletion, setSelectedCompletion] = useState(0);
@@ -288,13 +290,19 @@ export const ChatInput = memo(function ChatInput({
     [activeChatCharacters, characterNames],
   );
   const inputPlaceholder = useMemo(() => {
-    if (!activeChatId) return "Select a chat first";
-    if (isMobileComposerViewport) return mode === "roleplay" ? "Write… /cmds" : "Message… /cmds";
-    if (mode === "roleplay") return "Write your response, / for commands";
-    if (activeCharacterNames.length > 1) return `Message @${activeCharacterNames.join(", @")}, / for commands`;
-    if (activeCharacterNames.length === 1) return `Message @${activeCharacterNames[0]}, / for commands`;
-    return "Type here, / for commands.";
-  }, [activeCharacterNames, activeChatId, isMobileComposerViewport, mode]);
+    if (!activeChatId) return t("chat.input.selectChat");
+    if (isMobileComposerViewport) {
+      return t(mode === "roleplay" ? "chat.input.mobile.roleplay" : "chat.input.mobile.message");
+    }
+    if (mode === "roleplay") return t("chat.input.roleplay");
+    if (activeCharacterNames.length > 1) {
+      return t("chat.input.messageCharacters", { names: `@${activeCharacterNames.join(", @")}` });
+    }
+    if (activeCharacterNames.length === 1) {
+      return t("chat.input.messageCharacters", { names: `@${activeCharacterNames[0]}` });
+    }
+    return t("chat.input.default");
+  }, [activeCharacterNames, activeChatId, isMobileComposerViewport, mode, t]);
   const queuedResponseOrder = useMemo(
     () => new Map(responseQueue.map((characterId, index) => [characterId, index + 1])),
     [responseQueue],
@@ -932,7 +940,7 @@ export const ChatInput = memo(function ChatInput({
     if (chatMeta.translateInput && message.trim()) {
       try {
         const { translateText } = await import("../../lib/translate-text");
-        const translated = await translateText(message);
+        const translated = await translateText(message, "input");
         if (translated.trim()) message = translated;
       } catch {
         toast.error("Failed to translate message — sending original");
@@ -1176,7 +1184,7 @@ export const ChatInput = memo(function ChatInput({
     if (chatMeta.translateInput && message.trim()) {
       try {
         const { translateText } = await import("../../lib/translate-text");
-        const translated = await translateText(message);
+        const translated = await translateText(message, "input");
         if (translated.trim()) message = translated;
       } catch {
         toast.error("Failed to translate message; posting original");
@@ -1618,9 +1626,11 @@ export const ChatInput = memo(function ChatInput({
             getChatInputShellClass({ dragging: false, hasContent: false, layout: "roleplay" }),
             "min-h-10 w-full justify-start text-left text-sm text-foreground/55",
           )}
-          aria-label="Show message input"
+          aria-label={t("chat.input.show")}
         >
-          <span className="truncate">{mode === "roleplay" ? "Write… /cmds" : "Message… /cmds"}</span>
+          <span className="truncate">
+            {t(mode === "roleplay" ? "chat.input.mobile.roleplay" : "chat.input.mobile.message")}
+          </span>
         </button>
       </div>
     );
@@ -1800,7 +1810,7 @@ export const ChatInput = memo(function ChatInput({
               ? "bg-foreground/10 text-foreground/75 ring-1 ring-foreground/20"
               : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
           )}
-          title="Attach files"
+          title={t("chat.input.attachFiles")}
         >
           <Paperclip size="1rem" />
         </button>
@@ -1840,8 +1850,8 @@ export const ChatInput = memo(function ChatInput({
                 ? "bg-foreground/10 text-foreground/75 ring-1 ring-foreground/20"
                 : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
             )}
-            title="Emoji"
-            aria-label="Emoji"
+            title={t("chat.input.emoji")}
+            aria-label={t("chat.input.emoji")}
           >
             <Smile size="1.125rem" />
           </button>
@@ -1884,7 +1894,7 @@ export const ChatInput = memo(function ChatInput({
                 ? "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70 active:scale-90"
                 : "text-foreground/25",
             )}
-            title="Translate draft"
+            title={t("chat.input.translateDraft")}
           >
             {isTranslatingDraft ? <Loader2 size="0.9375rem" className="animate-spin" /> : <Languages size="1rem" />}
           </button>

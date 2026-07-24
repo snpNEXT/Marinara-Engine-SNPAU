@@ -18,6 +18,7 @@ import { isCssGradient, RAINBOW_GRADIENT_PRESET } from "../lib/css-colors";
 import { announceChatFloatingUiDismiss } from "../lib/chat-floating-ui-events";
 import { detectConversationTimeZone, normalizeConversationTimeZone } from "../lib/conversation-time-zone";
 import { BASIC_PANEL_SORT_OPTIONS, normalizeBasicPanelSort, type BasicPanelSort } from "../lib/panel-sort";
+import { DEFAULT_APP_LANGUAGE, type AppLanguage } from "../localization/locale-types";
 
 type Panel =
   | "chat"
@@ -28,7 +29,8 @@ type Panel =
   | "agents"
   | "personas"
   | "settings"
-  | "bot-browser";
+  | "bot-browser"
+  | "extensions";
 export type ChatModeShortcut = "conversation" | "roleplay" | "game";
 export const CHARACTER_LIBRARY_SORT_OPTIONS = ["name-asc", "name-desc", "newest", "oldest", "favorites"] as const;
 export type CharacterLibrarySort = (typeof CHARACTER_LIBRARY_SORT_OPTIONS)[number];
@@ -87,9 +89,6 @@ export interface SummaryPopoverSettings {
   hideSummarisedMessages: boolean;
   collapseHiddenMessages: boolean;
 }
-export const APP_LANGUAGE_OPTIONS = [{ id: "en", label: "English" }] as const;
-export type AppLanguage = (typeof APP_LANGUAGE_OPTIONS)[number]["id"];
-
 export interface PendingSpatialMapDraftReview {
   chatId: string;
   result: GenerateSpatialMapDraftResponse;
@@ -638,8 +637,6 @@ interface UIState {
   // ── Text Appearance ──
   /** Color for chat message text (empty = theme default) */
   chatFontColor: string;
-  /** Whether cards without their own dialogue color use the global dialogue color */
-  defaultDialogueColorEnabled: boolean;
   /** Default dialogue highlight color for cards without one (empty = theme default) */
   defaultDialogueColor: string;
   /** Color for non-action chrome copy in tracker widgets, folder labels, settings descriptors, and popovers (empty = scheme default) */
@@ -912,7 +909,6 @@ interface UIState {
   setSummaryPopoverSettings: (settings: Partial<SummaryPopoverSettings>) => void;
   setScenePromptPreferences: (preferences: ScenePromptPreferences) => void;
   setChatFontColor: (v: string) => void;
-  setDefaultDialogueColorEnabled: (v: boolean) => void;
   setDefaultDialogueColor: (v: string) => void;
   setChatChromeTextColor: (v: string) => void;
   setChatFontOpacity: (v: number) => void;
@@ -1107,7 +1103,6 @@ export function pickSyncedSettings(state: UIState) {
     summaryPopoverSettings: state.summaryPopoverSettings,
     scenePromptPreferences: state.scenePromptPreferences,
     chatFontColor: state.chatFontColor,
-    defaultDialogueColorEnabled: state.defaultDialogueColorEnabled,
     defaultDialogueColor: state.defaultDialogueColor,
     chatChromeTextColor: state.chatChromeTextColor,
     chatFontOpacity: state.chatFontOpacity,
@@ -1233,7 +1228,7 @@ export const useUIStore = create<UIState>()(
 
       // Settings defaults
       fontSize: 17 as FontSize,
-      language: "en" as AppLanguage,
+      language: DEFAULT_APP_LANGUAGE as AppLanguage,
       chatFontSize: 16,
       fontFamily: "",
       enableStreaming: true,
@@ -1293,7 +1288,6 @@ export const useUIStore = create<UIState>()(
       summaryPopoverSettings: DEFAULT_SUMMARY_POPOVER_SETTINGS,
       scenePromptPreferences: DEFAULT_SCENE_PROMPT_PREFERENCES,
       chatFontColor: "",
-      defaultDialogueColorEnabled: false,
       defaultDialogueColor: "",
       chatChromeTextColor: "",
       chatFontOpacity: 90,
@@ -2044,7 +2038,6 @@ export const useUIStore = create<UIState>()(
       setScenePromptPreferences: (preferences) =>
         set({ scenePromptPreferences: normalizeScenePromptPreferences(preferences) }),
       setChatFontColor: (v) => set({ chatFontColor: v }),
-      setDefaultDialogueColorEnabled: (v) => set({ defaultDialogueColorEnabled: v }),
       setDefaultDialogueColor: (v) => set({ defaultDialogueColor: v }),
       setChatChromeTextColor: (v) => set({ chatChromeTextColor: normalizeChatChromeTextColor(v) }),
       setChatFontOpacity: (v) => set({ chatFontOpacity: Math.max(0, Math.min(100, v)) }),
@@ -2097,7 +2090,6 @@ export const useUIStore = create<UIState>()(
           fontFamily: "",
           conversationMessageStyle: "classic" as ConversationMessageStyle,
           chatFontColor: "",
-          defaultDialogueColorEnabled: false,
           defaultDialogueColor: "",
           chatChromeTextColor: "",
           chatFontOpacity: 90,
@@ -2200,7 +2192,7 @@ export const useUIStore = create<UIState>()(
     }),
     {
       name: "marinara-engine-ui",
-      version: 81,
+      version: 82,
       // Debounce localStorage writes to avoid sync I/O on every state change
       storage: createJSONStorage(() => {
         let timer: ReturnType<typeof setTimeout> | null = null;
@@ -2756,9 +2748,6 @@ export const useUIStore = create<UIState>()(
           );
         }
         if (version <= 79) {
-          if (persisted.defaultDialogueColorEnabled === undefined) {
-            persisted.defaultDialogueColorEnabled = false;
-          }
           if (persisted.defaultDialogueColor === undefined) {
             persisted.defaultDialogueColor = "";
           }
@@ -2767,13 +2756,16 @@ export const useUIStore = create<UIState>()(
           delete persisted.installedExtensions;
           delete persisted.hasMigratedExtensionsToServer;
         }
+        // v81 -> v82: the global dialogue fallback is now always active.
+        if (version <= 81) {
+          delete persisted.defaultDialogueColorEnabled;
+        }
         persisted.appAccentRgbMode = persisted.appAccentRgbMode === true;
         persisted.customCursorEnabled = persisted.customCursorEnabled !== false;
         persisted.professorMariSuggestionsEnabled = persisted.professorMariSuggestionsEnabled !== false;
         persisted.includeReasoningInExports = persisted.includeReasoningInExports === true;
         persisted.roleplayReducedPaintEffects = persisted.roleplayReducedPaintEffects === true;
         persisted.gameTextEffectsEnabled = persisted.gameTextEffectsEnabled !== false;
-        persisted.defaultDialogueColorEnabled = persisted.defaultDialogueColorEnabled === true;
         persisted.defaultDialogueColor =
           typeof persisted.defaultDialogueColor === "string" ? persisted.defaultDialogueColor : "";
         persisted.chatChromeTextColor = normalizeChatChromeTextColor(persisted.chatChromeTextColor);
@@ -2904,7 +2896,6 @@ export const useUIStore = create<UIState>()(
         summaryPopoverSettings: state.summaryPopoverSettings,
         scenePromptPreferences: state.scenePromptPreferences,
         chatFontColor: state.chatFontColor,
-        defaultDialogueColorEnabled: state.defaultDialogueColorEnabled,
         defaultDialogueColor: state.defaultDialogueColor,
         chatChromeTextColor: state.chatChromeTextColor,
         chatFontOpacity: state.chatFontOpacity,

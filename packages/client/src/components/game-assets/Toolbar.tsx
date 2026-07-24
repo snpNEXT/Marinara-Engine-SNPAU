@@ -285,7 +285,7 @@ export function Toolbar({
             className={cn(
               "flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors",
               assetSelection.active
-                ? "border-[var(--foreground)]/25 bg-[var(--foreground)]/10 text-[var(--foreground)]/80"
+                ? "border-[var(--primary)]/35 bg-[var(--primary)]/10 text-[var(--primary)]"
                 : "border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--accent)]",
             )}
             title="Select assets for this game"
@@ -295,7 +295,7 @@ export function Toolbar({
             <FolderCheck size="0.875rem" />
             <span className="max-md:hidden">{assetSelection.active ? "Selecting" : "Game assets"}</span>
             {assetSelection.excludedCount > 0 && (
-              <span className="rounded-full bg-[var(--foreground)]/12 px-1.5 py-0.5 text-[0.625rem] leading-none text-[var(--foreground)]/80">
+              <span className="rounded-full bg-[var(--primary)]/15 px-1.5 py-0.5 text-[0.625rem] leading-none text-[var(--primary)]">
                 {assetSelection.excludedCount}
               </span>
             )}

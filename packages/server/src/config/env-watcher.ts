@@ -13,6 +13,7 @@
 import { existsSync, statSync, watchFile, unwatchFile } from "node:fs";
 import { logger } from "../lib/logger.js";
 import { getEnvFilePath, getLogLevel, reloadRuntimeEnv, type EnvReloadResult } from "./runtime-config.js";
+import { personalServerExtensionRuntime } from "../services/extensions/personal-server-extension-runtime.js";
 
 // Keys whose values are bound at process / app startup and won't take effect
 // without a full restart, even though we propagate them to process.env.
@@ -82,6 +83,12 @@ function applyLogLevel(diff: EnvReloadResult) {
   }
 }
 
+function applyExternalExtensionsGate(diff: EnvReloadResult) {
+  const key = "ENABLE_EXTERNAL_EXTENSIONS";
+  if (!diff.updated.includes(key) && !diff.added.includes(key) && !diff.removed.includes(key)) return;
+  void personalServerExtensionRuntime.enforceExternalPolicy();
+}
+
 function logDiff(diff: EnvReloadResult) {
   const totalChanges = diff.added.length + diff.updated.length + diff.removed.length;
   if (totalChanges === 0) {
@@ -143,6 +150,7 @@ export function startEnvWatcher(): EnvWatcherHandle {
       const diff = reloadRuntimeEnv();
       logDiff(diff);
       applyLogLevel(diff);
+      applyExternalExtensionsGate(diff);
     } catch (err) {
       logger.error(err, "[env-watcher] Failed to reload .env");
     }
@@ -161,6 +169,7 @@ export function startEnvWatcher(): EnvWatcherHandle {
         const diff = reloadRuntimeEnv();
         logDiff(diff);
         applyLogLevel(diff);
+        applyExternalExtensionsGate(diff);
         return diff;
       } catch (err) {
         logger.error(err, "[env-watcher] Manual reload failed");

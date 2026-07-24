@@ -176,7 +176,11 @@ import type {
   SpotifySourceType,
   WeekSchedule,
 } from "@marinara-engine/shared";
-import { normalizeSpotifySourceType } from "@marinara-engine/shared";
+import {
+  MAX_ILLUSTRATOR_IMAGES_PER_GENERATION,
+  normalizeIllustratorImagesPerGeneration,
+  normalizeSpotifySourceType,
+} from "@marinara-engine/shared";
 import { useAgentConfigs, useCreateAgent, useUpdateAgent, type AgentConfigRow } from "../../hooks/use-agents";
 import { useAgentStore } from "../../stores/agent.store";
 import { useSidecarStore } from "../../stores/sidecar.store";
@@ -1735,6 +1739,9 @@ export function ChatSettingsDrawer({
       : illustratorDefaults.useAvatarReferences === true;
   const illustratorPromptConnectionId =
     typeof metadata.illustratorPromptConnectionId === "string" ? metadata.illustratorPromptConnectionId : "";
+  const illustratorImagesPerGeneration = normalizeIllustratorImagesPerGeneration(
+    metadata.illustratorImagesPerGeneration,
+  );
   const illustratorAutoBackgroundsEnabled = metadata.illustratorAutoBackgroundsEnabled === true;
   const selectedIllustratorPromptConnectionMissing =
     illustratorPromptConnectionId.length > 0 &&
@@ -2203,6 +2210,30 @@ export function ChatSettingsDrawer({
       {options.description ? (
         <span className="text-[0.625rem] leading-snug text-[var(--muted-foreground)]">{options.description}</span>
       ) : null}
+    </label>
+  );
+  const renderIllustratorImagesPerGeneration = () => (
+    <label className="flex flex-col gap-1">
+      <span className="text-[0.625rem] font-medium text-[var(--foreground)]">Images Per Generation</span>
+      <select
+        value={illustratorImagesPerGeneration}
+        onChange={(event) =>
+          updateMeta.mutate({
+            id: chat.id,
+            illustratorImagesPerGeneration: normalizeIllustratorImagesPerGeneration(event.target.value),
+          })
+        }
+        className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2.5 py-2 text-xs text-[var(--foreground)] outline-none transition-colors focus:border-[var(--primary)]/50"
+      >
+        {Array.from({ length: MAX_ILLUSTRATOR_IMAGES_PER_GENERATION }, (_, index) => index + 1).map((count) => (
+          <option key={count} value={count}>
+            {count}
+          </option>
+        ))}
+      </select>
+      <span className="text-[0.625rem] leading-snug text-[var(--muted-foreground)]">
+        Generate this many variants for each illustration or selfie request. Each variant uses one provider request.
+      </span>
     </label>
   );
   const proseGuardianBannedWords =
@@ -5837,6 +5868,7 @@ export function ChatSettingsDrawer({
                             </label>
                             {renderIllustratorPromptConnectionSelect()}
                             {renderIllustratorImageStyleSelect()}
+                            {renderIllustratorImagesPerGeneration()}
                             <AgentSettingsToggle
                               label="Send Avatar References"
                               description="Send the matching character avatar or sprite as a reference image for generated selfies when the provider supports it."
@@ -7457,6 +7489,7 @@ export function ChatSettingsDrawer({
                             description:
                               "Shared by Illustrator scenes and generated backgrounds so both keep the same visual language.",
                           })}
+                          {renderIllustratorImagesPerGeneration()}
                           <p className="text-[0.59375rem] leading-snug text-[var(--muted-foreground)]">
                             Uses the Background resolution from Settings → Generations. Tracker locations are preferred;
                             recent scene context is used when no location tracker is available.
@@ -7843,6 +7876,7 @@ export function ChatSettingsDrawer({
                           {renderIllustratorImageStyleSelect({
                             emptyOptionLabel: "Use global or connection default",
                           })}
+                          {renderIllustratorImagesPerGeneration()}
                           <AgentSettingsToggle
                             label="Use Campaign Art Style"
                             description="Add this game's setup-generated art direction as a separate layer alongside the selected Image Style profile."
@@ -8395,6 +8429,7 @@ export function ChatSettingsDrawer({
                                           }
                                         />
                                         {renderIllustratorPromptConnectionSelect()}
+                                        {renderIllustratorImagesPerGeneration()}
                                         <AgentSettingsToggle
                                           label="Attach Card Appearance"
                                           description="Append matched character appearance lines to image prompts, using only visible/generated names."

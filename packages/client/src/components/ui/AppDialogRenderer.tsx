@@ -54,7 +54,9 @@ export function AppDialogRenderer() {
       chatFloatingPanel
     >
       <div className="space-y-4">
-        <p className="whitespace-pre-wrap text-sm leading-relaxed text-[var(--foreground)]">{dialog.message}</p>
+        <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--foreground)]">
+          {dialog.message}
+        </p>
 
         {dialog.kind === "prompt" && (
           <form

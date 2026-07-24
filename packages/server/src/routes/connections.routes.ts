@@ -6,6 +6,8 @@ import { existsSync } from "fs";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { extname, join } from "path";
 import {
+  ATLAS_CLOUD_IMAGE_MODELS,
+  ATLAS_CLOUD_VIDEO_MODELS,
   IMAGE_DEFAULTS_STORAGE_KEY,
   MODEL_LISTS,
   VIDEO_DEFAULTS_STORAGE_KEY,
@@ -48,6 +50,8 @@ const DEFAULT_XAI_VIDEO_MODEL = "grok-imagine-video-1.5";
 const DEFAULT_XAI_VIDEO_BASE_URL = "https://api.x.ai/v1";
 const DEFAULT_OPENROUTER_VIDEO_MODEL = "google/veo-3.1";
 const DEFAULT_OPENROUTER_VIDEO_BASE_URL = "https://openrouter.ai/api/v1";
+const DEFAULT_ATLAS_CLOUD_VIDEO_MODEL = "google/veo3.1/text-to-video";
+const DEFAULT_ATLAS_CLOUD_VIDEO_BASE_URL = "https://api.atlascloud.ai/api/v1";
 const DEFAULT_SEEDANCE_VIDEO_MODEL = "seedance-2-0";
 const DEFAULT_SEEDANCE_VIDEO_BASE_URL = "https://api.seedance2.ai";
 
@@ -138,14 +142,33 @@ function describeTestMessageTarget(provider: string, baseUrl: string, model: str
 
 function resolveImageGenerationSource(conn: Record<string, unknown>, baseUrl: string): string {
   const explicitSource = typeof conn.imageGenerationSource === "string" ? conn.imageGenerationSource : "";
+  // Older connections identify their backend only through imageService.
+  const serviceHint = typeof conn.imageService === "string" ? conn.imageService : "";
   const model = typeof conn.model === "string" ? conn.model : "";
-  return inferImageSource(explicitSource || model, baseUrl);
+  return inferImageSource(explicitSource || serviceHint || model, baseUrl);
 }
 
 function resolveVideoGenerationSource(conn: Record<string, unknown>, baseUrl: string): string {
   const explicitSource = typeof conn.videoGenerationSource === "string" ? conn.videoGenerationSource : "";
+  // Older connections identify their backend only through videoService.
+  const serviceHint = typeof conn.videoService === "string" ? conn.videoService : "";
   const model = typeof conn.model === "string" ? conn.model : "";
-  return inferVideoSource(explicitSource || model, baseUrl);
+  return inferVideoSource(explicitSource || serviceHint || model, baseUrl);
+}
+
+// Returns the model-name options a ComfyUI loader node exposes through
+// object_info, or null when the response does not carry that node's schema —
+// a valid empty list and missing metadata must stay distinguishable so the
+// route can keep its 502 contract for malformed checkpoint responses.
+export function parseComfyLoaderModelNames(info: unknown, nodeName: string, inputName: string): string[] | null {
+  if (!isRecord(info)) return null;
+  const node = info[nodeName];
+  if (!isRecord(node) || !isRecord(node.input) || !isRecord(node.input.required)) return null;
+  const input = node.input.required[inputName];
+  if (!Array.isArray(input)) return null;
+  const options = input[0];
+  if (!Array.isArray(options)) return null;
+  return options.filter((option): option is string => typeof option === "string");
 }
 
 function localUrlPolicyForProvider(provider: string, imageSource: string) {
@@ -625,6 +648,10 @@ export async function connectionsRoutes(app: FastifyInstance) {
       }
 
       if (conn.provider === "video_generation") {
+        const source = resolveVideoGenerationSource(conn as any, conn.baseUrl || "");
+        if (source === "atlas") {
+          return { models: ATLAS_CLOUD_VIDEO_MODELS.map((model) => ({ id: model.id, name: model.name })) };
+        }
         const models = MODEL_LISTS.video_generation.map((m) => ({ id: m.id, name: m.name }));
         return { models };
       }
@@ -656,6 +683,9 @@ export async function connectionsRoutes(app: FastifyInstance) {
       // ── Special handling for local image gen services ──
       const imageSource =
         conn.provider === "image_generation" ? resolveImageGenerationSource(conn as any, baseUrl) : "";
+      if (conn.provider === "image_generation" && imageSource === "atlas") {
+        return { models: ATLAS_CLOUD_IMAGE_MODELS.map((model) => ({ id: model.id, name: model.name })) };
+      }
       baseUrl = normalizeConnectionTestBaseUrl(baseUrl, conn.provider);
       const lowerBase = baseUrl.toLowerCase();
       const sanitizeProviderBody = (body: string): string => {
@@ -728,21 +758,39 @@ export async function connectionsRoutes(app: FastifyInstance) {
         return { models: knownStabilityImageModels() };
       }
 
-      // ComfyUI: fetch checkpoints from object_info
+      // ComfyUI: fetch checkpoints and diffusion models from object_info
       if (conn.provider === "image_generation" && imageSource === "comfyui") {
-        const res = await safeFetch(`${baseUrl}/object_info/CheckpointLoaderSimple`, {
-          policy: localUrlPolicyForProvider(conn.provider, imageSource),
-          maxResponseBytes: 5 * 1024 * 1024,
-          decodeCompressedResponse: true,
-        });
-        if (!res.ok) {
-          return reply.status(502).send({ error: `ComfyUI returned ${res.status}` });
-        }
-        const info = (await res.json()) as {
-          CheckpointLoaderSimple?: { input?: { required?: { ckpt_name?: [string[]] } } };
+        const fetchComfyLoaderModelNames = async (nodeName: string, inputName: string) => {
+          const res = await safeFetch(`${baseUrl}/object_info/${nodeName}`, {
+            policy: localUrlPolicyForProvider(conn.provider, imageSource),
+            maxResponseBytes: 5 * 1024 * 1024,
+            decodeCompressedResponse: true,
+          });
+          if (!res.ok) return { ok: false, status: res.status, names: null };
+          return {
+            ok: true,
+            status: res.status,
+            names: parseComfyLoaderModelNames(await res.json(), nodeName, inputName),
+          };
         };
-        const ckpts = info.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0] ?? [];
-        return { models: ckpts.map((name: string) => ({ id: name, name })) };
+
+        const checkpoints = await fetchComfyLoaderModelNames("CheckpointLoaderSimple", "ckpt_name");
+        if (!checkpoints.names) {
+          return reply.status(502).send({
+            error: checkpoints.ok
+              ? "ComfyUI did not return checkpoint model metadata"
+              : `ComfyUI returned ${checkpoints.status}`,
+          });
+        }
+        // Models in ComfyUI's diffusion_models folder (e.g. Anima, zImage) load
+        // through UNETLoader, not CheckpointLoaderSimple. Listing failures here
+        // must not hide the checkpoints on ComfyUI builds without that node.
+        const diffusionModels = await fetchComfyLoaderModelNames("UNETLoader", "unet_name").catch(() => ({
+          status: 0,
+          names: null,
+        }));
+        const names = [...new Set([...checkpoints.names, ...(diffusionModels.names ?? [])])];
+        return { models: names.map((name: string) => ({ id: name, name })) };
       }
 
       // AUTOMATIC1111 / SD Web UI: fetch models from /sdapi/v1/sd-models
@@ -1003,6 +1051,7 @@ export async function connectionsRoutes(app: FastifyInstance) {
     const isXaiVideo = videoSource === "xai" || videoServiceHint === "xai";
     const isGoogleVeoVideo = videoSource === "google_veo" || videoServiceHint === "google_veo";
     const isOpenRouterVideo = videoSource === "openrouter" || videoServiceHint === "openrouter";
+    const isAtlasVideo = videoSource === "atlas" || videoServiceHint === "atlas";
     const isSeedanceVideo = videoSource === "seedance" || videoServiceHint === "seedance";
     const isComfyUiVideo = videoSource === "comfyui" || videoServiceHint === "comfyui";
     const baseUrl = (
@@ -1013,11 +1062,13 @@ export async function connectionsRoutes(app: FastifyInstance) {
           ? DEFAULT_GOOGLE_VEO_VIDEO_BASE_URL
           : isOpenRouterVideo
             ? DEFAULT_OPENROUTER_VIDEO_BASE_URL
-            : isSeedanceVideo
-              ? DEFAULT_SEEDANCE_VIDEO_BASE_URL
-              : isComfyUiVideo
-                ? DEFAULT_COMFYUI_VIDEO_BASE_URL
-                : providerDef?.defaultBaseUrl || DEFAULT_GEMINI_OMNI_VIDEO_BASE_URL)
+            : isAtlasVideo
+              ? DEFAULT_ATLAS_CLOUD_VIDEO_BASE_URL
+              : isSeedanceVideo
+                ? DEFAULT_SEEDANCE_VIDEO_BASE_URL
+                : isComfyUiVideo
+                  ? DEFAULT_COMFYUI_VIDEO_BASE_URL
+                  : providerDef?.defaultBaseUrl || DEFAULT_GEMINI_OMNI_VIDEO_BASE_URL)
     ).replace(/\/+$/, "");
     const videoModel =
       conn.model ||
@@ -1027,22 +1078,26 @@ export async function connectionsRoutes(app: FastifyInstance) {
           ? DEFAULT_GOOGLE_VEO_VIDEO_MODEL
           : isOpenRouterVideo
             ? DEFAULT_OPENROUTER_VIDEO_MODEL
-            : isSeedanceVideo
-              ? DEFAULT_SEEDANCE_VIDEO_MODEL
-              : isComfyUiVideo
-                ? ""
-                : DEFAULT_GEMINI_OMNI_VIDEO_MODEL);
+            : isAtlasVideo
+              ? DEFAULT_ATLAS_CLOUD_VIDEO_MODEL
+              : isSeedanceVideo
+                ? DEFAULT_SEEDANCE_VIDEO_MODEL
+                : isComfyUiVideo
+                  ? ""
+                  : DEFAULT_GEMINI_OMNI_VIDEO_MODEL);
     const activeDefaults = isXaiVideo
       ? defaults.xai
       : isGoogleVeoVideo
         ? defaults.googleVeo
         : isOpenRouterVideo
           ? defaults.openrouter
-          : isSeedanceVideo
-            ? defaults.seedance
-            : isComfyUiVideo
-              ? defaults.comfyui
-              : defaults.geminiOmni;
+          : isAtlasVideo
+            ? defaults.atlas
+            : isSeedanceVideo
+              ? defaults.seedance
+              : isComfyUiVideo
+                ? defaults.comfyui
+                : defaults.geminiOmni;
 
     const prompt =
       "Create a concise cinematic 16:9 game scene video: a plate of spaghetti with marinara sauce on a table, gentle steam rising, warm kitchen light, slow push-in camera, no text or logos.";
@@ -1053,6 +1108,7 @@ export async function connectionsRoutes(app: FastifyInstance) {
       const result = await generateVideo(videoSource, baseUrl, videoApiKey, videoServiceHint, {
         prompt,
         model: videoModel,
+        debugMode: readDebugMode(req.body),
         durationSeconds: activeDefaults.durationSeconds,
         aspectRatio: activeDefaults.aspectRatio,
         resolution: isXaiVideo
@@ -1061,11 +1117,13 @@ export async function connectionsRoutes(app: FastifyInstance) {
             ? defaults.googleVeo.resolution
             : isOpenRouterVideo
               ? defaults.openrouter.resolution
-              : isSeedanceVideo
-                ? defaults.seedance.resolution
-                : isComfyUiVideo
-                  ? defaults.comfyui.resolution
-                  : undefined,
+              : isAtlasVideo
+                ? defaults.atlas.resolution
+                : isSeedanceVideo
+                  ? defaults.seedance.resolution
+                  : isComfyUiVideo
+                    ? defaults.comfyui.resolution
+                    : undefined,
         comfyWorkflow: conn.comfyuiWorkflow || undefined,
       });
       return {

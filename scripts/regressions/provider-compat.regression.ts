@@ -581,4 +581,72 @@ await assert.rejects(
 );
 assert.equal(abortedFallback.calls, 0, "user cancellation must not trigger a fallback request");
 
+// Issue #4010 — GPT-5.6 (Responses API) streams function-call arguments in
+// `response.function_call_arguments.delta` events keyed by `item_id`, not
+// `call_id`. Accumulating by call_id left tool arguments empty, so Web Search
+// received blank/malformed JSON. Verify the streamed query is reassembled.
+{
+  const responsesToolSse = [
+    'event: response.output_item.added',
+    'data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"web_search","arguments":""}}',
+    '',
+    'event: response.function_call_arguments.delta',
+    'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\\"query\\":\\"latest "}',
+    '',
+    'event: response.function_call_arguments.delta',
+    'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"marinara news\\"}"}',
+    '',
+    'event: response.function_call_arguments.done',
+    'data: {"type":"response.function_call_arguments.done","item_id":"fc_1","output_index":0,"arguments":"{\\"query\\":\\"latest marinara news\\"}"}',
+    '',
+    'event: response.output_item.done',
+    'data: {"type":"response.output_item.done","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"web_search"}}',
+    '',
+    'event: response.completed',
+    'data: {"type":"response.completed","response":{"status":"completed"}}',
+    '',
+    'data: [DONE]',
+    '',
+  ].join("\n");
+  const responsesServer = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(responsesToolSse);
+  });
+  await new Promise<void>((resolve) => responsesServer.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = responsesServer.address();
+    assert.ok(address && typeof address === "object");
+    const provider = new OpenAIProvider(
+      `http://127.0.0.1:${address.port}/v1`,
+      "test",
+      undefined,
+      undefined,
+      undefined,
+      "openai",
+      undefined,
+      true,
+    );
+    const result = await provider.chatComplete([{ role: "user", content: "search please" }], {
+      model: "gpt-5.6",
+      stream: true,
+      tools: [
+        {
+          type: "function",
+          function: { name: "web_search", description: "Search the web", parameters: { type: "object", properties: { query: { type: "string" } } } },
+        },
+      ],
+    });
+    assert.equal(result.toolCalls.length, 1, "GPT-5.6 Responses stream must surface the function call");
+    assert.equal(result.toolCalls[0].function.name, "web_search");
+    assert.equal(
+      result.toolCalls[0].function.arguments,
+      '{"query":"latest marinara news"}',
+      "streamed function-call arguments must be accumulated by item_id, not dropped",
+    );
+    assert.equal(result.toolCalls[0].id, "call_1", "the tool call must keep its call_id for function_call_output");
+  } finally {
+    await new Promise<void>((resolve, reject) => responsesServer.close((error) => (error ? reject(error) : resolve())));
+  }
+}
+
 process.stdout.write("Provider compatibility regression passed.\n");

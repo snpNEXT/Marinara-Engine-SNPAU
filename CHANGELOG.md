@@ -4,6 +4,53 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+### Added
+
+- Added safe host-rendered contribution slots to Browser Personal Extensions. `marinara.ui.registerContribution(...)` can add themed top-bar buttons, Extensions menu items, and right-side panels containing bounded text, actions, inputs, selects, toggles, sliders, and color controls. Marinara validates and renders every descriptor while activation and form events return only to the exact-hash-approved sandbox Worker; extensions never receive host DOM, markup, styling, React, network, or direct API authority. The existing constrained `marinara.ui.showWindow(...)` window supports the expanded controls as well.
+- Added Atlas Cloud as an image and video generation service, including curated starter models, text/reference image requests, asynchronous job polling, connection tests, and Game/scene-video routing (#3989).
+- Added an Android-only **Show Android status bar** control under **Settings > General > App Behavior**, preserving fullscreen as the default while allowing the Android app to remember and restore the time, battery level, and notification icons across restarts (#3985).
+- Added the UI-localization foundation with English fallback, lazily discovered locale JSON files, live Arabic, Chinese, French, German, Hindi, Japanese, Korean, Polish, Portuguese, Russian, and Spanish selection in **Settings > General**, contributor validation and documentation, and locale propagation into downloadable Agent interfaces (#3978).
+- Reintroduced disabled-by-default **Personal Extensions** in **Settings > Addons** as Professor Mari-authored drafts that require the user to inspect and approve the exact SHA-256 fingerprint. Third-party imports now live in a separate **External Extensions** section that remains hidden until the host sets `ENABLE_EXTERNAL_EXTENSIONS=true` and the user accepts the Danger Zone warning and opt-in.
+- Added review-gated public npm dependencies for Professor Mari's workspace changes. She can request a root, client, server, or shared package, but Marinara resolves it to an exact registry version and integrity and waits for the user before installing it with lifecycle scripts disabled.
+- Added **Set as avatar** to Character and Persona Gallery images in both the grid and full-size viewer, using path-contained, image-validated server copies (#3974).
+- Added separate Model and user target languages plus independent outgoing and incoming AI prompts to chat translation. Custom prompts support the `{{targetLanguage}}` placeholder, while existing single-language chat settings remain compatible (#3965).
+- Added a per-chat **Images Per Generation** setting to Illustrator in Conversation, Roleplay, and Game, generating up to four sequential image variants through the existing provider queue and gallery pipeline (#3966).
+
+### Changed
+
+- Confined Professor Mari's raw shell commands to macOS Seatbelt or Linux Bubblewrap with outbound network denied, inherited server secrets removed, environment-secret and Git-internal files unreadable, and filesystem writes limited to ordinary workspace files and a private temporary directory. Dependency manifests, lockfiles, launchers, installers, and CI workflows are read-only in the shell and use an explicit in-chat review; raw package-manager mutations are blocked even when a package is cached. Raw shell now fails closed when no supported sandbox is available, while structured workspace and app-data tools remain available (#3973).
+- Made **Default Dialogue Color** permanently active for cards without their own dialogue color and removed its redundant Appearance toggle; Character and Persona card colors still take priority.
+
+### Security
+
+- Replaced full-trust Personal Extension execution with capability-restricted sandboxes. Browser code now runs in a watchdog-supervised Worker inside an opaque-origin iframe without Marinara DOM, origin, or network access. Server code now runs in a separate Node process under macOS Seatbelt or Linux Bubblewrap with a minimal environment, Node permissions, private protocol files, resource/message bounds, and no user-file, Marinara-file, network, child-process, worker, native-addon, or cross-process signal authority. Unsupported server platforms fail closed. External, legacy, profile-imported, manually stored, and unknown-source records remain invisible and unexecutable until both external-extension gates are open; closing either gate disables and stops them.
+- Rejected untrusted HTTP Host names before CORS, loopback authentication bypasses, or privileged reads can process a request, preventing DNS rebinding from exposing chats, galleries, backups, and other local data. Direct LAN, Tailscale, IPv4, IPv6, localhost, and local machine-name access remains available, while intentional public and reverse-proxy names can be added through `TRUSTED_HOSTS`.
+- Replaced silent startup updates for installed Agent packages with a responsive per-version confirmation. Choosing **No** records that decision without changing the installed package, and the existing **Update** action remains available in **Agents → Download Agents**.
+- Restricted official Agent catalog artifacts to their canonical Marinara-Agents repository URLs while preserving explicit custom-catalog overrides.
+
+### Fixed
+
+- Refreshed single- and multi-message deletion with the shared modal and control styling, including chroma-driven buttons, selection bars, checkboxes, and selected-message highlights instead of fixed destructive pink or red treatments.
+- Restored the immediate **Thinking…** placeholder in Roleplay and made Conversation and Roleplay expose one reasoning control as soon as the first reasoning chunk arrives. The existing Model Thoughts viewer now stays open and updates with the live reasoning stream, while completed messages retain their saved reasoning control (#3963).
+- Fixed Web Search (and other tools) returning empty or malformed parameters with GPT-5.6/5.5/5.4 and Codex models on the OpenAI Responses API. Streamed function-call arguments are keyed by the response item id rather than the call id, so the tool query is no longer dropped mid-stream (#4010).
+- Kept gradient **Accent Pulse** animating while the Appearance tab is open, so color changes can be previewed where the setting is configured.
+- Reworked Character and Persona avatar editing with a non-overlapping miniature AI wand, equal Upload/Generate actions in Metadata, a downward upload arrow, and accent-colored removal controls. Game Assets selection, menu, and removal states now follow the configured chroma instead of fixed pink or red treatments.
+- Fixed Character Tavern imports from the Card Browser: their cards store character data in compressed zTXt PNG chunks, which every Marinara card parser (Card Browser import, file/URL import, SillyTavern bulk import) now reads alongside tEXt and iTXt. Re-exporting such a character also strips the stale compressed data instead of shipping outdated card JSON (#4002).
+- Fixed the Windows launcher crash `ERR_INVALID_URL_SCHEME` in `protect-launcher-data.mjs` (and the same latent pattern in `read-launcher-env.mjs`): the run-directly guard now resolves `process.argv[1]` with `pathToFileURL`, so drive-letter paths no longer parse as URL schemes, update snapshots are created again, and auto-update is no longer skipped (#3997).
+- Listed ComfyUI models from the DiffusionModels folder (UNETLoader) alongside StableDiffusion checkpoints in the connection editor's "Fetch models from API", so models such as Anima and zImage are selectable without typing their names manually (#3993).
+- Let the Custom sound description use the full Settings card width and moved its actions below the copy so labels and buttons no longer collide on narrow screens.
+- Made installed theme icons and the third-party extension warning follow the selected accent color instead of hard-coded pink or yellow styling.
+- Disabled Venice.ai's optional `safe_mode` blur in native image requests so supported generations are returned without the provider's default censoring overlay (#3990).
+- Protected launcher-driven Engine updates with a private snapshot of the configured user-data directory outside the checkout and automatic restoration if an update attempt leaves that directory missing or empty. Launcher dependency refreshes now use the pinned lockfile instead of destructive forced reinstalls, preventing the Windows Fastify plugin type failures reported after v2.3.4 updates (#3961, #3976).
+- Installed and verified Sharp's WebAssembly runtime on Termux while suppressing unsupported Android native source builds, restoring NovelAI Precise Reference preprocessing without requiring an Android NDK (#3975).
+- Re-checked Do Not Disturb immediately before delayed foreground, exchange, and background autonomous generations, so enabling it while a message is waiting reliably suppresses that message (#3959).
+- Allowed an Agent explicitly assigned to Local Sidecar to start that runtime on demand even when the global tracker-sidecar default is disabled (#3960).
+- Made explicit Gallery **Illustrate** actions generate the requested image even when the Illustrator's automatic-generation decision says no (#3963).
+- Kept Conversation bubbles within the mobile viewport and exposed live Model Thoughts while a response is still streaming (#3964, #3971).
+- Saved image, video, and provider-default connection parameters before the final connection refresh, preventing stale cached defaults from replacing the user's latest values (#3972).
+- Enlarged generated image attachments in Conversation and Roleplay while keeping them contained within the chat viewport (#3966).
+- Restored per-game asset-folder selection in the new-game wizard, kept existing-game selection in the Asset Browser, anchored asset action menus to their buttons without viewport clipping, and stopped bundling the unrelated generic fantasy sprite pack (#3962).
+
 ## [2.3.4]
 
 ### Added

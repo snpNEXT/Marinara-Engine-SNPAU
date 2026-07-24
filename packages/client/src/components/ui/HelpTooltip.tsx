@@ -5,6 +5,7 @@ import { useState, useRef, useLayoutEffect, useEffect, type ReactNode } from "re
 import { createPortal } from "react-dom";
 import { HelpCircle } from "lucide-react";
 import { cn } from "../../lib/utils";
+import { localizeStringNode, useLocalizedUiText } from "../../localization/use-localized-ui-text";
 
 // Only one tooltip is open at a time: opening one closes whichever was open, so
 // hovering/opening a second tooltip dismisses the first instead of stacking.
@@ -40,6 +41,9 @@ export function HelpTooltip({
   wide,
   openSignal,
 }: HelpTooltipProps) {
+  const localize = useLocalizedUiText();
+  const localizedText = localizeStringNode(text, localize);
+  const localizedLabel = label ? localize(label) : undefined;
   const [show, setShow] = useState(false);
   const [pinned, setPinned] = useState(false);
   const wrapRef = useRef<HTMLSpanElement>(null);
@@ -153,13 +157,17 @@ export function HelpTooltip({
     >
       <button
         type="button"
-        aria-label={label ? `Show help: ${label}` : "Show help"}
+        aria-label={localizedLabel ? `${localize("Show help")}: ${localizedLabel}` : localize("Show help")}
         aria-expanded={show}
         className={cn(
           "mari-chrome-accent-text-muted mari-accent-animated inline-flex cursor-help items-center gap-1 rounded-full opacity-70 transition-opacity hover:text-[var(--marinara-chat-chrome-button-text-hover)] hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)]",
           buttonClassName,
         )}
         onMouseEnter={openSelf}
+        onFocus={openSelf}
+        onBlur={() => {
+          if (!pinned) closeSelf();
+        }}
         onPointerDown={(event) => {
           event.stopPropagation();
         }}
@@ -174,7 +182,7 @@ export function HelpTooltip({
           });
         }}
       >
-        {label && <span>{label}</span>}
+        {localizedLabel && <span>{localizedLabel}</span>}
         <HelpCircle size={size} />
       </button>
       {show &&
@@ -187,7 +195,7 @@ export function HelpTooltip({
             )}
             style={{ top: pos.top, left: pos.left, visibility: pos.ready ? "visible" : "hidden" }}
           >
-            {text}
+            {localizedText}
           </div>,
           document.body,
         )}

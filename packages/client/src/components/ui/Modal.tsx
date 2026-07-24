@@ -13,6 +13,7 @@ import {
   NEUTRAL_PANEL_TITLE,
 } from "./neutral-surface-styles";
 import { useDialogFocusScope } from "../../hooks/use-dialog-focus-scope";
+import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 
 interface ModalProps {
   open: boolean;
@@ -51,6 +52,8 @@ export function Modal({
   panelStyle,
   closeDisabled = false,
 }: ModalProps) {
+  const localize = useLocalizedUiText();
+  const localizedTitle = localize(title);
   const overlayRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   // Track mounted state separately so we can play the exit animation
@@ -58,7 +61,7 @@ export function Modal({
   const [mounted, setMounted] = useState(false);
   const [animating, setAnimating] = useState<"enter" | "exit" | null>(null);
   const enterRafRef = useRef<number | null>(null);
-  useDialogFocusScope(open, panelRef, initialFocusRef, restoreFocusRef, focusScopePortalSelector);
+  useDialogFocusScope(open && mounted, panelRef, initialFocusRef, restoreFocusRef, focusScopePortalSelector);
 
   useEffect(() => {
     if (enterRafRef.current !== null) {
@@ -124,7 +127,7 @@ export function Modal({
       ref={overlayRef}
       role="dialog"
       aria-modal="true"
-      aria-label={title}
+      aria-label={localizedTitle}
       data-chat-floating-panel={chatFloatingPanel ? "true" : undefined}
       data-component="Modal"
       className={`mari-modal fixed inset-0 z-[10000] flex items-center justify-center ${
@@ -168,12 +171,12 @@ export function Modal({
       >
         {/* Header */}
         <div className={`shrink-0 flex items-center justify-between ${NEUTRAL_PANEL_HEADER}`}>
-          <h2 className={NEUTRAL_PANEL_TITLE}>{title}</h2>
+          <h2 className={NEUTRAL_PANEL_TITLE}>{localizedTitle}</h2>
           <button
             type="button"
             onClick={onClose}
             disabled={closeDisabled}
-            aria-label={`Close ${title}`}
+            aria-label={`${localize("Close")} ${localizedTitle}`}
             className="rounded-lg p-1.5 text-[var(--marinara-chat-chrome-panel-muted)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-highlight-text)] disabled:cursor-wait disabled:opacity-40"
           >
             <X size="1rem" />

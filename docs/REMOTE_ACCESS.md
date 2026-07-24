@@ -212,6 +212,14 @@ To fix it, add your address to the trusted list in `.env`:
 CSRF_TRUSTED_ORIGINS=https://chat.example.com,http://203.0.113.10:7831
 ```
 
+When you use a public or reverse-proxy domain, also allow the hostname:
+
+```env
+TRUSTED_HOSTS=chat.example.com
+```
+
+Direct LAN, Tailscale, IPv4, and IPv6 addresses do not need `TRUSTED_HOSTS`. Local `.local`/`.home.arpa` names and single-label machine names are accepted automatically. An exact hostname already listed in `CSRF_TRUSTED_ORIGINS` is accepted too.
+
 Loopback, normal LAN addresses, Tailscale (`100.64.0.0/10`), and Docker bridge (`172.16.0.0/12`) origins are trusted automatically. You only need to list public IP addresses and domain names. The change takes effect within a couple of seconds, no restart needed.
 
 ## A note on blocked local providers

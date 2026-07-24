@@ -32,9 +32,9 @@ export function useTranslate() {
       const result = await api.post<{ translatedText: string }>("/translate", {
         text,
         provider: store.config.provider,
-        targetLanguage: store.config.targetLanguage,
+        targetLanguage: store.config.outputTargetLanguage,
         connectionId: store.config.connectionId,
-        systemPrompt: store.config.systemPrompt,
+        systemPrompt: store.config.outputSystemPrompt,
         deeplApiKey: store.config.deeplApiKey,
         deeplxUrl: store.config.deeplxUrl,
       });

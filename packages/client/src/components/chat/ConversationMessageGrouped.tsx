@@ -18,6 +18,11 @@ import {
 import { ConversationMessageActions } from "./ConversationMessageActions";
 import { MessageReactions } from "./MessageReactions";
 import { ReactionAddButton } from "./ReactionAddButton";
+import {
+  MESSAGE_SELECTION_CHECKBOX_CLASS,
+  MESSAGE_SELECTION_CHECKBOX_SELECTED_CLASS,
+  MESSAGE_SELECTION_SURFACE_CLASS,
+} from "./message-selection-styles";
 
 export function ConversationMessageGrouped({
   ctx,
@@ -64,6 +69,7 @@ export function ConversationMessageGrouped({
     canRegenerate,
     isLastAssistantMessage,
     thinking,
+    thinkingButtonRef,
     generationReplay,
     isGuided,
     regenerateButtonTitle,
@@ -114,13 +120,15 @@ export function ConversationMessageGrouped({
     <div
       ref={msgRef}
       data-component="ConversationMessage.Grouped"
+      data-message-id={message.id}
+      data-message-role={message.role}
       className={cn(
         "relative px-4 py-0.5 transition-colors hover:bg-[var(--secondary)]/30",
         isBubbleStyle && "hover:bg-transparent",
         !noHoverGroup && "group",
         isGrouped ? "mt-0" : "mt-3",
         isStreaming && "bg-[var(--secondary)]/20",
-        multiSelectMode && isSelected && "bg-[var(--destructive)]/10",
+        multiSelectMode && isSelected && MESSAGE_SELECTION_SURFACE_CLASS,
       )}
       onClick={handleMobileTap}
     >
@@ -137,13 +145,14 @@ export function ConversationMessageGrouped({
               onToggleSelect?.();
             }}
             className={cn(
-              "h-5 w-5 rounded border-2 flex items-center justify-center transition-colors cursor-pointer",
-              isSelected
-                ? "border-[var(--destructive)] bg-[var(--destructive)]"
-                : "border-[var(--muted-foreground)]/40 bg-[var(--secondary)]",
+              MESSAGE_SELECTION_CHECKBOX_CLASS,
+              "flex items-center justify-center",
+              isSelected && MESSAGE_SELECTION_CHECKBOX_SELECTED_CLASS,
             )}
           >
-            {isSelected && <span className="text-white text-xs font-bold">✓</span>}
+            {isSelected && (
+              <span className="text-xs font-bold text-[var(--marinara-chat-chrome-panel-bg)]">✓</span>
+            )}
           </button>
         </div>
       )}
@@ -413,18 +422,20 @@ export function ConversationMessageGrouped({
       )}
 
       {/* Action bar */}
-      {!hideActions && (
+      {(!hideActions || !!thinking) && (
         <ConversationMessageActions
           isBubbleStyle={isBubbleStyle}
           isUser={false}
           showActions={showActions}
-          forceShowActions={forceShowActions}
+          forceShowActions={hideActions && !!thinking ? true : forceShowActions}
+          thinkingOnly={hideActions && !!thinking}
           copied={copied}
           translatedText={translatedText}
           isHiddenFromAI={isHiddenFromAI}
           canRegenerate={canRegenerate}
           isLastAssistantMessage={isLastAssistantMessage}
           thinking={thinking}
+          thinkingButtonRef={thinkingButtonRef}
           generationReplay={generationReplay}
           isGuided={isGuided}
           regenerateButtonTitle={regenerateButtonTitle}

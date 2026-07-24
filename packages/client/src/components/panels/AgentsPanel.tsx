@@ -71,6 +71,7 @@ import {
 import { handleFolderRenameKeyDown, useFolderRenameGesture } from "../../hooks/use-folder-rename-gesture";
 import { SmoothFolderContent } from "../ui/SmoothFolderContent";
 import { AgentArtwork } from "../agents/AgentArtwork";
+import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 
 type JsonRecord = Record<string, unknown>;
 const AGENT_GRADIENT_SURFACE =
@@ -193,6 +194,7 @@ function createDuplicateAgentInput(agent: AgentConfigRow) {
 }
 
 export function AgentsPanel() {
+  const localize = useLocalizedUiText();
   const { data: agentConfigs, isLoading } = useAgentConfigs();
   const { data: capabilityAgents } = useCapabilityAgentRegistry();
   const { data: capabilityCatalog } = useCapabilityCatalog();
@@ -795,7 +797,7 @@ export function AgentsPanel() {
           <input
             value={agentSearch}
             onChange={(event) => setAgentSearch(event.target.value)}
-            placeholder="Search agents"
+            placeholder={localize("Search agents")}
             className="mari-chrome-field h-10 w-full py-0 pl-8 pr-3 text-xs md:h-9"
           />
         </div>

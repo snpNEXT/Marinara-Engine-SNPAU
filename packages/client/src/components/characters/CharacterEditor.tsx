@@ -20,6 +20,7 @@ import {
   useCharacterGalleryClips,
   useUploadCharacterGalleryImage,
   useDeleteCharacterGalleryImage,
+  useSetCharacterGalleryImageAsAvatar,
   useDeleteCharacterGalleryClip,
   useUpdateCharacterGalleryClipTrim,
   useUploadCharacterGalleryClip,
@@ -51,6 +52,8 @@ import { showConfirmDialog } from "../../lib/app-dialogs";
 import { SpriteGenerationModal } from "../ui/SpriteGenerationModal";
 import { AvatarGenerationModal } from "../ui/AvatarGenerationModal";
 import { AvatarCropWidget } from "../ui/AvatarCropWidget";
+import { AvatarReplaceActions } from "../ui/AvatarReplaceActions";
+import { EditorAvatarTileActions } from "../ui/EditorAvatarTileActions";
 import { CallClipGenerationModal } from "../ui/CallClipGenerationModal";
 import { ImageUploadDropzone } from "../ui/ImageUploadDropzone";
 import { CustomEmojiTagButton } from "../ui/CustomEmojiTagButton";
@@ -127,6 +130,7 @@ import {
 import { parseTrackerCardColorConfig, serializeTrackerCardColorConfig } from "../../lib/tracker-card-colors";
 import { useQuoteFormatter } from "../../hooks/use-quote-formatter";
 import { LorebookAssignmentSection } from "../lorebooks/LorebookAssignmentSection";
+import { useTranslation } from "react-i18next";
 
 // ── Tabs ──
 const TABS = [
@@ -189,7 +193,7 @@ const CHARACTER_STATS_HELP =
   "HP is injected into the prompt so the AI knows the character's current health. Attributes are custom stats, like STR or DEX, that define the character's capabilities. The Character Tracker agent can adjust values based on combat, healing, and narrative events. Values set here serve as the initial/default state for new conversations.";
 
 const CHARACTER_COLORS_HELP =
-  "Name color is applied to the character's display name in chat. Gradients use CSS linear-gradient. Dialogue color applies to text inside dialogue quotation marks and can optionally be bolded from Settings. Box color sets the background color of the character's message bubble in roleplay mode. An empty dialogue color uses the default from Settings > Appearance when enabled; other empty fields use theme colors.";
+  "Name color is applied to the character's display name in chat. Gradients use CSS linear-gradient. Dialogue color applies to text inside dialogue quotation marks and can optionally be bolded from Settings. Box color sets the background color of the character's message bubble in roleplay mode. An empty dialogue color uses the default from Settings > Appearance; other empty fields use theme colors.";
 
 const CHARACTER_LOREBOOK_HELP =
   "Attach lorebook/world-info entries to this character. Entries trigger from keywords during conversation; embedded card lorebooks can be imported into Marinara as linked lorebooks for deeper editing.";
@@ -950,22 +954,10 @@ export function CharacterEditor() {
             ) : (
               <User size="1.375rem" className="text-white" />
             )}
-            <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
-              <Camera size="1rem" className="text-white" />
-            </div>
-            {imageGenerationAvailable && (
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setAvatarGeneratorOpen(true);
-                }}
-                className="absolute right-0.5 top-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full bg-[var(--card)]/95 text-[var(--primary)] opacity-0 shadow-md ring-1 ring-[var(--border)] transition-opacity hover:bg-[var(--card)] group-hover:opacity-100 max-md:opacity-100"
-                title="Generate avatar"
-              >
-                <Wand2 size="0.75rem" />
-              </button>
-            )}
+            <EditorAvatarTileActions
+              generationAvailable={imageGenerationAvailable}
+              onGenerate={() => setAvatarGeneratorOpen(true)}
+            />
             <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleAvatarUpload} />
           </div>
 
@@ -1054,6 +1046,8 @@ export function CharacterEditor() {
                 removeAllTags={removeAllTags}
                 avatarPreview={avatarPreview}
                 onSelectAvatar={() => fileInputRef.current?.click()}
+                onGenerateAvatar={() => setAvatarGeneratorOpen(true)}
+                imageGenerationAvailable={imageGenerationAvailable}
                 avatarUploading={avatarUploading}
                 onRemoveAvatar={handleAvatarRemove}
                 removingAvatar={removeAvatar.isPending}
@@ -1318,6 +1312,8 @@ function MetadataTab({
   removeAllTags,
   avatarPreview,
   onSelectAvatar,
+  onGenerateAvatar,
+  imageGenerationAvailable,
   avatarUploading,
   onRemoveAvatar,
   removingAvatar,
@@ -1335,10 +1331,13 @@ function MetadataTab({
   removeAllTags: () => void;
   avatarPreview: string | null;
   onSelectAvatar: () => void;
+  onGenerateAvatar: () => void;
+  imageGenerationAvailable: boolean;
   avatarUploading: boolean;
   onRemoveAvatar: () => void;
   removingAvatar: boolean;
 }) {
+  const { t } = useTranslation();
   // Read existing crop in either current or legacy shape; the widget handles both
   // and writes back the current shape on first interaction.
   const savedCrop = (formData.extensions.avatarCrop as AvatarCrop | LegacyAvatarCrop | undefined) ?? null;
@@ -1353,50 +1352,16 @@ function MetadataTab({
 
       <div className="space-y-1.5">
         <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--muted-foreground)]">
-          Avatar
-          <HelpTooltip text="The character image shown in the library and chats. You can replace it at any time without changing the character card." />
+          {t("editor.avatar.label")}
+          <HelpTooltip text={t("editor.avatar.character.help")} />
         </span>
-        <button
-          type="button"
-          onClick={onSelectAvatar}
-          disabled={avatarUploading}
-          aria-busy={avatarUploading}
-          className="group flex min-h-20 w-full items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--secondary)] px-3 py-3 text-left transition-colors hover:border-[var(--primary)]/40 hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30 disabled:cursor-wait disabled:opacity-60"
-        >
-          <span
-            className={cn(
-              "relative flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--background)]",
-              !avatarPreview && "mari-avatar-placeholder mari-avatar-placeholder--character",
-            )}
-          >
-            {avatarPreview ? (
-              <img
-                src={avatarPreview}
-                alt=""
-                className="pointer-events-none h-full w-full object-cover"
-                style={getAvatarCropStyle(savedCrop ?? undefined)}
-              />
-            ) : (
-              <User size="1.375rem" className="text-white" />
-            )}
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block text-sm font-semibold text-[var(--foreground)]">
-              {avatarUploading ? "Uploading avatar…" : avatarPreview ? "Replace avatar" : "Upload avatar"}
-            </span>
-            <span className="mt-0.5 block text-xs leading-5 text-[var(--muted-foreground)]">
-              Choose an image from this device. You can adjust its crop after uploading.
-            </span>
-          </span>
-          {avatarUploading ? (
-            <Loader2 size="1rem" className="shrink-0 animate-spin text-[var(--primary)]" />
-          ) : (
-            <Upload
-              size="1rem"
-              className="shrink-0 text-[var(--muted-foreground)] transition-colors group-hover:text-[var(--primary)]"
-            />
-          )}
-        </button>
+        <AvatarReplaceActions
+          hasAvatar={Boolean(avatarPreview)}
+          uploading={avatarUploading}
+          generationAvailable={imageGenerationAvailable}
+          onUpload={onSelectAvatar}
+          onGenerate={onGenerateAvatar}
+        />
       </div>
 
       {characterId && (
@@ -1531,7 +1496,7 @@ function MetadataTab({
             <button
               type="button"
               onClick={removeAllTags}
-              className="mari-chrome-control mari-chrome-control--compact mari-chrome-control--danger"
+              className="mari-chrome-accent-surface mari-accent-animated rounded-lg border px-2.5 py-1 text-[0.6875rem] font-medium transition-colors"
             >
               Remove All
             </button>
@@ -1545,7 +1510,7 @@ function MetadataTab({
               <button
                 type="button"
                 onClick={() => removeTag(tag)}
-                className="ml-0.5 rounded-full p-0.5 transition-colors hover:bg-[var(--destructive)]/20 hover:text-[var(--destructive)]"
+                className="ml-0.5 rounded-full p-0.5 transition-colors hover:bg-[var(--primary)]/15 hover:text-[var(--primary)]"
                 title={`Remove tag "${tag}"`}
               >
                 <X size="0.625rem" />
@@ -2215,6 +2180,7 @@ function CharacterGalleryTab({ characterId, characterName }: { characterId: stri
   const { data: images, isLoading } = useCharacterGalleryImages(characterId);
   const upload = useUploadCharacterGalleryImage(characterId);
   const remove = useDeleteCharacterGalleryImage(characterId);
+  const setAvatar = useSetCharacterGalleryImageAsAvatar(characterId);
   const tag = useTagCharacterGalleryImage(characterId);
   const [lightbox, setLightbox] = useState<CharacterGalleryImage | null>(null);
 
@@ -2242,6 +2208,18 @@ function CharacterGalleryTab({ characterId, characterName }: { characterId: stri
       if (lightbox?.id === image.id) setLightbox(null);
     },
     [lightbox?.id, remove],
+  );
+
+  const handleSetAvatar = useCallback(
+    async (image: CharacterGalleryImage) => {
+      try {
+        await setAvatar.mutateAsync(image.id);
+        toast.success("Character avatar updated.");
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Failed to update character avatar.");
+      }
+    },
+    [setAvatar],
   );
 
   return (
@@ -2321,6 +2299,19 @@ function CharacterGalleryTab({ characterId, characterName }: { characterId: stri
                       {new Date(image.createdAt).toLocaleDateString()}
                     </span>
                     <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => void handleSetAvatar(image)}
+                        disabled={setAvatar.isPending}
+                        className="rounded-lg bg-white/15 p-1.5 text-white transition-colors hover:bg-white/25 disabled:opacity-50"
+                        title="Set as avatar"
+                      >
+                        {setAvatar.isPending ? (
+                          <Loader2 size="0.75rem" className="animate-spin" />
+                        ) : (
+                          <User size="0.75rem" />
+                        )}
+                      </button>
                       <a
                         href={image.url}
                         download
@@ -2372,6 +2363,19 @@ function CharacterGalleryTab({ characterId, characterName }: { characterId: stri
               className="max-h-[85vh] w-full rounded-lg object-contain shadow-2xl"
             />
             <div className="absolute right-2 top-2 flex gap-2">
+              <button
+                type="button"
+                onClick={() => void handleSetAvatar(lightbox)}
+                disabled={setAvatar.isPending}
+                className="rounded-lg bg-black/60 p-2 text-white transition-colors hover:bg-black/80 disabled:opacity-50"
+                title="Set as avatar"
+              >
+                {setAvatar.isPending ? (
+                  <Loader2 size="0.875rem" className="animate-spin" />
+                ) : (
+                  <User size="0.875rem" />
+                )}
+              </button>
               <a
                 href={lightbox.url}
                 download
@@ -3857,7 +3861,7 @@ function SpritesTab({
                   type="button"
                   onClick={() => void handleDeleteSingleSprite()}
                   disabled={!!deletingSprites}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--destructive)] px-2.5 py-2 text-xs font-medium text-white transition-colors hover:bg-[var(--destructive)]/85 disabled:opacity-50 sm:px-3 sm:text-sm"
+                  className="mari-chrome-accent-surface mari-accent-animated inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-xs font-medium transition-colors disabled:opacity-50 sm:px-3 sm:text-sm"
                 >
                   {deletingSprites === "single" && <Loader2 size="0.875rem" className="animate-spin" />}
                   Delete
@@ -4022,7 +4026,7 @@ function StatsTab({
                   <button
                     type="button"
                     onClick={() => updatePools(pools.filter((_, poolIndex) => poolIndex !== i))}
-                    className="rounded-lg p-1 text-[var(--muted-foreground)] transition-colors hover:bg-red-500/15 hover:text-red-400"
+                    className="rounded-lg p-1 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--primary)]/15 hover:text-[var(--primary)]"
                     aria-label={`Remove ${pool.name || "pool"}`}
                   >
                     <X size="0.75rem" />
@@ -4067,7 +4071,7 @@ function StatsTab({
                   <button
                     type="button"
                     onClick={() => removeAttribute(i)}
-                    className="rounded-lg p-1 text-[var(--muted-foreground)] transition-colors hover:bg-red-500/15 hover:text-red-400"
+                    className="rounded-lg p-1 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--primary)]/15 hover:text-[var(--primary)]"
                   >
                     <X size="0.75rem" />
                   </button>

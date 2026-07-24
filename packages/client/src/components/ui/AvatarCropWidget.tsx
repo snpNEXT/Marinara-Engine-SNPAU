@@ -240,7 +240,7 @@ export function AvatarCropWidget({ src, alt, crop, onChange, onRemove, removing 
               type="button"
               onClick={onRemove}
               disabled={removing}
-              className="inline-flex items-center gap-1 rounded-lg bg-[var(--destructive)]/10 px-2 py-1 text-[0.625rem] font-medium text-[var(--destructive)] transition-colors hover:bg-[var(--destructive)]/15 disabled:opacity-45"
+              className="mari-chrome-accent-surface mari-accent-animated inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[0.625rem] font-medium transition-colors disabled:opacity-45"
               title="Remove avatar"
             >
               <Trash2 size="0.625rem" /> {removing ? "Removing..." : "Remove"}

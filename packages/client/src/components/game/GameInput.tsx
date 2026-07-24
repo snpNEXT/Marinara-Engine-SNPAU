@@ -13,6 +13,7 @@ import { formatTextQuotes, type DiceRollResult, type PendingSpatialTransition } 
 import { getChatInputShellClass } from "../chat/chat-input-styles";
 import { CapabilityElement } from "../capabilities/CapabilityElement";
 import type { PendingSpatialTransitionDraft } from "../../stores/chat.store";
+import { useTranslation } from "react-i18next";
 
 interface Attachment {
   type: string;
@@ -124,6 +125,7 @@ export function GameInput({
   spatialCapabilityEnabled = false,
   interruptMode,
 }: GameInputProps) {
+  const { t } = useTranslation();
   const enterToSend = useUIStore((s) => s.enterToSendGame);
   const speechToTextEnabled = useUIStore((s) => s.speechToTextEnabled);
   const quoteFormat = useUIStore((s) => s.quoteFormat);
@@ -617,14 +619,14 @@ export function GameInput({
           onKeyDown={handleKeyDown}
           placeholder={
             isStreaming
-              ? "Prepare your next move..."
+              ? t("game.input.prepareNextMove")
               : addressMode === "party"
-                ? "Say to party..."
+                ? t("game.input.sayToParty")
                 : addressMode === "gm"
-                  ? "Say to GM..."
+                  ? t("game.input.sayToGm")
                   : pendingMoveLabel
-                    ? "What do you do when you arrive?"
-                    : "What do you do?"
+                    ? t("game.input.onArrival")
+                    : t("game.input.default")
           }
           disabled={draftDisabled}
           rows={1}
@@ -639,7 +641,7 @@ export function GameInput({
               type="button"
               onClick={() => setQueuedDice(null)}
               className="ml-1 text-foreground/45 transition-colors hover:text-foreground/80"
-              title="Clear queued roll"
+              title={t("game.input.clearQueuedRoll")}
             >
               ✕
             </button>
@@ -688,7 +690,7 @@ export function GameInput({
                 ? "bg-foreground/10 text-foreground/75 ring-1 ring-foreground/20"
                 : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
             )}
-            title="Emoji"
+            title={t("chat.input.emoji")}
           >
             <Smile size={18} />
           </button>
@@ -712,7 +714,7 @@ export function GameInput({
                 ? "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70"
                 : "text-foreground/25",
             )}
-            title="Translate draft"
+            title={t("chat.input.translateDraft")}
           >
             {isTranslatingDraft ? <Loader2 size={18} className="animate-spin" /> : <Languages size={18} />}
           </button>
@@ -751,7 +753,7 @@ export function GameInput({
               ? "text-foreground/70 hover:bg-foreground/10 hover:text-foreground/90"
               : "text-foreground/25",
           )}
-          aria-label="Send game turn"
+          aria-label={t("game.input.sendTurn")}
         >
           <Send size={18} />
         </button>

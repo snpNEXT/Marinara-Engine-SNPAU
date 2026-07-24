@@ -7,11 +7,13 @@ import {
   noodleAccountProfileSettingsSchema,
   noodleAccountPrivacySettingsSchema,
   noodleAccountSocialSettingsSchema,
+  noodleAutoPostingIntensitySchema,
   noodleSettingsSchema,
   readNoodlePollFromMetadata,
   type NoodleAccount,
   type NoodleAccountKind,
   type NoodleAccountProfileUpdateInput,
+  type NoodleAccountSchedulerSettings,
   type NoodleAccountSettings,
   type NoodleAccountSettingsPatchInput,
   type NoodleAccountSubscription,
@@ -31,7 +33,9 @@ import {
   type NoodlePostUnlock,
   type NoodlePostUpdateInput,
   type NoodlePostSource,
+  type NoodlePrivatePostUpdateInput,
   type NoodleStageProfileInput,
+  type NoodlerManagedPost,
   type NoodlerManagedStageProfile,
   type NoodleRefreshAttempt,
   type NoodleRefreshRun,
@@ -44,6 +48,7 @@ import {
 import type { DB } from "../../db/connection.js";
 import { isFileUniqueConstraintError } from "../../db/file-schema.js";
 import { isNoodlerHiddenFromViewer } from "../noodle/noodler-access.js";
+import { nextAutoPostRunAt } from "../noodle/noodle-autopost-cadence.js";
 import {
   noodleAccounts,
   noodleAccountSubscriptions,
@@ -98,6 +103,17 @@ type InsertInteractionCommand = {
   imageUrl?: string | null;
   parentInteractionId: string | null;
 };
+type PrivatePostPersistenceInput = {
+  authorAccountId: string;
+  title?: string | null;
+  content: string;
+  imageUrl?: string | null;
+  imagePrompt?: string | null;
+  source?: NoodlePostSource;
+  access?: NoodlePostAccess;
+  ppvPrice?: number | null;
+  metadata?: Record<string, unknown>;
+};
 
 function parseRecord(value: unknown): Record<string, unknown> {
   if (!value) return {};
@@ -116,8 +132,28 @@ function emptyNoodleAccountSettings(): NoodleAccountSettings {
   return {
     profile: {},
     social: {},
-    scheduler: {},
+    scheduler: { autoPosting: defaultAutoPostingSettings() },
     privacy: { access: { hiddenFromAccountIds: [], subscriptionIncludesPpv: false } },
+  };
+}
+
+function defaultAutoPostingSettings(): NonNullable<NoodleAccountSchedulerSettings["autoPosting"]> {
+  return { enabled: false, intensity: 1, nextRunAt: null };
+}
+
+export function normalizeScheduler(value: unknown): NoodleAccountSchedulerSettings {
+  // Normalize each field independently so one malformed value (e.g. a bad intensity)
+  // doesn't discard the other valid persisted fields.
+  const defaults = defaultAutoPostingSettings();
+  const raw = parseRecord(parseRecord(value).autoPosting);
+  const intensity = noodleAutoPostingIntensitySchema.safeParse(raw.intensity);
+  const nextRunAtValid = typeof raw.nextRunAt === "string" && !Number.isNaN(Date.parse(raw.nextRunAt));
+  return {
+    autoPosting: {
+      enabled: typeof raw.enabled === "boolean" ? raw.enabled : defaults.enabled,
+      intensity: intensity.success ? intensity.data : defaults.intensity,
+      nextRunAt: raw.nextRunAt === null ? null : nextRunAtValid ? (raw.nextRunAt as string) : defaults.nextRunAt,
+    },
   };
 }
 
@@ -202,7 +238,7 @@ export function normalizeNoodleAccountSettings(value: unknown): NoodleAccountSet
   return {
     profile,
     social,
-    scheduler: {},
+    scheduler: normalizeScheduler(raw.scheduler),
     privacy,
   };
 }
@@ -423,6 +459,13 @@ function mapPost(row: PostRow): NoodlePost {
     authorSnapshot: parseAuthorSnapshot(row.authorSnapshot),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+function mapManagedPost(row: PostRow): NoodlerManagedPost {
+  return {
+    ...mapPost(row),
+    title: row.title?.trim() || null,
   };
 }
 
@@ -721,7 +764,7 @@ export function createNoodleStorage(db: DB) {
         accounts.map(async (account) => {
           const disclosureMode = account.settings.privacy.identityDisclosure ?? null;
           const publicAccount =
-            disclosureMode === "open" && account.publicAccountId
+            (disclosureMode === "open" || disclosureMode === "hinted") && account.publicAccountId
               ? await this.getAccountById(account.publicAccountId)
               : null;
           return {
@@ -735,6 +778,7 @@ export function createNoodleStorage(db: DB) {
             disclosureMode,
             stagePersonality: account.settings.privacy.stagePersonality ?? "",
             access: account.settings.privacy.access,
+            autoPosting: account.settings.scheduler.autoPosting ?? defaultAutoPostingSettings(),
             publicIdentity: publicAccount
               ? { displayName: publicAccount.displayName, handle: publicAccount.handle }
               : null,
@@ -933,7 +977,8 @@ export function createNoodleStorage(db: DB) {
         const rows = await tx.select().from(noodleAccounts).where(eq(noodleAccounts.id, id));
         const row = rows[0];
         if (!row) return null;
-        if (row.visibility === "private" && input.subtree !== "privacy") return null;
+        if (row.visibility === "private" && input.subtree !== "privacy" && input.subtree !== "scheduler") return null;
+        if (row.visibility !== "private" && input.subtree === "scheduler") return null;
         if (row.visibility !== "private" && input.subtree === "privacy" && input.patch.access !== undefined)
           return null;
         if (
@@ -948,7 +993,23 @@ export function createNoodleStorage(db: DB) {
         if (input.subtree === "social") {
           next = { ...current, social: { ...current.social, ...input.patch } };
         } else if (input.subtree === "scheduler") {
-          next = { ...current, scheduler: { ...current.scheduler, ...input.patch } };
+          // Deep-merge autoPosting so the server-owned nextRunAt is never dropped by a
+          // client patch that only carries enabled/intensity. Clear nextRunAt whenever
+          // enable or intensity changes so the scheduler seeds a fresh first run.
+          const currentAuto = current.scheduler.autoPosting ?? defaultAutoPostingSettings();
+          const patchAuto = input.patch.autoPosting;
+          const config = patchAuto
+            ? {
+                enabled: patchAuto.enabled ?? currentAuto.enabled,
+                intensity: patchAuto.intensity ?? currentAuto.intensity,
+                nextRunAt:
+                  (patchAuto.enabled !== undefined && patchAuto.enabled !== currentAuto.enabled) ||
+                  (patchAuto.intensity !== undefined && patchAuto.intensity !== currentAuto.intensity)
+                    ? null
+                    : currentAuto.nextRunAt,
+              }
+            : currentAuto;
+          next = { ...current, scheduler: { autoPosting: config } };
         } else {
           next = {
             ...current,
@@ -965,6 +1026,64 @@ export function createNoodleStorage(db: DB) {
           .where(eq(noodleAccounts.id, id));
         const updatedRows = await tx.select().from(noodleAccounts).where(eq(noodleAccounts.id, id));
         return updatedRows[0] ? mapAccount(updatedRows[0]) : null;
+      });
+    },
+
+    /** Every private (creator) account with automatic posting enabled, settings attached. */
+    async listAutoPostEnabledAccounts(): Promise<NoodleAccount[]> {
+      const rows = await db.select().from(noodleAccounts).where(eq(noodleAccounts.visibility, "private"));
+      return rows.map(mapAccount).filter((account) => account.settings.scheduler.autoPosting?.enabled === true);
+    },
+
+    /**
+     * Server-owned nextRunAt advance, done in one transaction so a run is claimed before
+     * provider work. Returns "seeded" when a freshly enabled creator had a null run and
+     * gets its first future slot (do not generate), "claimed" when a due run was advanced
+     * (caller should generate), or "skipped" when disabled/not-yet-due/missing.
+     */
+    async advanceAutoPostRun(id: string, nowIso: string): Promise<"seeded" | "claimed" | "skipped"> {
+      return db.transaction(async (tx) => {
+        const row = (await tx.select().from(noodleAccounts).where(eq(noodleAccounts.id, id)))[0];
+        if (!row || row.visibility !== "private") return "skipped";
+        const current = normalizeNoodleAccountSettings(row.settings);
+        const auto = current.scheduler.autoPosting;
+        if (!auto?.enabled) return "skipped";
+        let outcome: "seeded" | "claimed";
+        if (auto.nextRunAt === null) outcome = "seeded";
+        else if (Date.parse(auto.nextRunAt) <= Date.parse(nowIso)) outcome = "claimed";
+        else return "skipped";
+        // Derive the next slot from the transactionally-current intensity so a concurrent
+        // intensity change can't seed a run using a stale (pre-patch) cadence.
+        const next = nextAutoPostRunAt(auto.intensity, new Date(nowIso));
+        const nextSettings: NoodleAccountSettings = {
+          ...current,
+          scheduler: { autoPosting: { ...auto, nextRunAt: next } },
+        };
+        await tx
+          .update(noodleAccounts)
+          .set({ settings: JSON.stringify(nextSettings), updatedAt: now() })
+          .where(eq(noodleAccounts.id, id));
+        return outcome;
+      });
+    },
+
+    /** Server-owned reschedule of a creator's next automatic run (validated future by the caller). */
+    async rescheduleAutoPostRun(id: string, nextRunAt: string): Promise<NoodleAccount | null> {
+      return db.transaction(async (tx) => {
+        const row = (await tx.select().from(noodleAccounts).where(eq(noodleAccounts.id, id)))[0];
+        if (!row || row.visibility !== "private") return null;
+        const current = normalizeNoodleAccountSettings(row.settings);
+        const auto = current.scheduler.autoPosting ?? defaultAutoPostingSettings();
+        const nextSettings: NoodleAccountSettings = {
+          ...current,
+          scheduler: { autoPosting: { ...auto, nextRunAt } },
+        };
+        await tx
+          .update(noodleAccounts)
+          .set({ settings: JSON.stringify(nextSettings), updatedAt: now() })
+          .where(eq(noodleAccounts.id, id));
+        const updated = (await tx.select().from(noodleAccounts).where(eq(noodleAccounts.id, id)))[0];
+        return updated ? mapAccount(updated) : null;
       });
     },
 
@@ -1049,7 +1168,7 @@ export function createNoodleStorage(db: DB) {
             .where(inArray(noodlePosts.authorAccountId, publicAccountIds))
             .orderBy(desc(noodlePosts.createdAt))
             .limit(limit);
-      return rows.map(mapPost);
+      return rows.map((row) => mapPost(row));
     },
 
     async listPostsBefore(before: string): Promise<NoodlePost[]> {
@@ -1060,10 +1179,10 @@ export function createNoodleStorage(db: DB) {
         .from(noodlePosts)
         .where(and(lt(noodlePosts.createdAt, before), inArray(noodlePosts.authorAccountId, publicAccountIds)))
         .orderBy(desc(noodlePosts.createdAt));
-      return rows.map(mapPost);
+      return rows.map((row) => mapPost(row));
     },
 
-    async listPrivatePostsByAccount(accountId: string, limit = 8): Promise<NoodlePost[]> {
+    async listPrivatePostsByAccount(accountId: string, limit = 8): Promise<NoodlerManagedPost[]> {
       const account = await this.getPrivateAccountById(accountId);
       if (!account) return [];
       const rows = await db
@@ -1072,12 +1191,12 @@ export function createNoodleStorage(db: DB) {
         .where(eq(noodlePosts.authorAccountId, accountId))
         .orderBy(desc(noodlePosts.createdAt))
         .limit(Math.max(1, Math.min(50, Math.floor(limit))));
-      return rows.map(mapPost);
+      return rows.map(mapManagedPost);
     },
 
-    async listPrivatePostsByAccounts(accountIds: string[], limit = 8): Promise<Map<string, NoodlePost[]>> {
+    async listPrivatePostsByAccounts(accountIds: string[], limit = 8): Promise<Map<string, NoodlerManagedPost[]>> {
       const boundedLimit = Math.max(1, Math.min(50, Math.floor(limit)));
-      const result = new Map<string, NoodlePost[]>();
+      const result = new Map<string, NoodlerManagedPost[]>();
       if (accountIds.length === 0) return result;
       const rows = await db
         .select()
@@ -1085,7 +1204,7 @@ export function createNoodleStorage(db: DB) {
         .where(inArray(noodlePosts.authorAccountId, accountIds))
         .orderBy(desc(noodlePosts.createdAt));
       for (const row of rows) {
-        const post = mapPost(row);
+        const post = mapManagedPost(row);
         const existing = result.get(post.authorAccountId);
         if (existing) {
           if (existing.length < boundedLimit) existing.push(post);
@@ -1096,22 +1215,14 @@ export function createNoodleStorage(db: DB) {
       return result;
     },
 
-    async getPrivatePostById(id: string): Promise<NoodlePost | null> {
+    async getPrivatePostById(id: string): Promise<NoodlerManagedPost | null> {
       const rows = await db.select().from(noodlePosts).where(eq(noodlePosts.id, id));
       const row = rows[0];
       if (!row || !(await this.getPrivateAccountById(row.authorAccountId))) return null;
-      return mapPost(row);
+      return mapManagedPost(row);
     },
 
-    async createPrivatePost(
-      input: Omit<NoodleCreatePostInput, "authorKind" | "authorEntityId"> & {
-        authorAccountId: string;
-        source?: NoodlePostSource;
-        access?: NoodlePostAccess;
-        ppvPrice?: number | null;
-        metadata?: Record<string, unknown>;
-      },
-    ): Promise<NoodlePost | null> {
+    async createPrivatePost(input: PrivatePostPersistenceInput): Promise<NoodlerManagedPost | null> {
       const account = await this.getPrivateAccountById(input.authorAccountId);
       if (!account) return null;
       const timestamp = now();
@@ -1120,11 +1231,12 @@ export function createNoodleStorage(db: DB) {
         await tx.insert(noodlePosts).values({
           id,
           authorAccountId: input.authorAccountId,
+          title: input.title?.trim() || null,
           content: input.content,
           imageUrl: input.imageUrl ?? null,
           imagePrompt: input.imagePrompt ?? null,
-          parentPostId: input.parentPostId ?? null,
-          quotePostId: input.quotePostId ?? null,
+          parentPostId: null,
+          quotePostId: null,
           source: input.source ?? "manual",
           access: input.access ?? "public",
           ppvPrice: input.access === "ppv" ? (input.ppvPrice ?? null) : null,
@@ -1134,7 +1246,7 @@ export function createNoodleStorage(db: DB) {
           updatedAt: timestamp,
         });
         const rows = await tx.select().from(noodlePosts).where(eq(noodlePosts.id, id));
-        return rows[0] ? mapPost(rows[0]) : null;
+        return rows[0] ? mapManagedPost(rows[0]) : null;
       });
     },
 
@@ -1152,6 +1264,7 @@ export function createNoodleStorage(db: DB) {
       await db.insert(noodlePosts).values({
         id,
         authorAccountId: input.authorAccountId,
+        title: null,
         content: input.content,
         imageUrl: input.imageUrl ?? null,
         imagePrompt: input.imagePrompt ?? null,
@@ -1328,12 +1441,13 @@ export function createNoodleStorage(db: DB) {
       return existing;
     },
 
-    async updatePrivatePost(id: string, input: NoodlePostUpdateInput): Promise<NoodlePost | null> {
+    async updatePrivatePost(id: string, input: NoodlePrivatePostUpdateInput): Promise<NoodlerManagedPost | null> {
       const existing = await this.getPrivatePostById(id);
       if (!existing) return null;
       await db
         .update(noodlePosts)
         .set({
+          ...(input.title !== undefined && { title: input.title }),
           ...(input.content !== undefined && { content: input.content.trim().slice(0, 4000) }),
           ...(input.imageUrl !== undefined && { imageUrl: input.imageUrl }),
           ...(input.imagePrompt !== undefined && { imagePrompt: input.imagePrompt }),
@@ -1347,7 +1461,7 @@ export function createNoodleStorage(db: DB) {
       return this.getPrivatePostById(id);
     },
 
-    async deletePrivatePost(id: string): Promise<NoodlePost | null> {
+    async deletePrivatePost(id: string): Promise<NoodlerManagedPost | null> {
       const existing = await this.getPrivatePostById(id);
       if (!existing) return null;
       await db.transaction(async (tx) => {
@@ -1881,6 +1995,15 @@ export function createNoodleStorage(db: DB) {
         .select()
         .from(noodleAccountSubscriptions)
         .where(eq(noodleAccountSubscriptions.viewerAccountId, viewerAccountId));
+      return rows.map(mapSubscription);
+    },
+
+    async listSubscriptionsForCreator(creatorAccountId: string): Promise<NoodleAccountSubscription[]> {
+      const rows = await db
+        .select()
+        .from(noodleAccountSubscriptions)
+        .where(eq(noodleAccountSubscriptions.creatorAccountId, creatorAccountId))
+        .orderBy(desc(noodleAccountSubscriptions.createdAt));
       return rows.map(mapSubscription);
     },
 

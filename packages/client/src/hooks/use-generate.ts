@@ -3025,10 +3025,6 @@ export function useGenerate() {
             const meta = parseChatMetadata(chatData?.metadata);
             if (meta.autoTranslate) {
               const store = useTranslationStore.getState();
-              const chatSystemPrompt =
-                typeof meta.translationPrompt === "string" && meta.translationPrompt.trim().length > 0
-                  ? meta.translationPrompt
-                  : store.config.systemPrompt;
               for (const [id, msg] of persistedMessages) {
                 const textToTranslate =
                   chatData?.mode === "game" ? stripGmTagsKeepReadables(msg.content ?? "").trim() : (msg.content ?? "");
@@ -3043,9 +3039,9 @@ export function useGenerate() {
                     .post<{ translatedText: string }>("/translate", {
                       text: textToTranslate,
                       provider: store.config.provider,
-                      targetLanguage: store.config.targetLanguage,
+                      targetLanguage: store.config.outputTargetLanguage,
                       connectionId: store.config.connectionId,
-                      systemPrompt: chatSystemPrompt,
+                      systemPrompt: store.config.outputSystemPrompt,
                       deeplApiKey: store.config.deeplApiKey,
                       deeplxUrl: store.config.deeplxUrl,
                     })

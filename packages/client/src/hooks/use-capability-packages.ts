@@ -4,6 +4,7 @@ import {
   isInstalledCapabilityReady,
   replaceBuiltInAgentDefinitions,
   type CapabilityCatalog,
+  type CapabilityPackageUpdate,
   type BuiltInAgentManifest,
   type InstalledCapabilityPackage,
 } from "@marinara-engine/shared";
@@ -13,6 +14,7 @@ export const capabilityPackageKeys = {
   all: ["capability-packages"] as const,
   catalog: () => [...capabilityPackageKeys.all, "catalog"] as const,
   installed: () => [...capabilityPackageKeys.all, "installed"] as const,
+  pendingUpdates: () => [...capabilityPackageKeys.all, "pending-updates"] as const,
   agents: () => [...capabilityPackageKeys.all, "agents"] as const,
 };
 
@@ -46,6 +48,16 @@ export function useInstalledCapabilityPackages(enabled = true) {
     queryKey: capabilityPackageKeys.installed(),
     queryFn: () => api.get<InstalledCapabilityPackage[]>("/capability-packages/installed"),
     enabled,
+  });
+}
+
+export function usePendingCapabilityPackageUpdates(enabled = true) {
+  return useQuery({
+    queryKey: capabilityPackageKeys.pendingUpdates(),
+    queryFn: () => api.get<CapabilityPackageUpdate[]>("/capability-packages/updates/pending"),
+    enabled,
+    staleTime: 5 * 60_000,
+    retry: 1,
   });
 }
 
@@ -267,8 +279,25 @@ async function runCapabilityPackageQueue(
 export function useInstallCapabilityPackage() {
   const invalidate = useInvalidateCapabilityState();
   return useMutation({
-    mutationFn: (id: string) => api.post<InstalledCapabilityPackage>(`/capability-packages/${id}/install`),
+    mutationFn: (variables: string | { id: string; expectedVersion: string }) => {
+      const { id, expectedVersion } = typeof variables === "string" ? { id: variables, expectedVersion: undefined } : variables;
+      return api.post<InstalledCapabilityPackage>(
+        `/capability-packages/${encodeURIComponent(id)}/install`,
+        expectedVersion ? { expectedVersion } : undefined,
+      );
+    },
     onSettled: invalidate,
+  });
+}
+
+export function useDeclineCapabilityPackageUpdate() {
+  const invalidate = useInvalidateCapabilityState();
+  return useMutation({
+    mutationFn: ({ id, version }: Pick<CapabilityPackageUpdate, "id" | "version">) =>
+      api.post<{ declined: true }>(
+        `/capability-packages/${encodeURIComponent(id)}/updates/${encodeURIComponent(version)}/decline`,
+      ),
+    onSuccess: invalidate,
   });
 }
 

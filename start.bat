@@ -120,6 +120,7 @@ goto :eof
 :after_restore_helper
 set "INSTALL_REQUIRED=0"
 set "BUILD_REQUIRED=0"
+set "DATA_SNAPSHOT_READY=0"
 
 :: Auto-update from Git
 if defined SKIP_UPDATE (
@@ -157,6 +158,12 @@ if /I "!OLD_HEAD!"=="!TARGET_HEAD!" (
     echo  [OK] Already up to date
     goto :skip_update
 )
+node scripts\protect-launcher-data.mjs snapshot
+if errorlevel 1 (
+    echo  [WARN] Could not create an update snapshot. Skipping auto-update to protect your data.
+    goto :skip_update
+)
+set "DATA_SNAPSHOT_READY=1"
 :: Drop known-safe untracked files that older installer versions placed in
 :: $INSTDIR but are now also tracked in the repo. Without this, git merge
 :: --ff-only refuses to overwrite them and the auto-update silently fails.
@@ -236,6 +243,15 @@ set "INSTALL_REQUIRED=1"
 set "BUILD_REQUIRED=1"
 
 :skip_update
+if "!DATA_SNAPSHOT_READY!"=="1" (
+    node scripts\protect-launcher-data.mjs restore-if-missing
+    if errorlevel 1 (
+        echo  [ERROR] User data verification failed after the update attempt.
+        echo          Startup stopped to avoid creating empty data.
+        pause
+        exit /b 1
+    )
+)
 echo  [OK] Node.js found:
 node -v
 echo  [OK] pnpm !CURRENT_PNPM_VERSION! ready
@@ -269,7 +285,7 @@ echo.
 echo  [..] Installing dependencies...
 echo      This may take a few minutes.
 echo.
-call :run_pnpm install --force
+call :run_pnpm install --frozen-lockfile --prefer-offline
 if errorlevel 1 echo  [ERROR] Failed to install dependencies. & pause & exit /b 1
 
 :skip_install

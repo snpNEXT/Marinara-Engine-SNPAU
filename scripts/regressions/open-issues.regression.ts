@@ -33,6 +33,10 @@ import {
 import { getAvatarCropStyle } from "../../packages/client/src/lib/utils.js";
 import { filterCustomEmojisByName } from "../../packages/client/src/lib/custom-emoji.js";
 import {
+  shouldSuppressAutonomousMessages,
+  toAutonomousPresenceStatus,
+} from "../../packages/client/src/lib/user-status.js";
+import {
   trackChatMetadataSave,
   waitForPendingChatMetadataSaves,
 } from "../../packages/client/src/lib/chat-metadata-save-barrier.js";
@@ -55,7 +59,13 @@ import {
   withoutNpcAvatarRevision,
 } from "../../packages/client/src/lib/game-npc-avatar.js";
 import { characterMatchesSearch, parseCharacterDisplayData } from "../../packages/client/src/lib/character-display.js";
-import { DEFAULT_GENERATION_PARAMS } from "../../packages/shared/src/constants/defaults.js";
+import {
+  DEFAULT_GENERATION_PARAMS,
+  DEFAULT_TRANSLATION_SYSTEM_PROMPT,
+  MAX_FILE_SIZES,
+  resolveTranslationSystemPrompt,
+} from "../../packages/shared/src/constants/defaults.js";
+import { normalizeIllustratorImagesPerGeneration } from "../../packages/shared/src/utils/illustrator-generation-count.js";
 import { getChatModeCapabilities } from "../../packages/shared/src/constants/chat-mode-capabilities.js";
 import { mergeNoodleCustomEmojiMap } from "../../packages/client/src/hooks/use-noodle-custom-emojis.js";
 import {
@@ -100,6 +110,7 @@ import {
 } from "../../packages/client/src/lib/emoji-shortcodes.js";
 import { persistGeneratedImageToEntityGalleries } from "../../packages/server/src/services/image/generated-image-entity-gallery.js";
 import { resolveIllustratorImageSize } from "../../packages/server/src/services/image/image-generation-settings.js";
+import { generateIllustratorImageVariants } from "../../packages/server/src/services/image/illustrator-image-variants.js";
 import { fetchBotBrowserJson } from "../../packages/server/src/services/bot-browser/fetch-json.js";
 import { isAllowedResponseContentType, validateOutboundUrl } from "../../packages/server/src/utils/security.js";
 import { seedDefaultBackgrounds } from "../../packages/server/src/db/seed-backgrounds.js";
@@ -167,6 +178,18 @@ import {
   normalizeVeniceImageModels,
   parseVeniceImageResponse,
 } from "../../packages/server/src/services/image/venice-image.js";
+import {
+  buildAtlasCloudImageRequest,
+  buildAtlasCloudUrl,
+  buildAtlasCloudVideoRequest,
+  parseAtlasCloudPrediction,
+} from "../../packages/server/src/services/media/atlas-cloud.js";
+import {
+  ATLAS_CLOUD_IMAGE_MODELS,
+  ATLAS_CLOUD_VIDEO_MODELS,
+  inferImageSource,
+  inferVideoSource,
+} from "../../packages/shared/src/constants/model-lists.js";
 import { resolveSceneVideoPrompt } from "../../packages/server/src/services/video/scene-video-prompt-review.js";
 import {
   buildLorebookEntryCreateRow,
@@ -230,6 +253,10 @@ const comfyReferenceWorkflow = JSON.stringify({
   thirdName: "%reference_image_name_03%",
   outsideSupportedRange: "%reference_image_05%",
 });
+assert.equal(toAutonomousPresenceStatus("active"), "active");
+assert.equal(toAutonomousPresenceStatus("dnd"), "dnd");
+assert.equal(shouldSuppressAutonomousMessages("active"), false);
+assert.equal(shouldSuppressAutonomousMessages("dnd"), true);
 assert.deepEqual(findMissingComfyReferenceSlots(comfyReferenceWorkflow, "reference_image", 1), [1]);
 assert.deepEqual(findMissingComfyReferenceSlots(comfyReferenceWorkflow, "reference_image_name", 1), [2]);
 assert.equal(numberedComfyReferencePlaceholder("reference_image_name", 2), "%reference_image_name_03%");
@@ -667,6 +694,24 @@ assert.equal(resolveInitialGameGmConnectionId("explicit-connection", "chat-conne
 assert.equal(resolveInitialGameGmConnectionId(undefined, null), null);
 assert.equal(GAME_SETUP_GENERATION_TIMEOUT_MS, 500_000);
 assert.equal(DEFAULT_GENERATION_PARAMS.reasoningEffort, "maximum");
+assert.match(DEFAULT_TRANSLATION_SYSTEM_PROMPT, /\{\{targetLanguage\}\}/u);
+assert.match(resolveTranslationSystemPrompt(DEFAULT_TRANSLATION_SYSTEM_PROMPT, "Japanese"), /into Japanese/u);
+assert.equal(normalizeIllustratorImagesPerGeneration(undefined), 1);
+assert.equal(normalizeIllustratorImagesPerGeneration("3"), 3);
+assert.equal(normalizeIllustratorImagesPerGeneration(99), 4);
+const attemptedImageVariants: number[] = [];
+assert.deepEqual(
+  await generateIllustratorImageVariants({
+    count: 3,
+    generate: async (index) => {
+      attemptedImageVariants.push(index);
+      if (index === 1) throw new Error("one variant failed");
+      return `image-${index}`;
+    },
+  }),
+  ["image-0", "image-2"],
+);
+assert.deepEqual(attemptedImageVariants, [0, 1, 2]);
 
 assert.equal(
   buildVeniceApiUrl("https://api.venice.ai/api/v1", "models"),
@@ -677,6 +722,7 @@ assert.deepEqual(buildVeniceImageRequest({ model: "venice-sd35", prompt: "canal"
   prompt: "canal",
   format: "webp",
   return_binary: false,
+  safe_mode: false,
   variants: 1,
   width: 1280,
   height: 720,
@@ -686,6 +732,7 @@ assert.deepEqual(buildVeniceImageRequest({ model: "gpt-image-2", prompt: "canal"
   prompt: "canal",
   format: "webp",
   return_binary: false,
+  safe_mode: false,
   variants: 1,
   aspect_ratio: "3:2",
   resolution: "2K",
@@ -702,6 +749,79 @@ assert.deepEqual(
   }),
   [{ id: "chroma", name: "Chroma" }],
 );
+assert.equal(
+  buildAtlasCloudUrl("https://api.atlascloud.ai/v1/", "generateImage"),
+  "https://api.atlascloud.ai/api/v1/model/generateImage",
+);
+assert.equal(
+  buildAtlasCloudUrl("https://api.atlascloud.ai/api/v1/model", "prediction/prediction-123"),
+  "https://api.atlascloud.ai/api/v1/model/prediction/prediction-123",
+);
+assert.deepEqual(
+  buildAtlasCloudImageRequest({
+    model: "google/nano-banana/text-to-image",
+    prompt: "marinara laboratory",
+    width: 1600,
+    height: 900,
+  }),
+  {
+    model: "google/nano-banana/text-to-image",
+    prompt: "marinara laboratory",
+    aspect_ratio: "16:9",
+  },
+);
+assert.deepEqual(
+  buildAtlasCloudImageRequest({
+    model: "black-forest-labs/flux-kontext-pro/image-to-image",
+    prompt: "add blue light",
+    width: 1024,
+    height: 768,
+    referenceImageDataUrl: "data:image/png;base64,atlas-reference",
+  }),
+  {
+    model: "black-forest-labs/flux-kontext-pro/image-to-image",
+    prompt: "add blue light",
+    size: "1024*768",
+    image: "data:image/png;base64,atlas-reference",
+  },
+);
+assert.deepEqual(
+  buildAtlasCloudVideoRequest({
+    model: "google/veo3.1/image-to-video",
+    prompt: "slow camera push",
+    durationSeconds: 8,
+    aspectRatio: "16:9",
+    resolution: "720p",
+    referenceImageDataUrl: "data:image/png;base64,atlas-reference",
+  }),
+  {
+    model: "google/veo3.1/image-to-video",
+    prompt: "slow camera push",
+    duration: 8,
+    aspect_ratio: "16:9",
+    resolution: "720p",
+    image: "data:image/png;base64,atlas-reference",
+  },
+);
+assert.deepEqual(parseAtlasCloudPrediction({ data: { id: "prediction-123", status: "processing" } }), {
+  id: "prediction-123",
+  status: "processing",
+  output: null,
+  error: null,
+});
+assert.deepEqual(
+  parseAtlasCloudPrediction({ data: { status: "completed", outputs: ["https://cdn.example/out.mp4"] } }),
+  {
+    id: null,
+    status: "completed",
+    output: "https://cdn.example/out.mp4",
+    error: null,
+  },
+);
+assert.equal(inferImageSource("", "https://api.atlascloud.ai/api/v1"), "atlas");
+assert.equal(inferVideoSource("", "https://api.atlascloud.ai/api/v1"), "atlas");
+assert.ok(ATLAS_CLOUD_IMAGE_MODELS.some((model) => model.id === "google/nano-banana/text-to-image"));
+assert.ok(ATLAS_CLOUD_VIDEO_MODELS.some((model) => model.id === "google/veo3.1/text-to-video"));
 
 const profileImportAssetRoot = mkdtempSync(join(tmpdir(), "marinara-profile-import-atomic-"));
 try {
@@ -1191,6 +1311,18 @@ const gameSurfaceSource = readFileSync(
   new URL("../../packages/client/src/components/game/GameSurface.tsx", import.meta.url),
   "utf8",
 );
+const gameSetupWizardSource = readFileSync(
+  new URL("../../packages/client/src/components/game/GameSetupWizard.tsx", import.meta.url),
+  "utf8",
+);
+const gameAssetBrowserSource = readFileSync(
+  new URL("../../packages/client/src/components/game-assets/GameAssetsBrowserView.tsx", import.meta.url),
+  "utf8",
+);
+const gameAssetActionDropdownSource = readFileSync(
+  new URL("../../packages/client/src/components/game-assets/ActionDropdown.tsx", import.meta.url),
+  "utf8",
+);
 const gameAssetHooksSource = readFileSync(
   new URL("../../packages/client/src/hooks/use-game-assets.ts", import.meta.url),
   "utf8",
@@ -1285,6 +1417,15 @@ assert.equal(
 );
 assert.match(gameJournalSource, /data-game-journal-scroll/u);
 assert.match(gameSurfaceSource, /h-\[min\(42rem,calc\(100dvh-6rem\)\)\]/u);
+assert.match(gameSetupWizardSource, /Adjust Game Assets for this Game/u);
+assert.match(gameSetupWizardSource, /selectFoldersByDefault/u);
+assert.match(gameAssetBrowserSource, /createPortal/u);
+assert.match(gameAssetActionDropdownSource, /createPortal/u);
+assert.match(gameAssetActionDropdownSource, /window\.innerWidth - rect\.width/u);
+assert.equal(
+  existsSync(join(REPOSITORY_ROOT, "packages/server/src/assets/default-game-assets/sprites/generic-fantasy")),
+  false,
+);
 assert.match(gameAssetHooksSource, /export function useGameAssetManifest/u);
 assert.match(gameAssetHooksSource, /invalidateQueries\(\{ queryKey: gameAssetKeys\.all \}\)/u);
 assert.doesNotMatch(gameAssetStoreSource, /api\.|fetchManifest|rescanAssets|\/game-assets\/manifest/u);
@@ -2715,6 +2856,149 @@ try {
   assert.deepEqual(backgroundMeta["Black.jpg"]?.tags, ["black", "plain", "dark"]);
 } finally {
   rmSync(backgroundSeedRoot, { recursive: true, force: true });
+}
+
+// Issue #3993 — ComfyUI model fetch must list the DiffusionModels (UNETLoader)
+// folder and keep missing loader metadata distinguishable from an empty list.
+{
+  const { parseComfyLoaderModelNames } = await import("../../packages/server/src/routes/connections.routes.js");
+  const checkpointInfo = {
+    CheckpointLoaderSimple: { input: { required: { ckpt_name: [["sd15.safetensors", "shared.safetensors"]] } } },
+  };
+  const unetInfo = {
+    UNETLoader: {
+      input: { required: { unet_name: [["anima.safetensors", "zimage.safetensors", "shared.safetensors"]] } },
+    },
+  };
+  assert.deepEqual(parseComfyLoaderModelNames(checkpointInfo, "CheckpointLoaderSimple", "ckpt_name"), [
+    "sd15.safetensors",
+    "shared.safetensors",
+  ]);
+  assert.deepEqual(parseComfyLoaderModelNames(unetInfo, "UNETLoader", "unet_name"), [
+    "anima.safetensors",
+    "zimage.safetensors",
+    "shared.safetensors",
+  ]);
+  assert.deepEqual(
+    parseComfyLoaderModelNames({ CheckpointLoaderSimple: { input: { required: { ckpt_name: [[]] } } } },
+      "CheckpointLoaderSimple",
+      "ckpt_name",
+    ),
+    [],
+    "A genuinely empty checkpoint list must stay a list, not a missing-schema signal",
+  );
+  assert.equal(
+    parseComfyLoaderModelNames({}, "CheckpointLoaderSimple", "ckpt_name"),
+    null,
+    "Missing checkpoint schema must be reported as null so the route can 502",
+  );
+  assert.equal(
+    parseComfyLoaderModelNames({}, "UNETLoader", "unet_name"),
+    null,
+    "A ComfyUI build without UNETLoader must be detectable so the route can degrade to checkpoints",
+  );
+  assert.equal(
+    parseComfyLoaderModelNames(
+      { CheckpointLoaderSimple: { input: { required: { ckpt_name: ["not-an-array"] } } } },
+      "CheckpointLoaderSimple",
+      "ckpt_name",
+    ),
+    null,
+    "Malformed options must not be mistaken for an empty model list",
+  );
+  const checkpointNames = parseComfyLoaderModelNames(checkpointInfo, "CheckpointLoaderSimple", "ckpt_name") ?? [];
+  const unetNames = parseComfyLoaderModelNames(unetInfo, "UNETLoader", "unet_name") ?? [];
+  assert.deepEqual(
+    [...new Set([...checkpointNames, ...unetNames])],
+    ["sd15.safetensors", "shared.safetensors", "anima.safetensors", "zimage.safetensors"],
+    "Overlapping names across the two folders must be listed once",
+  );
+}
+
+// Issue #4002 — Character Tavern stores card JSON in zTXt (zlib-compressed)
+// PNG chunks; every card-parsing path must read them, and export must strip
+// stale ones so re-exported cards cannot carry outdated compressed data.
+{
+  const { deflateSync, crc32: zlibCrc32 } = await import("node:zlib");
+  const { parsePngCharacterCard } = await import("../../packages/client/src/lib/png-parser.js");
+  const { extractCharaFromPng } = await import("../../packages/server/src/routes/import.routes.js");
+
+  const pngChunk = (type: string, data: Buffer) => {
+    const typeBytes = Buffer.from(type, "ascii");
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(zlibCrc32(Buffer.concat([typeBytes, data])) >>> 0);
+    return Buffer.concat([length, typeBytes, data, crc]);
+  };
+  const card = { spec: "chara_card_v3", spec_version: "3.0", data: { name: "Tavern Import", description: "zTXt" } };
+  const base64Card = Buffer.from(JSON.stringify(card), "utf8").toString("base64");
+  const ztxtData = Buffer.concat([
+    Buffer.from("chara", "ascii"),
+    Buffer.from([0, 0]),
+    deflateSync(Buffer.from(base64Card, "ascii")),
+  ]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(1, 0);
+  ihdr.writeUInt32BE(1, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  const idat = Buffer.from([0x78, 0x01, 0x62, 0x60, 0x60, 0x60, 0x60, 0x00, 0x00, 0x00, 0x05, 0x00, 0x01]);
+  const ztxtPng = Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("zTXt", ztxtData),
+    pngChunk("IDAT", idat),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+
+  const serverParsed = extractCharaFromPng(ztxtPng);
+  assert.equal(
+    (serverParsed as { data?: { name?: string } } | null)?.data?.name,
+    "Tavern Import",
+    "Server import must extract character JSON from zTXt chunks",
+  );
+
+  const clientParsed = await parsePngCharacterCard(
+    new File([new Uint8Array(ztxtPng)], "card.png", { type: "image/png" }),
+  );
+  assert.equal(
+    (clientParsed.json as { data?: { name?: string } }).data?.name,
+    "Tavern Import",
+    "Client Card Browser import must extract character JSON from zTXt chunks",
+  );
+
+  const maxCharacterCardChunkSize = Math.ceil(MAX_FILE_SIZES.CHARACTER_JSON / 3) * 4;
+  const oversizedZtxtData = Buffer.concat([
+    Buffer.from("chara", "ascii"),
+    Buffer.from([0, 0]),
+    deflateSync(Buffer.alloc(maxCharacterCardChunkSize + 1, 0x41)),
+  ]);
+  const oversizedZtxtPng = Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("zTXt", oversizedZtxtData),
+    pngChunk("IDAT", idat),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+  assert.equal(
+    extractCharaFromPng(oversizedZtxtPng),
+    null,
+    "Server import must reject zTXt metadata that expands beyond the character-card limit",
+  );
+  await assert.rejects(
+    parsePngCharacterCard(new File([new Uint8Array(oversizedZtxtPng)], "oversized-card.png", { type: "image/png" })),
+    /No character data found/,
+    "Client import must reject zTXt metadata that expands beyond the character-card limit",
+  );
+
+  const { injectTextChunk } = await import("../../packages/server/src/routes/characters.routes.js");
+  const reExported = injectTextChunk(ztxtPng, "chara", Buffer.from(JSON.stringify({ fresh: true })).toString("base64"));
+  assert.equal(
+    reExported.includes(deflateSync(Buffer.from(base64Card, "ascii"))),
+    false,
+    "Export must strip stale zTXt chara chunks instead of shipping outdated data",
+  );
 }
 
 console.info("Open-issue regressions passed.");

@@ -35,6 +35,15 @@ if (supportedOnnxTuples.has(onnxTuple)) {
   }
 }
 
+if (process.platform === "android") {
+  const requireFromServer = createRequire(resolve(root, "packages/server/package.json"));
+  try {
+    requireFromServer("sharp");
+  } catch {
+    missing.push("sharp WebAssembly runtime for android");
+  }
+}
+
 if (missing.length > 0) {
   console.error(`Incomplete Marinara dependency install. Missing: ${missing.join(", ")}`);
   process.exit(1);

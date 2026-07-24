@@ -197,12 +197,13 @@ export function AgentCatalogView() {
   }, [packages, selectedId]);
 
   const handleInstall = async (entry: CapabilityCatalogPackage) => {
+    const isUpdate = installedById.has(entry.manifest.id);
     try {
       const result = await install.mutateAsync(entry.manifest.id);
       toast.success(
         result.status === "restart-required"
-          ? "Agent installed. Restart Marinara Engine to finish setup."
-          : "Agent installed. It is ready to use.",
+          ? `Agent ${isUpdate ? "updated" : "installed"}. Restart Marinara Engine to finish setup.`
+          : `Agent ${isUpdate ? "updated" : "installed"}. It is ready to use.`,
       );
     } catch (error) {
       toast.error(getPrivilegedActionErrorMessage(error, "Agent installation failed."));

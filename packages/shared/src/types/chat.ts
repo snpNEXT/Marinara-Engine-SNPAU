@@ -276,6 +276,8 @@ export interface ChatMetadata {
   illustratorUseAvatarReferences?: boolean;
   /** Optional per-chat LLM connection override used only to write Illustrator/selfie image prompts. */
   illustratorPromptConnectionId?: string | null;
+  /** Number of image variants generated for each Illustrator request. */
+  illustratorImagesPerGeneration?: number;
   /** Whether Roleplay Illustrator may generate and activate a reusable background after a scene-location change. */
   illustratorAutoBackgroundsEnabled?: boolean;
   /** Whether Conversation selfie commands should send the matching character avatar as a reference image. */
@@ -401,8 +403,18 @@ export interface ChatMetadata {
   impersonatePrompt?: string | null;
   /** Show a manual draft translation button beside the send control. */
   showInputTranslateButton?: boolean;
-  /** Optional per-chat AI translation system prompt override. Missing or blank uses the default prompt. */
+  /** Legacy shared translation target. Directional targets fall back to this value. */
+  translationTargetLang?: string;
+  /** Target language used when translating the user's outgoing draft. */
+  translationInputTargetLang?: string;
+  /** Target language used when translating incoming assistant responses. */
+  translationOutputTargetLang?: string;
+  /** Legacy shared AI translation prompt. Directional prompts fall back to this value. */
   translationPrompt?: string | null;
+  /** AI system prompt for outgoing draft translation. Supports {{targetLanguage}}. */
+  translationInputPrompt?: string | null;
+  /** AI system prompt for incoming response translation. Supports {{targetLanguage}}. */
+  translationOutputPrompt?: string | null;
   /** Allow roleplay characters to create direct-message conversation chats with hidden [dm] commands. */
   roleplayDmCommandsEnabled?: boolean;
   /** Chat-scoped Intiface Central WebSocket URL for haptic manual and auto-connect. */

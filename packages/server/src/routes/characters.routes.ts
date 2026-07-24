@@ -62,6 +62,7 @@ import { createReplyFallbackNotifier } from "./generate/fallback-notification.js
 
 const CHARACTER_GALLERY_ROOT = join(DATA_DIR, "gallery", "characters");
 const PERSONA_GALLERY_ROOT = join(DATA_DIR, "gallery", "personas");
+const AVATAR_ROOT = join(DATA_DIR, "avatars");
 const CHARACTER_GALLERY_VIDEO_ROOT = join(DATA_DIR, "gallery", "character-videos");
 const PERSONA_GALLERY_VIDEO_ROOT = join(DATA_DIR, "gallery", "persona-videos");
 const ALLOWED_GALLERY_EXTS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"]);
@@ -423,6 +424,37 @@ async function readAvatarDataUrl(avatarPath: string | null | undefined): Promise
   const filename = avatarPath.split("?")[0]!.split("/").pop();
   if (!filename) return null;
   return readImageAsDataUrl(join(DATA_DIR, "avatars"), filename);
+}
+
+async function copyGalleryImageToAvatar(
+  entityKind: "character" | "persona",
+  entityId: string,
+  galleryFilePath: string,
+): Promise<string> {
+  const galleryRoot = join(DATA_DIR, "gallery");
+  const sourcePath = assertInsideDir(galleryRoot, join(galleryRoot, galleryFilePath));
+  const imageBuffer = await readFile(sourcePath);
+  const imageInfo = isAllowedImageBuffer(imageBuffer, extname(sourcePath));
+  if (!imageInfo) throw new Error("Unsupported or invalid gallery image");
+
+  await mkdir(AVATAR_ROOT, { recursive: true });
+  const filename = `${entityKind}-${entityId}-${newId()}.${imageInfo.ext}`;
+  const avatarFilePath = assertInsideDir(AVATAR_ROOT, join(AVATAR_ROOT, filename));
+  await writeFile(avatarFilePath, imageBuffer);
+  return `/api/avatars/file/${filename}`;
+}
+
+// Remove an avatar file created by copyGalleryImageToAvatar when the record
+// update it was copied for did not go through, so failures cannot strand
+// orphaned files in the avatars directory.
+async function removeCopiedAvatarFile(avatarPath: string) {
+  const filename = avatarPath.split("/").pop();
+  if (!filename) return;
+  try {
+    await unlink(assertInsideDir(AVATAR_ROOT, join(AVATAR_ROOT, filename)));
+  } catch {
+    // The copy may not exist if the failure happened before the write.
+  }
 }
 
 // Read every sprite file in data/sprites/<id>/ and return it as
@@ -1284,6 +1316,29 @@ export async function charactersRoutes(app: FastifyInstance) {
 
     await characterGallery.remove(imageId);
     return { success: true };
+  });
+
+  app.post<{ Params: { id: string; imageId: string } }>("/:id/gallery/:imageId/avatar", async (req, reply) => {
+    const { id, imageId } = req.params;
+    const image = await characterGallery.getById(imageId);
+    if (!image || image.characterId !== id) {
+      return reply.status(404).send({ error: "Gallery image not found" });
+    }
+
+    let avatarPath: string | null = null;
+    try {
+      avatarPath = await copyGalleryImageToAvatar("character", id, image.filePath);
+      const updated = await storage.updateAvatar(id, avatarPath);
+      if (!updated) {
+        await removeCopiedAvatarFile(avatarPath);
+        return reply.status(404).send({ error: "Character not found" });
+      }
+      return updated;
+    } catch (error) {
+      if (avatarPath) await removeCopiedAvatarFile(avatarPath);
+      logger.warn(error, "Failed to set character %s avatar from gallery image %s", id, imageId);
+      return reply.status(400).send({ error: "Gallery image could not be used as an avatar" });
+    }
   });
 
   app.patch<{
@@ -2303,6 +2358,38 @@ export async function charactersRoutes(app: FastifyInstance) {
     return { success: true };
   });
 
+  app.post<{ Params: { id: string; imageId: string } }>(
+    "/personas/:id/gallery/:imageId/avatar",
+    async (req, reply) => {
+      const { id, imageId } = req.params;
+      const image = await personaGallery.getById(imageId);
+      if (!image || image.personaId !== id) {
+        return reply.status(404).send({ error: "Gallery image not found" });
+      }
+
+      let avatarPath: string | null = null;
+      try {
+        avatarPath = await copyGalleryImageToAvatar("persona", id, image.filePath);
+        // The previous crop was normalized against the old image's framing, so
+        // it must not carry over to the replacement avatar.
+        const updated = await storage.updatePersona(
+          id,
+          { avatarPath, avatarCrop: "" },
+          { versionReason: "Avatar update" },
+        );
+        if (!updated) {
+          await removeCopiedAvatarFile(avatarPath);
+          return reply.status(404).send({ error: "Persona not found" });
+        }
+        return updated;
+      } catch (error) {
+        if (avatarPath) await removeCopiedAvatarFile(avatarPath);
+        logger.warn(error, "Failed to set persona %s avatar from gallery image %s", id, imageId);
+        return reply.status(400).send({ error: "Gallery image could not be used as an avatar" });
+      }
+    },
+  );
+
   app.patch<{
     Params: { id: string; imageId: string };
     Body: { customKind?: string | null; customName?: string | null; width?: number; height?: number };
@@ -2486,7 +2573,10 @@ function buildChunk(type: string, data: Buffer): Buffer {
 }
 
 function readPngTextKeyword(chunkType: string, chunkData: Buffer): string | null {
-  if (chunkType !== "tEXt" && chunkType !== "iTXt") return null;
+  // zTXt keywords sit at the same null-terminated position; without it, a
+  // re-exported Character Tavern card would keep stale compressed chara data
+  // alongside the freshly injected tEXt chunk.
+  if (chunkType !== "tEXt" && chunkType !== "iTXt" && chunkType !== "zTXt") return null;
 
   const nullIdx = chunkData.indexOf(0);
   if (nullIdx <= 0) return null;

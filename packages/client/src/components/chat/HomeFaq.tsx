@@ -4,6 +4,7 @@ import { cn } from "../../lib/utils";
 import { useDocsIndex } from "../../hooks/use-docs";
 import { useUIStore } from "../../stores/ui.store";
 import { Modal } from "../ui/Modal";
+import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 
 interface HomeFaqItem {
   id: string;
@@ -542,13 +543,15 @@ const CATEGORY_STYLES: Record<string, string> = {
   Misc: "border-[var(--border)] bg-[var(--muted)]/30 text-[var(--muted-foreground)]",
 };
 
-function getFaqSearchText(item: HomeFaqItem) {
-  return [item.category, item.question, item.answer, ...(item.bullets ?? [])].join(" ").toLowerCase();
+function getFaqSearchText(item: HomeFaqItem, localize: (englishText: string) => string) {
+  const values = [item.category, item.question, item.answer, ...(item.bullets ?? [])];
+  return [...values, ...values.map(localize)].join(" ").toLowerCase();
 }
 
 /** Only mounted while the docs FAQ entry is open, so the index fetch stays lazy. */
 function FaqDocsAccess({ compact }: { compact?: boolean }) {
   const { data: index } = useDocsIndex();
+  const localize = useLocalizedUiText();
 
   return (
     <div className="mt-2 space-y-2">
@@ -558,9 +561,9 @@ function FaqDocsAccess({ compact }: { compact?: boolean }) {
           compact ? "text-[0.625rem]" : "text-[0.65625rem]",
         )}
       >
-        <p className="text-[var(--muted-foreground)]/70">On disk at:</p>
+        <p className="text-[var(--muted-foreground)]/70">{localize("On disk at:")}</p>
         <code className="block break-all text-[var(--foreground)]/85">
-          {index ? index.root : "the docs folder inside your Marinara install folder"}
+          {index ? index.root : localize("the docs folder inside your Marinara install folder")}
         </code>
       </div>
       <button
@@ -572,7 +575,7 @@ function FaqDocsAccess({ compact }: { compact?: boolean }) {
         )}
       >
         <BookOpen size={compact ? "0.6875rem" : "0.75rem"} />
-        Open Documentation
+        {localize("Open Documentation")}
       </button>
     </div>
   );
@@ -590,6 +593,7 @@ export function HomeFaq({
   headerless = false,
   faqOnly = false,
 }: HomeFaqProps = {}) {
+  const localize = useLocalizedUiText();
   const [expandedInternal, setExpandedInternal] = useState(defaultExpanded);
   const [openItemIdInternal, setOpenItemIdInternal] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -608,8 +612,10 @@ export function HomeFaq({
   const trimmedSearch = searchQuery.trim().toLowerCase();
   const visibleFaqItems = useMemo(
     () =>
-      trimmedSearch ? HOME_FAQ_ITEMS.filter((item) => getFaqSearchText(item).includes(trimmedSearch)) : HOME_FAQ_ITEMS,
-    [trimmedSearch],
+      trimmedSearch
+        ? HOME_FAQ_ITEMS.filter((item) => getFaqSearchText(item, localize).includes(trimmedSearch))
+        : HOME_FAQ_ITEMS,
+    [localize, trimmedSearch],
   );
 
   if (compact) {
@@ -672,8 +678,8 @@ export function HomeFaq({
                   type="search"
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Search FAQ"
-                  aria-label="Search FAQ"
+                  placeholder={localize("Search FAQ")}
+                  aria-label={localize("Search FAQ")}
                   className="min-w-0 flex-1 bg-transparent text-[0.6875rem] text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]/65"
                 />
                 {searchQuery ? (
@@ -681,7 +687,7 @@ export function HomeFaq({
                     type="button"
                     onClick={() => setSearchQuery("")}
                     className="flex h-5 w-5 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
-                    aria-label="Clear FAQ search"
+                    aria-label={localize("Clear FAQ search")}
                   >
                     <X size="0.6875rem" />
                   </button>
@@ -716,10 +722,10 @@ export function HomeFaq({
                                 CATEGORY_STYLES[item.category] ?? CATEGORY_STYLES.Misc,
                               )}
                             >
-                              {item.category}
+                              {localize(item.category)}
                             </span>
                             <span className="min-w-0 flex-1 break-words text-[0.6875rem] font-medium leading-snug text-[var(--foreground)]">
-                              {item.question}
+                              {localize(item.question)}
                             </span>
                           </div>
                         </div>
@@ -732,13 +738,15 @@ export function HomeFaq({
 
                       {isOpen && (
                         <div className="border-t border-[var(--border)]/55 bg-[var(--muted)]/30 px-2.5 py-2 dark:bg-black/10">
-                          <p className="text-[0.6875rem] leading-relaxed text-[var(--foreground)]/92">{item.answer}</p>
+                          <p className="text-[0.6875rem] leading-relaxed text-[var(--foreground)]/92">
+                            {localize(item.answer)}
+                          </p>
                           {item.bullets?.length ? (
                             <ul className="mt-2 space-y-1.5 text-[0.65625rem] leading-relaxed text-[var(--muted-foreground)]/85">
                               {item.bullets.map((bullet) => (
                                 <li key={bullet} className="flex gap-1.5">
                                   <span className="mt-[0.18rem] h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--primary)]/70" />
-                                  <span>{bullet}</span>
+                                  <span>{localize(bullet)}</span>
                                 </li>
                               ))}
                             </ul>
@@ -751,7 +759,7 @@ export function HomeFaq({
                 })}
                 {visibleFaqItems.length === 0 ? (
                   <div className="rounded-lg border border-[var(--border)]/55 bg-[var(--muted)]/30 px-3 py-3 text-center text-[0.6875rem] text-[var(--muted-foreground)]">
-                    No FAQ matches.
+                    {localize("No FAQ matches.")}
                   </div>
                 ) : null}
               </div>
@@ -771,7 +779,7 @@ export function HomeFaq({
             type="button"
             onClick={() => setMobileModalOpen(true)}
             className="flex w-full items-center gap-2 rounded-lg border border-[var(--border)]/60 bg-[var(--card)]/70 px-3 py-2 text-left transition-colors hover:bg-black/5 dark:hover:bg-white/5"
-            aria-label="Open Professor Mari's FAQ"
+            aria-label={localize("Open Professor Mari's FAQ")}
           >
             <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[var(--primary)]/25 bg-[linear-gradient(135deg,rgba(235,137,81,0.18),rgba(77,229,221,0.14))] text-[var(--primary)]">
               <HelpCircle size="0.875rem" />
@@ -790,7 +798,7 @@ export function HomeFaq({
         <Modal
           open={mobileModalOpen}
           onClose={() => setMobileModalOpen(false)}
-          title="Professor Mari's FAQ"
+          title={localize("Professor Mari's FAQ")}
           width="max-w-5xl"
         >
           <HomeFaq
@@ -827,14 +835,14 @@ export function HomeFaq({
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
                 <p className="text-sm font-semibold tracking-tight text-[var(--foreground)]">
-                  Professor Mari&apos;s FAQ
+                  {localize("Professor Mari's FAQ")}
                 </p>
                 <span className="rounded-full border border-[var(--border)]/60 bg-black/5 px-2 py-0.5 text-[0.5625rem] uppercase tracking-[0.16em] text-[var(--muted-foreground)]/80 dark:bg-white/6">
-                  {HOME_FAQ_ITEMS.length} answers
+                  {HOME_FAQ_ITEMS.length} {localize("answers")}
                 </span>
               </div>
               <p className="mt-0.5 text-[0.6875rem] leading-snug text-[var(--muted-foreground)]/80">
-                The recurring setup, model, Game Mode, image, and agent questions people keep asking.
+                {localize("The recurring setup, model, Game Mode, image, and agent questions people keep asking.")}
               </p>
             </div>
             <ChevronDown
@@ -866,7 +874,7 @@ export function HomeFaq({
                         Professor Mari
                       </div>
                       <p className="mt-2 text-sm font-semibold tracking-tight text-[var(--foreground)]">
-                        Start here before you go hunting through Discord logs.
+                        {localize("Start here before you go hunting through Discord logs.")}
                       </p>
                       <p className="mt-1 text-[0.6875rem] leading-relaxed text-[var(--muted-foreground)]/85">
                         The biggest repeat problems are Game Mode model choice, silent agent failures from low max
@@ -879,13 +887,13 @@ export function HomeFaq({
                 <div className="mt-3 rounded-[1.1rem] border border-amber-400/20 bg-amber-500/8 p-3">
                   <div className="flex items-center gap-2 text-[0.6875rem] font-semibold uppercase tracking-[0.16em] text-amber-700 dark:text-amber-200/90">
                     <TriangleAlert size="0.875rem" />
-                    Before You Post A Bug
+                    {localize("Before You Post A Bug")}
                   </div>
                   <ul className="mt-2 space-y-1.5 text-[0.6875rem] leading-relaxed text-[var(--muted-foreground)]/88">
                     {QUICK_FIXES.map((fix) => (
                       <li key={fix} className="flex gap-2">
                         <span className="mt-[0.18rem] h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500/75 dark:bg-amber-300/75" />
-                        <span>{fix}</span>
+                        <span>{localize(fix)}</span>
                       </li>
                     ))}
                   </ul>
@@ -896,10 +904,10 @@ export function HomeFaq({
             <div className={cn(!faqOnly && "mt-3")}>
               <div className="mb-2 flex flex-col items-start gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
                 <p className="text-[0.6875rem] font-medium uppercase tracking-[0.16em] text-[var(--muted-foreground)]/65">
-                  Frequently Asked Questions
+                  {localize("Frequently Asked Questions")}
                 </p>
                 <p className="text-[0.625rem] text-[var(--muted-foreground)]/50">
-                  Tap a question to reveal the answer.
+                  {localize("Tap a question to reveal the answer.")}
                 </p>
               </div>
               <div className="mb-3 flex items-center gap-2 rounded-xl border border-[var(--border)]/60 bg-[var(--background)]/70 px-3 py-2">
@@ -908,8 +916,8 @@ export function HomeFaq({
                   type="search"
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Search FAQ"
-                  aria-label="Search FAQ"
+                  placeholder={localize("Search FAQ")}
+                  aria-label={localize("Search FAQ")}
                   className="min-w-0 flex-1 bg-transparent text-xs text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]/65"
                 />
                 {searchQuery ? (
@@ -917,7 +925,7 @@ export function HomeFaq({
                     type="button"
                     onClick={() => setSearchQuery("")}
                     className="flex h-6 w-6 items-center justify-center rounded-lg text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
-                    aria-label="Clear FAQ search"
+                    aria-label={localize("Clear FAQ search")}
                   >
                     <X size="0.75rem" />
                   </button>
@@ -950,10 +958,10 @@ export function HomeFaq({
                                 CATEGORY_STYLES[item.category] ?? CATEGORY_STYLES.Misc,
                               )}
                             >
-                              {item.category}
+                              {localize(item.category)}
                             </span>
                             <span className="min-w-0 flex-1 break-words text-[0.75rem] font-medium leading-relaxed text-[var(--foreground)]">
-                              {item.question}
+                              {localize(item.question)}
                             </span>
                           </div>
                         </div>
@@ -966,13 +974,15 @@ export function HomeFaq({
 
                       {isOpen && (
                         <div className="border-t border-[var(--border)]/55 bg-[var(--muted)]/30 px-3 py-3 dark:bg-black/10">
-                          <p className="text-[0.72rem] leading-relaxed text-[var(--foreground)]/92">{item.answer}</p>
+                          <p className="text-[0.72rem] leading-relaxed text-[var(--foreground)]/92">
+                            {localize(item.answer)}
+                          </p>
                           {item.bullets?.length ? (
                             <ul className="mt-2 space-y-1.5 text-[0.6875rem] leading-relaxed text-[var(--muted-foreground)]/85">
                               {item.bullets.map((bullet) => (
                                 <li key={bullet} className="flex gap-2">
                                   <span className="mt-[0.18rem] h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--primary)]/70" />
-                                  <span>{bullet}</span>
+                                  <span>{localize(bullet)}</span>
                                 </li>
                               ))}
                             </ul>
@@ -985,7 +995,7 @@ export function HomeFaq({
                 })}
                 {visibleFaqItems.length === 0 ? (
                   <div className="rounded-[1rem] border border-[var(--border)]/55 bg-[var(--muted)]/30 px-3 py-6 text-center text-xs text-[var(--muted-foreground)]">
-                    No FAQ matches.
+                    {localize("No FAQ matches.")}
                   </div>
                 ) : null}
               </div>

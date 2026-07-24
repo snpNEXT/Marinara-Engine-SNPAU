@@ -2,6 +2,7 @@
 // Panel: Characters (overhauled — search, folders, avatars)
 // ──────────────────────────────────────────────
 import { useState, useMemo, useCallback, useEffect, useLayoutEffect, useRef, type UIEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
   fetchAllCharacterPages,
@@ -148,6 +149,7 @@ function usePanelMobileOverlay() {
 }
 
 export function CharactersPanel() {
+  const { t } = useTranslation();
   const { data: groups } = useCharacterGroups();
   const deleteCharacter = useDeleteCharacter();
   const duplicateCharacter = useDuplicateCharacter();
@@ -725,7 +727,7 @@ export function CharactersPanel() {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder='Search characters or -tag:"tag name"'
+            placeholder={t("search.panels.charactersWithExcludedTag", { query: '-tag:"tag name"' })}
             className="mari-chrome-field h-10 w-full py-0 pl-8 pr-3 text-xs md:h-9"
           />
         </div>

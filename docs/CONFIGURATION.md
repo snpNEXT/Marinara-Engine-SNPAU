@@ -21,10 +21,10 @@ Optional first-party agents are also managed inside the app. Open **Agents → D
 
 Package lifecycle and storage:
 
-- **Updates:** On every server startup, already-installed official packages automatically upgrade to the newest compatible version before their runtimes activate and self-check. A fresh install remains empty until you choose packages.
+- **Updates:** Marinara checks already-installed official packages for compatible updates and asks before downloading each new version. Choosing **No** keeps the current version and leaves the manual **Update** action available in Download Agents. A fresh install remains empty until you choose packages.
 - **Platforms:** The same behavior applies to desktop, Docker, and Termux-hosted Android installations. iOS and other browser clients use the packages installed on their Marinara host server.
 - **Persistence:** Packages live under `DATA_DIR/capability-packages`. Docker volumes, custom data directories, backups, and normal upgrades preserve them.
-- **Offline resilience:** Existing packages continue working at their installed version when outbound GitHub HTTPS is unavailable or an update fails verification.
+- **Offline resilience:** Existing packages continue working at their installed version when outbound GitHub HTTPS is unavailable, an update is declined, or an update fails verification.
 
 ### Custom agent repositories
 
@@ -47,6 +47,14 @@ The repository root must contain an `agents.json` array using the same agent-def
 ```
 
 Marinara accepts GitHub repository-root URLs only and validates the bounded archive plus every agent definition before showing the preview. During synchronization, remote prompt, settings, and tool values replace the repository-managed values shown in that preview. Connection and artwork choices remain local. If an agent disappears upstream, Marinara keeps it as a normal local custom agent and removes only its repository link. Removing a source follows the same keep-local policy.
+
+### External Extensions
+
+External Extension imports require two independent opt-ins. Set `ENABLE_EXTERNAL_EXTENSIONS=true` in `.env`, then open **Settings → Advanced → Danger Zone**, scroll below the data-deletion controls, read the warning, and enable **Allow third-party extension imports**. Only then does the **External Extensions** section appear under **Settings → Addons**.
+
+The environment variable is the host-operator permission; the Danger Zone toggle is the user's explicit acceptance. The section, import routes, approval routes, and both runtime loaders all enforce the combined policy. Closing either gate disables external records and stops running external code. Manually stored, legacy, profile-imported, and unknown-source extension records are treated as external, so dropping files into an extension-related folder cannot bypass the gates.
+
+Professor Mari drafts remain available without this flag. They are created disabled and still require approval of their exact code hash.
 
 ## Where the .env file is
 
@@ -116,6 +124,7 @@ The main access-control settings are:
 | `BYPASS_AUTH_TAILSCALE` | `true` | Lets Tailscale traffic skip the login and allowlist. |
 | `BYPASS_AUTH_DOCKER` | `true` | Lets Docker bridge traffic and the exact default gateway detected inside Docker skip the login and allowlist. |
 | `REQUIRE_AUTH_FOR_DOCKER_PROXY` | `false` | Forces normal login for Docker traffic that looks reverse-proxied. |
+| `TRUSTED_HOSTS` | empty | Extra public or reverse-proxy hostnames Marinara may answer. Direct IP, localhost, `.local`, `.home.arpa`, and single-label LAN names work automatically. |
 | `SSL_CERT` | empty | Path to a TLS certificate file. Set with `SSL_KEY` to serve HTTPS directly. |
 | `SSL_KEY` | empty | Path to the TLS private key file. |
 | `CSRF_TRUSTED_ORIGINS` | empty | Extra browser origins allowed to save changes. Use for a public domain or an unusual port. |
@@ -123,6 +132,8 @@ The main access-control settings are:
 Basic Auth is short for HTTP Basic Authentication, a simple username and password prompt. Its credentials are only encoded, not encrypted, so always pair it with HTTPS when your server faces the public internet. HTTPS is the secure, encrypted version of HTTP. To turn it on directly, set both `SSL_CERT` and `SSL_KEY`, or put a reverse proxy in front of Marinara.
 
 To let other devices reach the server at all, the server must bind to a reachable interface. Set `HOST=0.0.0.0`. The shell launchers do this for you, but `pnpm start` binds to loopback only.
+
+Phones, tablets, Tailscale peers, and other computers can continue to connect by the server's IP address without adding it to `TRUSTED_HOSTS`. If you publish Marinara at a public or reverse-proxy hostname, add that exact name, for example `TRUSTED_HOSTS=chat.example.com`. Names already present in `CSRF_TRUSTED_ORIGINS` or `CORS_ORIGINS` are also accepted for compatibility. This Host check prevents a public website's DNS name from being rebound to Marinara's loopback address.
 
 ## Storage
 
@@ -216,6 +227,7 @@ Related privileged settings:
 | `HAPTICS_ALLOW_REMOTE` | `false` | Allows haptic device actions from a remote device, with a valid secret. |
 | `CUSTOM_TOOL_SCRIPT_ENABLED` | `false` | Enables custom script tools. Keep off for untrusted or imported tools. |
 | `ENABLE_CUSTOM_AGENT_REPOS` | `false` | Enables manual GitHub agent-repository preview and sync in Agents Manager. Third-party agents are unvetted and require explicit confirmation before import or update. |
+| `ENABLE_EXTERNAL_EXTENSIONS` | `false` | First of two gates for third-party extension imports. The user must also opt in under Settings → Advanced → Danger Zone. |
 | `IMPORT_ALLOWED_ROOTS` | empty | Filesystem folders that bulk import may read without a picker token. |
 | `PROFILE_EXPORT_JSON_LIMIT_BYTES` | `268435456` (256 MiB) | Largest single JSON profile export the server will build. |
 

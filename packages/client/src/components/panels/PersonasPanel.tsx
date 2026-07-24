@@ -43,6 +43,7 @@ import { api } from "../../lib/api-client";
 import { SelectionActionBar } from "../ui/SelectionActionBar";
 import { SmoothFolderContent } from "../ui/SmoothFolderContent";
 import { TouchDragHandle } from "../ui/TouchDragHandle";
+import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 
 type PersonaRow = {
   id: string;
@@ -128,6 +129,7 @@ function useTouchSafePersonaDragMode() {
 }
 
 export function PersonasPanel() {
+  const localize = useLocalizedUiText();
   const deletePersona = useDeletePersona();
   const duplicatePersona = useDuplicatePersona();
   const updatePersona = useUpdatePersona();
@@ -590,7 +592,7 @@ export function PersonasPanel() {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search personas"
+            placeholder={localize("Search personas")}
             className="mari-chrome-field h-10 w-full py-0 pl-8 pr-3 text-xs md:h-9"
           />
         </div>

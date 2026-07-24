@@ -39,6 +39,7 @@ import {
   resolveReviewedImagePromptSubmission,
 } from "../services/image/image-prompt-review.js";
 import { runImageGenerationRequest } from "../services/image/image-generation-queue.js";
+import { generateIllustratorImageVariants } from "../services/image/illustrator-image-variants.js";
 import { persistGeneratedImageToEntityGalleries } from "../services/image/generated-image-entity-gallery.js";
 import {
   resolveImageConnectionFallback,
@@ -1101,48 +1102,65 @@ export async function galleryRoutes(app: FastifyInstance) {
 
     try {
       const imageConnectionQueueKey = imageConn.id?.trim() || `${imageServiceHint}:${imageBaseUrl}:${imageModel}`;
-      const imageResult = await runImageGenerationRequest({
-        connectionKey: imageConnectionQueueKey,
-        queue: input.queueImageGenerationRequests,
-        signal: selfieAbortSignal,
-        task: () =>
-          generateImage(imageSource, imageBaseUrl, imageConn.apiKey || "", imageServiceHint, {
-            prompt: providerPrompt,
-            negativePrompt: providerNegativePrompt || undefined,
-            model: imageModel,
-            width,
-            height,
-            imageEndpointId: imageConn.imageEndpointId || undefined,
-            comfyWorkflow: imageConn.comfyuiWorkflow || undefined,
-            imageDefaults,
-            referenceImages,
+      const imageResults = await generateIllustratorImageVariants({
+        count: meta.illustratorImagesPerGeneration,
+        generate: () =>
+          runImageGenerationRequest({
+            connectionKey: imageConnectionQueueKey,
+            queue: input.queueImageGenerationRequests,
             signal: selfieAbortSignal,
-            fallback: imageFallback,
+            task: () =>
+              generateImage(imageSource, imageBaseUrl, imageConn.apiKey || "", imageServiceHint, {
+                prompt: providerPrompt,
+                negativePrompt: providerNegativePrompt || undefined,
+                model: imageModel,
+                width,
+                height,
+                imageEndpointId: imageConn.imageEndpointId || undefined,
+                comfyWorkflow: imageConn.comfyuiWorkflow || undefined,
+                imageDefaults,
+                referenceImages,
+                signal: selfieAbortSignal,
+                fallback: imageFallback,
+              }),
           }),
+        onVariantError: (error, index) =>
+          logger.warn(error, "[gallery/selfie] Variant %d failed for chat %s", index + 1, chatId),
       });
-      const filePath = saveImageToDisk(chatId, imageResult.base64, imageResult.ext);
-      const image = await storage.create({
+      const savedImages = [];
+      for (const imageResult of imageResults) {
+        const filePath = saveImageToDisk(chatId, imageResult.base64, imageResult.ext);
+        const image = await storage.create({
+          chatId,
+          filePath,
+          prompt: providerPrompt,
+          provider: imageConn.provider ?? "image_generation",
+          model: imageModel || "unknown",
+          width,
+          height,
+        });
+        if (!image) throw new Error("Generated selfie metadata could not be saved");
+        await persistGeneratedImageToEntityGalleries({
+          sourceFilePath: filePath,
+          characterIds: [character.id],
+          characterGallery,
+          personaGallery,
+          prompt: providerPrompt,
+          provider: imageConn.provider ?? "image_generation",
+          model: imageModel || "unknown",
+          width,
+          height,
+        });
+        savedImages.push(image);
+      }
+      const image = savedImages[0];
+      if (!image) throw new Error("Image provider did not return a selfie");
+      logger.info(
+        "[gallery/selfie] Generated %d selfie image(s) for %s in chat %s",
+        savedImages.length,
+        characterName,
         chatId,
-        filePath,
-        prompt: providerPrompt,
-        provider: imageConn.provider ?? "image_generation",
-        model: imageModel || "unknown",
-        width,
-        height,
-      });
-      if (!image) throw new Error("Generated selfie metadata could not be saved");
-      await persistGeneratedImageToEntityGalleries({
-        sourceFilePath: filePath,
-        characterIds: [character.id],
-        characterGallery,
-        personaGallery,
-        prompt: providerPrompt,
-        provider: imageConn.provider ?? "image_generation",
-        model: imageModel || "unknown",
-        width,
-        height,
-      });
-      logger.info("[gallery/selfie] Generated selfie for %s in chat %s", characterName, chatId);
+      );
       return {
         ...image,
         url: buildGalleryImageUrl(image, chatId),

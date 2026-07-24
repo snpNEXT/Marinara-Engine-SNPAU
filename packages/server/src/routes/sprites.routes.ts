@@ -348,6 +348,7 @@ function resolveVideoConnection(connection: VideoGenerationConnection) {
   const isXaiVideo = source === "xai" || serviceHint === "xai";
   const isGoogleVeoVideo = source === "google_veo" || serviceHint === "google_veo";
   const isOpenRouterVideo = source === "openrouter" || serviceHint === "openrouter";
+  const isAtlasVideo = source === "atlas" || serviceHint === "atlas";
   const isSeedanceVideo = source === "seedance" || serviceHint === "seedance";
   const isComfyUiVideo = source === "comfyui" || serviceHint === "comfyui";
   return {
@@ -361,11 +362,13 @@ function resolveVideoConnection(connection: VideoGenerationConnection) {
           ? "https://generativelanguage.googleapis.com/v1beta"
           : isOpenRouterVideo
             ? "https://openrouter.ai/api/v1"
-            : isSeedanceVideo
-              ? "https://api.seedance2.ai"
-              : isComfyUiVideo
-                ? "http://127.0.0.1:8188"
-                : "https://generativelanguage.googleapis.com/v1beta"),
+            : isAtlasVideo
+              ? "https://api.atlascloud.ai/api/v1"
+              : isSeedanceVideo
+                ? "https://api.seedance2.ai"
+                : isComfyUiVideo
+                  ? "http://127.0.0.1:8188"
+                  : "https://generativelanguage.googleapis.com/v1beta"),
     model:
       connection.model ||
       (isXaiVideo
@@ -374,22 +377,26 @@ function resolveVideoConnection(connection: VideoGenerationConnection) {
           ? "veo-3.1-generate-preview"
           : isOpenRouterVideo
             ? "google/veo-3.1"
-            : isSeedanceVideo
-              ? "seedance-2-0"
-              : isComfyUiVideo
-                ? ""
-                : "gemini-omni-flash-preview"),
+            : isAtlasVideo
+              ? "google/veo3.1/text-to-video"
+              : isSeedanceVideo
+                ? "seedance-2-0"
+                : isComfyUiVideo
+                  ? ""
+                  : "gemini-omni-flash-preview"),
     resolution: isXaiVideo
       ? videoDefaults.xai.resolution
       : isGoogleVeoVideo
         ? videoDefaults.googleVeo.resolution
         : isOpenRouterVideo
           ? videoDefaults.openrouter.resolution
-          : isSeedanceVideo
-            ? videoDefaults.seedance.resolution
-            : isComfyUiVideo
-              ? videoDefaults.comfyui.resolution
-              : undefined,
+          : isAtlasVideo
+            ? videoDefaults.atlas.resolution
+            : isSeedanceVideo
+              ? videoDefaults.seedance.resolution
+              : isComfyUiVideo
+                ? videoDefaults.comfyui.resolution
+                : undefined,
     comfyWorkflow: connection.comfyuiWorkflow || undefined,
     publicReferenceUpload: resolveVideoReferencePublicUploadOptions(isSeedanceVideo, videoDefaults.seedance),
   };

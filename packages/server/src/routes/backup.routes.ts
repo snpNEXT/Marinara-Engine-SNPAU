@@ -37,6 +37,8 @@ import {
   type ProfileImportAssetInput,
   type StagedProfileImportAssets,
 } from "../services/import/profile-import-assets.js";
+import { computePersonalExtensionHash } from "../services/extensions/personal-extension-hash.js";
+import { personalServerExtensionRuntime } from "../services/extensions/personal-server-extension-runtime.js";
 
 /** Directories inside DATA_DIR that should be included in every backup. */
 const BACKUP_DIRS = [
@@ -52,6 +54,7 @@ const BACKUP_DIRS = [
   "game-assets",
   "custom-emojis",
   "custom-stickers",
+  "notification-sounds",
   "lorebooks/images",
   "agents/images",
   "connections/images",
@@ -418,7 +421,29 @@ export function sanitizeProfileTableRows(tableName: string, rows: Array<Record<s
   if (tableName === "custom_tools") {
     return rows.map((row) => ({ ...row, webhookUrl: "" }));
   }
+  if (tableName === "installed_extensions") {
+    return rows.map(quarantineProfilePersonalExtensionRow);
+  }
   return rows;
+}
+
+export function quarantineProfilePersonalExtensionRow(row: Record<string, unknown>) {
+  const runtime = row.runtime === "server" ? "server" : "client";
+  const contentHash = computePersonalExtensionHash({
+    runtime,
+    css: runtime === "client" && typeof row.css === "string" ? row.css : null,
+    js: runtime === "client" && typeof row.js === "string" ? row.js : null,
+    serverJs: runtime === "server" && typeof row.serverJs === "string" ? row.serverJs : null,
+  });
+  return {
+    ...row,
+    runtime,
+    enabled: "false",
+    contentHash,
+    approvedHash: null,
+    source: "profile_import",
+    revisions: typeof row.revisions === "string" ? row.revisions : "[]",
+  };
 }
 
 // Secret-bearing columns to omit on the conflict-UPDATE path so an existing row
@@ -775,8 +800,9 @@ async function importProfileStorageSnapshot(
 
           emit("tables", `Importing ${tableName.replace(/_/g, " ")}`);
           for (const row of rows) {
-            const cleanRow = { ...row };
+            let cleanRow = { ...row };
             if (tableName === "api_connections") cleanRow.apiKeyEncrypted = "";
+            if (tableName === "installed_extensions") cleanRow = quarantineProfilePersonalExtensionRow(cleanRow);
             const insert = tx.insert(table as any).values(cleanRow as any) as any;
             const conflictTarget = schemaPrimaryKeyColumn(table);
             if (conflictTarget) {
@@ -805,6 +831,9 @@ async function importProfileStorageSnapshot(
         await flushDB();
       });
       committed = true;
+      if ((tableCounts.installed_extensions ?? 0) > 0) {
+        await personalServerExtensionRuntime.reloadAll();
+      }
       return buildProfileImportStats(tableCounts, files);
     } catch (error) {
       try {

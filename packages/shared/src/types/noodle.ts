@@ -35,7 +35,19 @@ export interface NoodleAccountSocialSettings {
   notificationsReadAt?: string;
 }
 
-export type NoodleAccountSchedulerSettings = Record<string, never>;
+export type NoodleAutoPostingIntensity = 1 | 3 | 6;
+
+export interface NoodleAutoPostingSettings {
+  enabled: boolean;
+  /** Low/Medium/High = at most 1/3/6 automatic posts per day. */
+  intensity: NoodleAutoPostingIntensity;
+  /** Server-owned; excluded from client-editable patches. */
+  nextRunAt: string | null;
+}
+
+export interface NoodleAccountSchedulerSettings {
+  autoPosting?: NoodleAutoPostingSettings;
+}
 export interface NoodleAccountPrivacySettings {
   identityDisclosure?: NoodleIdentityDisclosure;
   stagePersonality?: string;
@@ -130,6 +142,7 @@ export interface NoodlerStageProfile {
 
 export interface NoodlerManagedStageProfile extends NoodlerStageProfile {
   access: NoodleAccountAccessSettings;
+  autoPosting: NoodleAutoPostingSettings;
 }
 
 export interface NoodlerProfileSource {
@@ -169,11 +182,24 @@ export interface NoodlePost {
   updatedAt: string;
 }
 
+export interface NoodlerManagedPost extends NoodlePost {
+  title: string | null;
+}
+
 export interface NoodleAccountSubscription {
   id: string;
   viewerAccountId: string;
   creatorAccountId: string;
   createdAt: string;
+}
+
+export interface NoodlerSubscriber {
+  id: string;
+  displayName: string;
+  handle: string;
+  avatarUrl: string | null;
+  avatarCrop: NoodleAvatarCrop | null;
+  subscribedAt: string;
 }
 
 export interface NoodlePostUnlock {
@@ -189,6 +215,7 @@ export interface NoodlerPostView {
   access: NoodlePostAccess;
   ppvPrice: number | null;
   locked: boolean;
+  title: string | null;
   content: string | null;
   imageUrl: string | null;
   imagePrompt: string | null;

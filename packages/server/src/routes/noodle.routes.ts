@@ -13,6 +13,7 @@ import {
   noodleAccountFollowUpdateSchema,
   noodleAccountProfileUpdateSchema,
   noodleAccountSettingsPatchSchema,
+  noodleAutoPostRescheduleSchema,
   noodleAccountUpdateSchema,
   noodleBulkInviteSchema,
   noodleCreateInteractionSchema,
@@ -21,6 +22,8 @@ import {
   noodleInteractionOwnerSchema,
   noodleInteractionUpdateSchema,
   noodlePostUpdateSchema,
+  noodlePrivatePostCreateSchema,
+  noodlePrivatePostUpdateSchema,
   noodlePrivateAccountCreateSchema,
   noodlerCreateInteractionSchema,
   noodlerRemoveInteractionSchema,
@@ -50,6 +53,7 @@ import {
   type NoodleRefreshAttemptKind,
   type NoodleSettings,
   type WeekSchedule,
+  type NoodlerSubscriber,
   type NoodlerPostView,
 } from "@marinara-engine/shared";
 import type { ChatMessage } from "../services/llm/base-provider.js";
@@ -93,6 +97,11 @@ import { resolveNoodleAvatarCropAfterProfileUpdate } from "../services/noodle/no
 import {
   stageProfileContainsPublicIdentity,
 } from "../services/noodle/noodle-private-generation.service.js";
+import {
+  createNoodlePrivatePost,
+  generateNoodlePrivatePost,
+} from "../services/noodle/noodle-private-post.operation.js";
+import { tryNoodlePrivateAccountOperation } from "../services/noodle/noodle-private-account-operation-lock.js";
 import { generateNoodlerStageProfileDraft } from "../services/noodle/noodle-stage-profile-draft.service.js";
 import { canViewNoodlerPost, isNoodlerHiddenFromViewer } from "../services/noodle/noodler-access.js";
 import {
@@ -1515,7 +1524,9 @@ export async function noodleRoutes(app: FastifyInstance) {
       ]),
     );
     const visibleAccounts = accounts.filter(
-      (account) => account.publicAccountId !== viewer.id && !isNoodlerHiddenFromViewer(account, viewer.id),
+      (account) =>
+        account.publicAccountId === viewer.id ||
+        !isNoodlerHiddenFromViewer(account, viewer.id),
     );
     const postsByAccount = await noodle.listPrivatePostsByAccounts(
       visibleAccounts.map((account) => account.id),
@@ -1523,9 +1534,11 @@ export async function noodleRoutes(app: FastifyInstance) {
     );
     const viewablePostIds = new Set<string>();
     for (const account of visibleAccounts) {
+      const ownCreator = account.publicAccountId === viewer.id;
       const subscribed = subscribedIds.has(account.id);
       for (const post of postsByAccount.get(account.id) ?? []) {
         if (
+          ownCreator ||
           canViewNoodlerPost({
             post,
             subscribed,
@@ -1557,6 +1570,7 @@ export async function noodleRoutes(app: FastifyInstance) {
             access: post.access,
             ppvPrice: post.ppvPrice,
             locked,
+            title: locked ? null : post.title,
             content: locked ? null : post.content,
             imageUrl: locked ? null : post.imageUrl,
             imagePrompt: locked ? null : post.imagePrompt,
@@ -1574,8 +1588,8 @@ export async function noodleRoutes(app: FastifyInstance) {
     const viewer = await resolveViewerPersona(personaId);
     const post = viewer ? await noodle.getPrivatePostById(postId) : null;
     const creator = post ? await noodle.getPrivateAccountById(post.authorAccountId) : null;
-    // Mirror the feed/subscribe/unlock rule: a viewer persona linked to the creator's own
-    // public account is not an audience member and must not persist self-interactions.
+    // A viewer persona linked to the creator's own public account may read its posts, but
+    // is not an audience member and must not persist self-interactions.
     if (
       !viewer ||
       !post ||
@@ -1640,12 +1654,26 @@ export async function noodleRoutes(app: FastifyInstance) {
   app.patch("/noodler/posts/:id", async (req, reply) => {
     const settings = await noodle.getSettings();
     if (!settings.enableNoodler) return reply.code(404).send({ error: "Not Found" });
-    const parsed = noodlePostUpdateSchema.safeParse(req.body);
+    const parsed = noodlePrivatePostUpdateSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const { id } = req.params as { id: string };
     const post = await noodle.updatePrivatePost(id, parsed.data);
     if (!post) return reply.code(404).send({ error: "NoodleR post not found" });
     return post;
+  });
+
+  app.post("/noodler/posts", async (req, reply) => {
+    const settings = await noodle.getSettings();
+    if (!settings.enableNoodler) return reply.code(404).send({ error: "Not Found" });
+    const parsed = noodlePrivatePostCreateSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    const result = await createNoodlePrivatePost(app.db, parsed.data);
+    if (result.status === "created") return reply.code(201).send(result.post);
+    if (result.status === "busy") {
+      return reply.code(409).send({ error: "Another operation for this NoodleR account is already running." });
+    }
+    if (result.status === "disabled") return reply.code(404).send({ error: "Not Found" });
+    return reply.code(404).send({ error: "NoodleR stage profile not found" });
   });
 
   app.delete("/noodler/posts/:id", async (req, reply) => {
@@ -1685,6 +1713,33 @@ export async function noodleRoutes(app: FastifyInstance) {
     const { id } = req.params as { id: string };
     await noodle.unsubscribe(viewer.id, id);
     return { ok: true };
+  });
+
+  app.get("/noodler/accounts/:id/subscribers", async (req, reply) => {
+    const settings = await noodle.getSettings();
+    if (!settings.enableNoodler) return reply.code(404).send({ error: "Not Found" });
+    const { id } = req.params as { id: string };
+    if (!(await noodle.getPrivateAccountById(id))) {
+      return reply.code(404).send({ error: "NoodleR stage profile not found" });
+    }
+    const subscriptions = await noodle.listSubscriptionsForCreator(id);
+    const subscribers = (
+      await Promise.all(
+        subscriptions.map(async (subscription): Promise<NoodlerSubscriber | null> => {
+          const account = await noodle.getAccountById(subscription.viewerAccountId);
+          if (!account || account.visibility !== "public" || account.kind !== "persona") return null;
+          return {
+            id: account.id,
+            displayName: account.displayName,
+            handle: account.handle,
+            avatarUrl: account.avatarUrl,
+            avatarCrop: account.avatarCrop,
+            subscribedAt: subscription.createdAt,
+          };
+        }),
+      )
+    ).filter((subscriber): subscriber is NoodlerSubscriber => subscriber !== null);
+    return subscribers;
   });
 
   app.post("/noodler/posts/:id/unlock", async (req, reply) => {
@@ -1802,33 +1857,49 @@ export async function noodleRoutes(app: FastifyInstance) {
     const parsed = noodleStageProfileUpdateSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const { id } = req.params as { id: string };
-    const privateAccount = await noodle.getPrivateAccountById(id);
-    const publicAccount = privateAccount?.publicAccountId
-      ? await noodle.getAccountById(privateAccount.publicAccountId)
-      : null;
-    if (
-      publicAccount &&
-      stageProfileContainsPublicIdentity(parsed.data, {
-        displayName: publicAccount.displayName,
-        handle: publicAccount.handle,
-      })
-    ) {
+    const locked = await tryNoodlePrivateAccountOperation(id, async () => {
+      const privateAccount = await noodle.getPrivateAccountById(id);
+      const publicAccount = privateAccount?.publicAccountId
+        ? await noodle.getAccountById(privateAccount.publicAccountId)
+        : null;
+      if (
+        publicAccount &&
+        stageProfileContainsPublicIdentity(parsed.data, {
+          displayName: publicAccount.displayName,
+          handle: publicAccount.handle,
+        })
+      ) {
+        return { status: "identity_conflict" } as const;
+      }
+      const updated = await noodle.updateNoodlerStageProfile(id, parsed.data);
+      if (!updated) return { status: "not_found" } as const;
+      const profile = (await noodle.listNoodlerStageProfiles()).find((item) => item.id === updated.id);
+      if (!profile) throw new Error("Failed to load the updated NoodleR stage profile.");
+      return { status: "updated", profile } as const;
+    });
+    if (!locked.acquired) {
+      return reply.code(409).send({ error: "Another operation for this NoodleR account is already running." });
+    }
+    if (locked.value.status === "identity_conflict") {
       return reply.code(400).send({
         error: "Hinted and secret stage profiles cannot use the linked public name or handle.",
       });
     }
-    const updated = await noodle.updateNoodlerStageProfile(id, parsed.data);
-    if (!updated) return reply.code(404).send({ error: "NoodleR stage profile not found" });
-    const profile = (await noodle.listNoodlerStageProfiles()).find((item) => item.id === updated.id);
-    if (!profile) throw new Error("Failed to load the updated NoodleR stage profile.");
-    return profile;
+    if (locked.value.status === "not_found") {
+      return reply.code(404).send({ error: "NoodleR stage profile not found" });
+    }
+    return locked.value.profile;
   });
 
   app.delete("/noodler/accounts/:id", async (req, reply) => {
     const settings = await noodle.getSettings();
     if (!settings.enableNoodler) return reply.code(404).send({ error: "Not Found" });
     const { id } = req.params as { id: string };
-    const deleted = await noodle.deletePrivateAccount(id);
+    const locked = await tryNoodlePrivateAccountOperation(id, () => noodle.deletePrivateAccount(id));
+    if (!locked.acquired) {
+      return reply.code(409).send({ error: "Another operation for this NoodleR account is already running." });
+    }
+    const deleted = locked.value;
     if (!deleted) return reply.code(404).send({ error: "NoodleR stage profile not found" });
     return deleted;
   });
@@ -1910,6 +1981,20 @@ export async function noodleRoutes(app: FastifyInstance) {
     return updated;
   });
 
+  app.put("/noodler/accounts/:id/auto-post/schedule", async (req, reply) => {
+    const settings = await noodle.getSettings();
+    if (!settings.enableNoodler) return reply.code(404).send({ error: "Not Found" });
+    const { id } = req.params as { id: string };
+    const parsed = noodleAutoPostRescheduleSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    if (Date.parse(parsed.data.nextRunAt) <= Date.now()) {
+      return reply.code(400).send({ error: "Choose a future time for the next automatic post." });
+    }
+    const updated = await noodle.rescheduleAutoPostRun(id, parsed.data.nextRunAt);
+    if (!updated) return reply.code(404).send({ error: "NoodleR stage profile not found" });
+    return updated;
+  });
+
   app.patch("/accounts/:id/follows/:targetAccountId", async (req, reply) => {
     const { id, targetAccountId } = req.params as { id: string; targetAccountId: string };
     if (id === targetAccountId) return reply.code(400).send({ error: "A Noodle account cannot follow itself" });
@@ -1980,6 +2065,9 @@ export async function noodleRoutes(app: FastifyInstance) {
   });
 
   app.post("/posts", async (req, reply) => {
+    if (req.body && typeof req.body === "object" && "title" in req.body) {
+      return reply.code(400).send({ error: "Public Noodle posts do not support titles." });
+    }
     const parsed = noodleCreatePostSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     let account = await noodle.getAccountByEntity(parsed.data.authorKind, parsed.data.authorEntityId);
@@ -2010,6 +2098,9 @@ export async function noodleRoutes(app: FastifyInstance) {
 
   app.patch("/posts/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
+    if (req.body && typeof req.body === "object" && "title" in req.body) {
+      return reply.code(400).send({ error: "Public Noodle posts do not support titles." });
+    }
     const parsed = noodlePostUpdateSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     let post = await noodle.updatePost(id, parsed.data);
@@ -2612,6 +2703,26 @@ export async function noodleRoutes(app: FastifyInstance) {
   app.post("/refresh", async (req, reply) => {
     const parsed = noodleGenerationRequestSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    if (parsed.data.mode === "private") {
+      try {
+        const result = await generateNoodlePrivatePost(app.db, parsed.data);
+        if (result.status === "generated") return result.post;
+        if (result.status === "disabled") return reply.code(404).send({ error: "Not Found" });
+        if (result.status === "busy") {
+          return reply.code(409).send({ error: "A generation for this NoodleR account is already running." });
+        }
+        if (result.status === "connection_required") {
+          return reply.code(400).send({ error: "Select a Noodle generation connection first." });
+        }
+        if (result.status === "connection_not_found") {
+          return reply.code(404).send({ error: "Noodle generation connection not found" });
+        }
+        return reply.code(404).send({ error: "NoodleR account not found." });
+      } catch (error) {
+        logger.error(error, "[noodler] Private post generation failed");
+        return reply.code(500).send({ error: getErrorMessage(error) });
+      }
+    }
     const settings = await noodle.getSettings();
     const connectionId = parsed.data.connectionId ?? settings.generationConnectionId;
     if (!connectionId) return reply.code(400).send({ error: "Select a Noodle generation connection first." });

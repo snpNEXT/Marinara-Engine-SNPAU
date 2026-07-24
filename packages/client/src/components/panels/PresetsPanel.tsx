@@ -85,6 +85,7 @@ import { useTouchFolderDrag } from "../../hooks/use-touch-folder-drag";
 import { SmoothFolderContent } from "../ui/SmoothFolderContent";
 import { TouchDragHandle } from "../ui/TouchDragHandle";
 import { getTouchReorderDropIndex } from "../../lib/touch-reorder";
+import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 
 type PresetRow = {
   id: string;
@@ -265,6 +266,7 @@ function normalizeRegexImportEntry(entry: unknown, fallbackOrder: number) {
 }
 
 export function PresetsPanel() {
+  const localize = useLocalizedUiText();
   const { data: presets, isLoading } = usePresets();
   const { data: regexScripts } = useRegexScripts();
   const { data: customTools } = useCustomTools();
@@ -1006,7 +1008,7 @@ export function PresetsPanel() {
           />
           <input
             type="text"
-            placeholder="Search presets…"
+            placeholder={localize("Search presets…")}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="mari-chrome-field h-10 w-full py-0 pl-8 pr-3 text-xs md:h-9"

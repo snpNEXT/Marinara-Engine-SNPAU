@@ -1,0 +1,125 @@
+# Personal Extensions
+
+Personal Extensions are private code drafts created for you by Professor Mari. Open **Settings** > **Addons** > **Personal Extensions**.
+
+The default message is:
+
+> Ask Professor Mari to create an extension for you. Nothing runs until you enable it and approve the exact code hash.
+
+There is no New Draft action and there are no import controls in this section. Ask Professor Mari to create or revise a draft. She can save code, but she cannot approve or enable it.
+
+## Review and enable
+
+Every draft starts disabled. Marinara fingerprints the exact executable code with SHA-256. Open the draft, inspect the code, compare the displayed hash, then choose **Review and Run** only if you accept that exact version. Any executable edit or restored revision disables the extension and requires a fresh approval.
+
+Sandboxing reduces authority; it does not make arbitrary code trustworthy. A malicious extension can still waste CPU until the watchdog stops it, flood its own storage within enforced limits, or behave deceptively through logs. Always review code before enabling it.
+
+## Runtime isolation
+
+A Browser Extension runs in a dedicated Worker inside an opaque-origin sandboxed iframe. It cannot access Marinara's page, DOM, cookies, browser storage, origin APIs, or network. Its capabilities are private extension storage, logging, managed timers, cleanup registration, constrained windows, and safe host contribution slots.
+
+Extensions can add top-bar actions, Extensions menu items, and persistent right-side panels with `marinara.ui.registerContribution(...)`. Marinara renders these surfaces using the active theme and a fixed set of controls: headings, text, preformatted output, buttons, text inputs, selects, toggles, sliders, color controls, and spacers. An extension supplies content and state, never HTML, CSS, URLs, React components, or host event handlers.
+
+These UI capabilities and rules are identical for every Browser Extension regardless of source. An imported third-party (External) Extension gets the same contribution API once it clears the `.env` and Danger Zone opt-ins plus exact-hash approval. It still cannot reach Marinara's DOM or APIs.
+
+### Add a Marinara-rendered panel
+
+```js
+const panel = marinara.ui.registerContribution({
+  id: "weather-settings",
+  kind: "panel",
+  label: "Weather controls",
+  description: "Tune a weather scene without leaving Marinara.",
+  icon: "sparkles",
+  elements: [
+    { kind: "heading", text: "Atmosphere" },
+    {
+      kind: "select",
+      id: "weather",
+      label: "Weather",
+      value: "rain",
+      options: [
+        { value: "rain", label: "Rain" },
+        { value: "snow", label: "Snow" },
+        { value: "aurora", label: "Aurora" },
+      ],
+    },
+    { kind: "slider", id: "intensity", label: "Intensity", min: 0, max: 100, value: 60 },
+    { kind: "toggle", id: "lightning", label: "Lightning", checked: false },
+    { kind: "color", id: "tint", label: "Tint", value: "#6d8cff" },
+    { kind: "button", id: "apply", label: "Apply" },
+  ],
+  onActivate: async () => {
+    const settings = await marinara.storage.get();
+    // Update the panel when stored state should be reflected in the controls.
+  },
+  onEvent: async ({ elementId, values }) => {
+    if (elementId !== "apply") return;
+    await marinara.storage.patch(values);
+  },
+});
+
+marinara.onCleanup(() => panel.remove());
+```
+
+Use `kind: "button"` for a compact top-bar/Extensions-menu action and `kind: "menu-item"` for a menu-only action. Both invoke `onActivate`. A `panel` invokes `onActivate` when opened; its buttons invoke `onEvent` with the current values of every panel control. The returned handle supports `update({ label?, description?, icon?, elements? })` and `remove()`. IDs may contain letters, numbers, `.`, `_`, and `-`.
+
+Complex tools can build multi-step interfaces by updating the panel elements after an event. Keep application state in `marinara.storage`; do not encode it in markup.
+
+### Legacy extension ports
+
+Weather controllers, prompt editors, and other substantial workflows are valid contribution use cases. Their safe ports can use a menu or top-bar launcher plus progressively updated panels. Existing packages that inject DOM overlays, query Marinara CSS selectors, traverse React internals, or call same-origin `/api` routes cannot be imported unchanged into the safe runtime.
+
+UI contributions provide the interface, not ambient authority. Features that need chats, presets, lorebooks, characters, personas, or visual scene effects also need a dedicated broker capability exposed by Marinara and explicitly approved by the user. Until that capability exists, an extension must not simulate it through host DOM access or unrestricted network requests.
+
+The older `marinara.ui.showWindow(...)` API remains available for a temporary window inside the opaque-origin iframe. It uses the same fixed controls and returns `update(...)` and `close()` handles. Prefer contributions when the tool should be reachable through Marinara's normal navigation.
+
+A Server Extension runs in a separate permission-restricted Node process inside macOS Seatbelt or Linux Bubblewrap. It cannot access Marinara files, user files, inherited server secrets, the network, child processes, workers, or native addons. If Marinara cannot establish a supported OS sandbox, Server Extensions remain disabled.
+
+### Platform support
+
+Browser Extensions are sandboxed by the browser itself, so they work everywhere. Server Extensions need a supported OS sandbox; where none exists, they stay disabled and cannot be enabled — Marinara never falls back to running them unsandboxed.
+
+| Platform                | Browser Extensions | Server Extensions                     |
+| ----------------------- | ------------------ | ------------------------------------- |
+| macOS                   | ✅ Sandboxed       | ✅ Sandboxed (Seatbelt)               |
+| Linux (with Bubblewrap) | ✅ Sandboxed       | ✅ Sandboxed (Bubblewrap)             |
+| Linux (without `bwrap`) | ✅ Sandboxed       | ⛔ Disabled — install `bwrap`         |
+| Windows                 | ✅ Sandboxed       | ⛔ Disabled — use a Browser Extension |
+| Android                 | ✅ Sandboxed       | ⛔ Disabled — use a Browser Extension |
+
+On Windows and Android there is no supported OS process sandbox, so Server Extensions are unavailable by design. Use a Browser Extension instead, or run the Marinara server on macOS or Linux (with `bwrap`) if you need a Server Extension.
+
+## External Extensions
+
+Third-party imports are locked and hidden by default. Two steps are required:
+
+1. On the Marinara host, set `ENABLE_EXTERNAL_EXTENSIONS=true` in `.env`.
+2. Open **Settings** > **Advanced** > **Danger Zone**, scroll below the data-deletion controls, read the warning, and enable **Allow third-party extension imports**.
+
+Only then does **Settings** > **Addons** show **External Extensions** with file and folder import controls. Supported formats are always expanded:
+
+- `.personal-extension.zip` and compatible `.zip` packages;
+- `.json` manifests;
+- `.css`;
+- `.js`, `.mjs`, and `.cjs`;
+- `.server.js`, `.server.mjs`, and `.server.cjs`.
+
+Imports never carry approval and cannot enable themselves. Legacy, profile-imported, manually stored, and unknown-source records are also treated as external. They stay hidden, cannot be approved, and are excluded from both runtimes until both gates are open.
+
+Turning either gate off stops active external server processes, removes browser workers, and disables stored external records. Reopening the gates does not automatically run them again.
+
+Third-party extensions may contain malicious or dangerous code. Always inspect every line before downloading, importing, or enabling it. You proceed entirely at your own responsibility.
+
+## Export, revisions, and recovery
+
+Use an extension's export action to download a portable package. Exported and restored packages remain disabled. Restoring a revision also returns it to a disabled draft.
+
+If an extension misbehaves, choose **Disable**. If the interface is unavailable, stop Marinara and set the relevant `installed_extensions` record's `enabled` value to `"false"`. Never set `approvedHash` by hand.
+
+## Related guides
+
+- [Professor Mari](../home/professor-mari.md)
+- [Server Configuration](../CONFIGURATION.md)
+- [Backup and Restore](../data/backup-and-restore.md)
+- [Remote Access](../REMOTE_ACCESS.md)

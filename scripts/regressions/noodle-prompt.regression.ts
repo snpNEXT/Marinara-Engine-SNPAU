@@ -88,7 +88,7 @@ const makeAccount = (id: string): NoodleAccount => ({
   settings: {
     profile: {},
     social: {},
-    scheduler: {},
+    scheduler: { autoPosting: { enabled: false, intensity: 1, nextRunAt: null } },
     privacy: { access: { hiddenFromAccountIds: [], subscriptionIncludesPpv: false } },
   },
   visibility: "public",

@@ -72,6 +72,7 @@ import {
   type Message,
   isInstalledCapabilityReady,
 } from "@marinara-engine/shared";
+import { useTranslation } from "react-i18next";
 
 interface Attachment {
   type: string;
@@ -324,6 +325,7 @@ export function ConversationInput({
   onIllustrate,
   onGenerateSelfie,
 }: ConversationInputProps) {
+  const { t } = useTranslation();
   const [hasInput, setHasInput] = useState(false);
   const [completions, setCompletions] = useState<ConversationSlashCompletion[]>([]);
   const [selectedCompletion, setSelectedCompletion] = useState(0);
@@ -449,11 +451,15 @@ export function ConversationInput({
     [activeChatCharacters, characterNames],
   );
   const inputPlaceholder = useMemo(() => {
-    if (isMobileComposerViewport) return "Message… /cmds";
-    if (activeCharacterNames.length > 1 && chatName) return `Message ${chatName}, / for commands`;
-    if (activeCharacterNames.length > 0) return `Message @${activeCharacterNames[0]}, / for commands`;
-    return "Message...";
-  }, [activeCharacterNames, chatName, isMobileComposerViewport]);
+    if (isMobileComposerViewport) return t("chat.input.mobile.message");
+    if (activeCharacterNames.length > 1 && chatName) {
+      return t("chat.input.messageCharacters", { names: chatName });
+    }
+    if (activeCharacterNames.length > 0) {
+      return t("chat.input.messageCharacters", { names: `@${activeCharacterNames[0]}` });
+    }
+    return t("chat.input.message");
+  }, [activeCharacterNames, chatName, isMobileComposerViewport, t]);
 
   // Read from the existing infinite-message cache so an empty Send can retry
   // after a failed generation without adding a second user message.
@@ -496,12 +502,12 @@ export function ConversationInput({
   const canSubmit = hasInput || attachments.length > 0 || canRetry;
   const showRetrySendState = canRetry && !hasInput && attachments.length === 0;
   const sendButtonTitle = isActuallyGenerating
-    ? "Stop generating"
+    ? t("chat.input.stopGenerating")
     : isSendBlocked
-      ? "Wait for agents to finish"
+      ? t("chat.input.waitForAgents")
       : showRetrySendState
-        ? "Retry generation"
-        : "Send";
+        ? t("chat.input.retryGeneration")
+        : t("chat.input.send");
 
   const syncInputState = useCallback(
     (value: string) => {
@@ -1025,7 +1031,7 @@ export function ConversationInput({
     if (chatMeta.translateInput && message.trim()) {
       try {
         const { translateText } = await import("../../lib/translate-text");
-        const translated = await translateText(message);
+        const translated = await translateText(message, "input");
         if (translated.trim()) message = translated;
       } catch {
         toast.error("Failed to translate message — sending original");
@@ -1234,7 +1240,7 @@ export function ConversationInput({
     if (chatMeta.translateInput && message.trim()) {
       try {
         const { translateText } = await import("../../lib/translate-text");
-        const translated = await translateText(message);
+        const translated = await translateText(message, "input");
         if (translated.trim()) message = translated;
       } catch {
         toast.error("Failed to translate message; posting original");
@@ -1884,9 +1890,9 @@ export function ConversationInput({
             getChatInputShellClass({ dragging: false, hasContent: false, layout: "conversation" }),
             "min-h-10 w-full justify-start text-left text-sm text-foreground/55",
           )}
-          aria-label="Show message input"
+          aria-label={t("chat.input.show")}
         >
-          <span className="truncate">Message… /cmds</span>
+          <span className="truncate">{t("chat.input.mobile.message")}</span>
         </button>
       </div>
     );
@@ -2082,7 +2088,7 @@ export function ConversationInput({
               ? "bg-foreground/10 text-foreground/75 ring-1 ring-foreground/20"
               : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
           )}
-          title="Attach file"
+          title={t("chat.input.attachFiles")}
         >
           <Paperclip size="1rem" />
         </button>
@@ -2131,17 +2137,17 @@ export function ConversationInput({
             )}
             title={
               mobilePickerOpen
-                ? "Show keyboard"
+                ? t("chat.input.showKeyboard")
                 : showMobileToolsTab
-                  ? "Emoji, GIFs, stickers & tools"
-                  : "Emoji, GIFs & stickers"
+                  ? t("chat.input.mediaAndTools")
+                  : t("chat.input.media")
             }
             aria-label={
               mobilePickerOpen
-                ? "Show keyboard"
+                ? t("chat.input.showKeyboard")
                 : showMobileToolsTab
-                  ? "Emoji, GIFs, stickers, and tools"
-                  : "Emoji, GIFs and stickers"
+                  ? t("chat.input.mediaAndTools")
+                  : t("chat.input.media")
             }
           >
             {mobilePickerOpen ? <Keyboard size="1.25rem" /> : <Smile size="1.25rem" />}
@@ -2159,8 +2165,8 @@ export function ConversationInput({
                   ? "bg-foreground/10 text-foreground/75 ring-1 ring-foreground/20"
                   : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
               )}
-              title={showMobileToolsTab ? "Emoji, GIFs, stickers & tools" : "Emoji, GIFs & stickers"}
-              aria-label={showMobileToolsTab ? "Emoji, GIFs, stickers, and tools" : "Emoji, GIFs and stickers"}
+              title={t(showMobileToolsTab ? "chat.input.mediaAndTools" : "chat.input.media")}
+              aria-label={t(showMobileToolsTab ? "chat.input.mediaAndTools" : "chat.input.media")}
               aria-expanded={mobilePickerOpen}
             >
               <Smile size="1.25rem" />
@@ -2191,7 +2197,7 @@ export function ConversationInput({
                   ? "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70"
                   : "text-foreground/25",
               )}
-              title="Translate draft"
+              title={t("chat.input.translateDraft")}
             >
               {isTranslatingDraft ? <Loader2 size="1rem" className="animate-spin" /> : <Languages size="1rem" />}
             </button>

@@ -2328,12 +2328,16 @@ export class OpenAIProvider extends BaseLLMProvider {
             }
 
             case "response.output_item.added": {
-              // A new output item appeared — could be a function_call
+              // A new output item appeared — could be a function_call. Key the
+              // accumulator by the output item id: the argument delta/done
+              // events below reference the item via item_id, not call_id.
               const item = parsed.item as Record<string, unknown> | undefined;
               if (item?.type === "function_call") {
-                const callId = (item.call_id ?? item.id) as string;
-                fnCallArgs.set(callId, {
-                  id: callId,
+                const itemId = (item.id ?? item.call_id) as string;
+                fnCallArgs.set(itemId, {
+                  // Preserve call_id as the tool-call id downstream needs to
+                  // reference in function_call_output.
+                  id: ((item.call_id ?? item.id) as string) ?? "",
                   name: (item.name as string) ?? "",
                   arguments: (item.arguments as string) ?? "",
                 });
@@ -2342,23 +2346,23 @@ export class OpenAIProvider extends BaseLLMProvider {
             }
 
             case "response.function_call_arguments.delta": {
-              const callId = parsed.call_id as string | undefined;
+              const itemId = (parsed.item_id ?? parsed.call_id) as string | undefined;
               const delta = parsed.delta as string | undefined;
-              if (callId && delta) {
-                const entry = fnCallArgs.get(callId);
+              if (itemId && delta) {
+                const entry = fnCallArgs.get(itemId);
                 if (entry) entry.arguments += delta;
               }
               break;
             }
 
             case "response.function_call_arguments.done": {
-              const callId = parsed.call_id as string | undefined;
-              if (callId) {
-                const entry = fnCallArgs.get(callId);
+              const itemId = (parsed.item_id ?? parsed.call_id) as string | undefined;
+              if (itemId) {
+                const entry = fnCallArgs.get(itemId);
                 if (entry) {
                   // Overwrite with the final arguments if provided
                   const args = parsed.arguments as string | undefined;
-                  if (args) entry.arguments = args;
+                  if (typeof args === "string" && args) entry.arguments = args;
                 }
               }
               break;
@@ -2368,10 +2372,10 @@ export class OpenAIProvider extends BaseLLMProvider {
               // Finalize function_call items
               const item = parsed.item as Record<string, unknown> | undefined;
               if (item?.type === "function_call") {
-                const callId = ((item.call_id ?? item.id) as string) ?? "";
-                const entry = fnCallArgs.get(callId);
+                const itemId = ((item.id ?? item.call_id) as string) ?? "";
+                const entry = fnCallArgs.get(itemId);
                 functionCalls.push({
-                  id: callId,
+                  id: entry?.id ?? ((item.call_id ?? item.id) as string) ?? "",
                   type: "function",
                   function: {
                     name: entry?.name ?? (item.name as string) ?? "",

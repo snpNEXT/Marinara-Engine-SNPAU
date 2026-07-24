@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // Game: Setup Wizard (initial game setup modal)
 // ──────────────────────────────────────────────
-import { useState, useMemo, useCallback, useEffect, useRef, type ChangeEvent } from "react";
+import { lazy, Suspense, useState, useMemo, useCallback, useEffect, useRef, type ChangeEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { toast } from "sonner";
@@ -29,6 +29,7 @@ import {
   FolderOpen,
   FileUp,
   CheckCircle2,
+  ChevronDown,
 } from "lucide-react";
 import {
   ANIME_GAME_PROMPT_TEMPLATE_ID,
@@ -83,6 +84,10 @@ import { useCapabilityAgentRegistry } from "../../hooks/use-capability-packages"
 import { useGameAssetStore } from "../../stores/game-asset.store";
 import { useUIStore } from "../../stores/ui.store";
 import { parseGameSetupShareFileJson, resolveGameSetupImport } from "../../lib/game-setup-share";
+
+const GameAssetsBrowserView = lazy(() =>
+  import("../game-assets/GameAssetsBrowserView").then((module) => ({ default: module.GameAssetsBrowserView })),
+);
 
 interface GameSetupWizardProps {
   onComplete: (
@@ -473,6 +478,7 @@ export function GameSetupWizard({
   const [gamePresentation, setGamePresentation] = useState<"standard" | "anime">("standard");
   const [language, setLanguage] = useState("English");
   const [startMuted, setStartMuted] = useState(false);
+  const [adjustGameAssetsOpen, setAdjustGameAssetsOpen] = useState(false);
   const [draftSpatialMap, setDraftSpatialMap] = useState(false);
   const [spatialMapDraftSize, setSpatialMapDraftSize] = useState<SpatialMapDraftSize>("medium");
   const [spatialMapGroundingMode, setSpatialMapGroundingMode] = useState<SpatialMapGroundingMode>("setup");
@@ -1176,7 +1182,7 @@ export function GameSetupWizard({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -12, scale: 0.97 }}
             transition={{ duration: 0.2, ease: "easeOut" }}
-            className={GAME_SETUP_WIZARD_PANEL_CLASS}
+            className={cn(GAME_SETUP_WIZARD_PANEL_CLASS, adjustGameAssetsOpen && "max-w-5xl")}
           >
             <div className={cn(NEUTRAL_PANEL_HEADER, "flex shrink-0 items-center justify-between")}>
               <h3 id="game-setup-wizard-title" className={NEUTRAL_PANEL_TITLE}>
@@ -2755,6 +2761,52 @@ export function GameSetupWizard({
                   />
                 </div>
               </button>
+            </div>
+
+            <div className="rounded-lg border border-[var(--border)] bg-[var(--card)] p-3">
+              <button
+                type="button"
+                onClick={() => setAdjustGameAssetsOpen((open) => !open)}
+                aria-expanded={adjustGameAssetsOpen}
+                className="flex w-full items-center justify-between gap-3 text-left"
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  <FolderOpen size={14} className="shrink-0 text-[var(--primary)]" />
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-[var(--foreground)]">
+                      Adjust Game Assets for this Game
+                    </p>
+                    <p className="text-[0.55rem] leading-relaxed text-[var(--muted-foreground)]">
+                      Choose which asset folders this game may use. All folders are included by default.
+                    </p>
+                  </div>
+                </div>
+                <ChevronDown
+                  size={14}
+                  className={cn(
+                    "shrink-0 text-[var(--muted-foreground)] transition-transform",
+                    adjustGameAssetsOpen && "rotate-180",
+                  )}
+                />
+              </button>
+              {adjustGameAssetsOpen && (
+                <div className="mt-3 h-[min(60dvh,30rem)] min-h-80 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--background)]">
+                  <Suspense
+                    fallback={
+                      <div className="flex h-full items-center justify-center gap-2 text-xs text-[var(--muted-foreground)]">
+                        <Loader2 size={14} className="animate-spin" />
+                        Loading assets…
+                      </div>
+                    }
+                  >
+                    <GameAssetsBrowserView
+                      embedded
+                      selectFoldersByDefault
+                      onClose={() => setAdjustGameAssetsOpen(false)}
+                    />
+                  </Suspense>
+                </div>
+              )}
             </div>
           </>
         )}

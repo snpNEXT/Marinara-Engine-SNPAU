@@ -6,6 +6,10 @@ import { normalizeTextForMatch, splitGroupedSegmentDisplayLines } from "@marinar
 import { cn } from "../../lib/utils";
 import { PendingTypingDots } from "./PendingTypingDots";
 import {
+  MESSAGE_SELECTION_CHECKBOX_CLASS,
+  MESSAGE_SELECTION_CHECKBOX_SELECTED_CLASS,
+} from "./message-selection-styles";
+import {
   HiddenFromAIConversationSummary,
   DiceMessageContent,
   MessageContent,
@@ -74,7 +78,7 @@ export function ConversationMessageBubble({ ctx }: { ctx: MessageRenderContext }
   return (
     <>
       {/* Inner row: avatar + body — swipes live outside so avatar never drifts */}
-      <div className={cn("flex items-end gap-2", isUser ? "justify-end" : "justify-start")}>
+      <div className={cn("flex w-full min-w-0 max-w-full items-end gap-2", isUser ? "justify-end" : "justify-start")}>
         {/* Multi-select checkbox */}
         {multiSelectMode && (
           <div className="flex items-center flex-shrink-0">
@@ -95,13 +99,14 @@ export function ConversationMessageBubble({ ctx }: { ctx: MessageRenderContext }
                 }
               }}
               className={cn(
-                "h-5 w-5 rounded border-2 flex items-center justify-center transition-colors cursor-pointer",
-                isSelected
-                  ? "border-[var(--destructive)] bg-[var(--destructive)]"
-                  : "border-[var(--muted-foreground)]/40 bg-[var(--secondary)]",
+                MESSAGE_SELECTION_CHECKBOX_CLASS,
+                "flex items-center justify-center",
+                isSelected && MESSAGE_SELECTION_CHECKBOX_SELECTED_CLASS,
               )}
             >
-              {isSelected && <span className="text-white text-xs font-bold">✓</span>}
+              {isSelected && (
+                <span className="text-xs font-bold text-[var(--marinara-chat-chrome-panel-bg)]">✓</span>
+              )}
             </button>
           </div>
         )}
@@ -161,7 +166,7 @@ export function ConversationMessageBubble({ ctx }: { ctx: MessageRenderContext }
         {/* Body column — header + bubble + attachments (no swipes) */}
         <div
           className={cn(
-            "mari-message-body min-w-0 flex max-w-[72%] flex-none flex-col",
+            "mari-message-body min-w-0 flex max-w-[72%] flex-initial flex-col",
             isUser ? "items-end" : "items-start",
           )}
         >

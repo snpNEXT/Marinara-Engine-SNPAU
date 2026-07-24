@@ -72,9 +72,9 @@ Marinara supports many providers. You pick one per connection.
 
 For chat and roleplay text, the choices are **OpenAI**, **OpenAI (ChatGPT)**, **Anthropic**, **Claude (Subscription)**, **Grok CLI (Subscription)**, **Google Gemini**, **Google Vertex AI**, **Mistral**, **Cohere**, **OpenRouter**, **NanoGPT**, **xAI / Grok**, and **Custom (OAI-Compatible)** for local or self-hosted models such as Ollama, LM Studio, and KoboldCpp.
 
-For image generation, the choices include **OpenAI (DALL-E)**, **Stability AI**, **Together AI**, **NovelAI**, **OpenRouter Images**, **xAI / Grok Imagine**, **Venice.ai**, **Pollinations**, **Stable Horde**, **SD Web UI (AUTOMATIC1111 / Forge)**, **ComfyUI**, **RunPod Serverless (ComfyUI)**, **Draw Things**, **NanoGPT**, and **Block Entropy**.
+For image generation, the choices include **OpenAI (DALL-E)**, **Stability AI**, **Together AI**, **NovelAI**, **OpenRouter Images**, **xAI / Grok Imagine**, **Venice.ai**, **Atlas Cloud**, **Pollinations**, **Stable Horde**, **SD Web UI (AUTOMATIC1111 / Forge)**, **ComfyUI**, **RunPod Serverless (ComfyUI)**, **Draw Things**, **NanoGPT**, and **Block Entropy**.
 
-For video generation, the choices are **Google AI Studio**, **xAI Imagine**, **OpenRouter Video**, **Seedance 2.0**, and local **ComfyUI** API-format workflows.
+For video generation, the choices are **Google AI Studio**, **xAI Imagine**, **OpenRouter Video**, **Atlas Cloud**, **Seedance 2.0**, and local **ComfyUI** API-format workflows.
 
 You can save many connections at once and assign a different one to each chat. See [Connecting to an AI Provider](connections/connecting-to-a-provider.md).
 
@@ -106,7 +106,7 @@ For the full feature, see [Lorebooks](lorebooks/overview.md).
 
 ## What is an agent?
 
-An **agent** is an optional AI helper that runs during a chat to do a focused job. Examples include tracking the current scene, watching writing quality, adding maps or calls, or running a Conversation table game. Fresh installations have no optional agents. Open the **Agents** panel, click **Download Agents**, read an item's details, and install it. Then enable compatible agents per chat in **Chat Settings**. Installed official packages automatically update to the newest compatible catalog version whenever the Marinara server starts; if the host is offline or verification fails, the installed version keeps working. The catalog also handles complete package removal. See [Agents](agents/agents-overview.md) and the public [Marinara-Agents repository](https://github.com/Pasta-Devs/Marinara-Agents).
+An **agent** is an optional AI helper that runs during a chat to do a focused job. Examples include tracking the current scene, watching writing quality, adding maps or calls, or running a Conversation table game. Fresh installations have no optional agents. Open the **Agents** panel, click **Download Agents**, read an item's details, and install it. Then enable compatible agents per chat in **Chat Settings**. When an installed official package has a compatible update, Marinara asks before downloading it. Choosing **No** keeps the current version and leaves **Update** available in Download Agents for later. If the host is offline or verification fails, the installed version keeps working. The catalog also handles complete package removal. See [Agents](agents/agents-overview.md) and the public [Marinara-Agents repository](https://github.com/Pasta-Devs/Marinara-Agents).
 
 ## How do I set up Noodle?
 
@@ -129,6 +129,14 @@ Open **Settings**, go to the **Advanced** tab, find the **Backup & Export** sect
 
 Remember that a backup does not include your API keys, so re-enter them after you restore. For the full guide, see [Backing Up and Restoring](data/backup-and-restore.md).
 
+## How do extensions work, and can I import third-party code?
+
+By default, only Professor Mari can create a Personal Extension draft for you. It starts disabled, and you must inspect its code and approve the exact SHA-256 hash before it runs.
+
+Browser code runs in a dedicated Worker inside an opaque-origin iframe. Server code runs in a separate OS-sandboxed process on supported macOS and Linux hosts. Both runtimes receive only narrow logging, private-storage, timer, and cleanup capabilities.
+
+Third-party imports are hidden by default. The host operator must set `ENABLE_EXTERNAL_EXTENSIONS=true` in `.env`, then the user must accept the warning under **Settings → Advanced → Danger Zone**. Until both gates are open, external records—including manually stored and profile-imported records—do not appear, cannot be approved, and cannot execute. See [Personal Extensions](extending/personal-extensions.md).
+
 ## Where is my data stored?
 
 Everything lives on the computer running Marinara, inside the `data` folder in your install. Your characters, chats, personas, lorebooks, presets, and settings are all saved there. Nothing is stored in the cloud. See [Where Your Data Is Stored](data/where-data-is-stored.md).
@@ -144,6 +152,8 @@ Professor Mari is the built-in assistant on the Home screen. Open her with the *
 She also shows quick-reply suggestion chips above the input to guide multi-step creation and edits without making you type every detail by hand.
 
 When she changes your data, a review card appears with **Keep** and **Restore** buttons, so you can undo anything you do not want. She is a helper, not a replacement for these guides when something is version-specific. For the full list of what she can do, see [Professor Mari](home/professor-mari.md).
+
+Professor Mari can still edit ordinary Marinara source files. Dependency files, launchers, installers, and CI workflows wait for an explicit review instead. If her change needs a public npm library, Marinara shows the exact resolved version and registry integrity before installing it with lifecycle scripts disabled.
 
 Note: on an ordinary remote address, Professor Mari's data-changing actions need both Basic Auth and an admin secret. Trusted or allowlisted network routes can use the bypasses described in [Remote Access](REMOTE_ACCESS.md).
 

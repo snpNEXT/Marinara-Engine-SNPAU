@@ -92,6 +92,7 @@ import { lorebookEntryPassesContextFilters, type GameStateForScanning } from "..
 import { injectAtDepth } from "../services/lorebook/prompt-injector.js";
 import { resolveChatSummaryConnection } from "../services/chat-summary/connection-resolution.js";
 import { resolveConnectionImageDefaults } from "../services/image/image-generation-defaults.js";
+import { generateIllustratorImageVariants } from "../services/image/illustrator-image-variants.js";
 import {
   loadImageGenerationUserSettings,
   resolveIllustratorImageSize,
@@ -8410,86 +8411,102 @@ export async function generateRoutes(app: FastifyInstance) {
                         compiledPrompt.negativePrompt,
                       );
 
-                      const imageResult = await generateImage(imgModel, imgBaseUrl, imgApiKey, imgServiceHint, {
-                        prompt: compiledPrompt.prompt,
-                        negativePrompt: finalNegativePrompt || undefined,
-                        model: imgModel,
-                        width: imgWidth,
-                        height: imgHeight,
-                        imageEndpointId: imgConnFull.imageEndpointId || undefined,
-                        comfyWorkflow: imgConnFull.comfyuiWorkflow || undefined,
-                        imageDefaults,
-                        referenceImages: illustratorRefImages,
-                        debugMode: input.debugMode,
-                        fallback: imageFallback,
-                        onFallback,
+                      const imageResults = await generateIllustratorImageVariants({
+                        count: chatMeta.illustratorImagesPerGeneration,
+                        generate: () =>
+                          generateImage(imgModel, imgBaseUrl, imgApiKey, imgServiceHint, {
+                            prompt: compiledPrompt.prompt,
+                            negativePrompt: finalNegativePrompt || undefined,
+                            model: imgModel,
+                            width: imgWidth,
+                            height: imgHeight,
+                            imageEndpointId: imgConnFull.imageEndpointId || undefined,
+                            comfyWorkflow: imgConnFull.comfyuiWorkflow || undefined,
+                            imageDefaults,
+                            referenceImages: illustratorRefImages,
+                            debugMode: input.debugMode,
+                            fallback: imageFallback,
+                            onFallback,
+                          }),
+                        onVariantError: (error, index) =>
+                          logger.warn(error, "[illustrator] Image variant %d failed", index + 1),
                       });
 
-                      // Save to disk
-                      const filePath = saveImageToDisk(input.chatId, imageResult.base64, imageResult.ext);
+                      for (const [variantIndex, imageResult] of imageResults.entries()) {
+                        // Save to disk
+                        const filePath = saveImageToDisk(input.chatId, imageResult.base64, imageResult.ext);
 
-                      // Save to gallery
-                      const galleryEntry = await galleryStore.create({
-                        chatId: input.chatId,
-                        filePath,
-                        prompt: fullPrompt,
-                        provider: "image_generation",
-                        model: imgModel || "unknown",
-                        width: imgWidth,
-                        height: imgHeight,
-                      });
-                      await persistGeneratedImageToEntityGalleries({
-                        sourceFilePath: filePath,
-                        characterIds: referenceResolution.characterIds,
-                        personaIds: referenceResolution.personaId ? [referenceResolution.personaId] : [],
-                        characterGallery,
-                        personaGallery,
-                        prompt: fullPrompt,
-                        provider: imgConnFull.provider ?? "image_generation",
-                        model: imgModel || "unknown",
-                        width: imgWidth,
-                        height: imgHeight,
-                      });
+                        // A fallback connection may have rendered this variant;
+                        // record the connection that actually produced it.
+                        const effectiveImageProvider =
+                          imageResult.effectiveConnection?.provider ?? imgConnFull.provider ?? "image_generation";
+                        const effectiveImageModel = imageResult.effectiveConnection?.model || imgModel || "unknown";
 
-                      // Attach to the assistant message + its specific swipe row
-                      const filename = filePath.split("/").pop()!;
-                      const imageUrl = `/api/gallery/file/${input.chatId}/${encodeURIComponent(filename)}`;
-                      if (messageId) {
-                        const attachment = {
-                          type: "image",
-                          url: imageUrl,
-                          filename: `illustration.${imageResult.ext}`,
+                        // Save to gallery
+                        const galleryEntry = await galleryStore.create({
+                          chatId: input.chatId,
+                          filePath,
                           prompt: fullPrompt,
-                          galleryId: (galleryEntry as any)?.id,
-                        };
+                          provider: effectiveImageProvider,
+                          model: effectiveImageModel,
+                          width: imgWidth,
+                          height: imgHeight,
+                        });
+                        await persistGeneratedImageToEntityGalleries({
+                          sourceFilePath: filePath,
+                          characterIds: referenceResolution.characterIds,
+                          personaIds: referenceResolution.personaId ? [referenceResolution.personaId] : [],
+                          characterGallery,
+                          personaGallery,
+                          prompt: fullPrompt,
+                          provider: effectiveImageProvider,
+                          model: effectiveImageModel,
+                          width: imgWidth,
+                          height: imgHeight,
+                        });
 
-                        // Always persist to the swipe row so the attachment survives
-                        // swipe switches even if the user has already navigated away.
-                        await chats.appendSwipeAttachment(messageId, targetSwipeIndex, attachment);
-
-                        // Also update the live message row if this swipe is still active,
-                        // so the SSE illustration event is immediately visible.
-                        const msgRow = await chats.getMessage(messageId);
-                        if (msgRow && (msgRow.activeSwipeIndex ?? 0) === targetSwipeIndex) {
-                          await chats.appendMessageAttachment(messageId, attachment);
-                        }
-                      }
-
-                      // Notify client
-                      reply.raw.write(
-                        `data: ${JSON.stringify({
-                          type: "illustration",
-                          data: {
-                            messageId,
-                            imageUrl,
+                        // Attach to the assistant message + its specific swipe row
+                        const filename = filePath.split("/").pop()!;
+                        const imageUrl = `/api/gallery/file/${input.chatId}/${encodeURIComponent(filename)}`;
+                        if (messageId) {
+                          const attachment = {
+                            type: "image",
+                            url: imageUrl,
+                            filename: `illustration_${variantIndex + 1}.${imageResult.ext}`,
                             prompt: fullPrompt,
-                            reason: illData.reason,
                             galleryId: (galleryEntry as any)?.id,
-                          },
-                        })}\n\n`,
-                      );
+                          };
+
+                          // Always persist to the swipe row so the attachment survives
+                          // swipe switches even if the user has already navigated away.
+                          await chats.appendSwipeAttachment(messageId, targetSwipeIndex, attachment);
+
+                          // Also update the live message row if this swipe is still active,
+                          // so the SSE illustration event is immediately visible.
+                          const msgRow = await chats.getMessage(messageId);
+                          if (msgRow && (msgRow.activeSwipeIndex ?? 0) === targetSwipeIndex) {
+                            await chats.appendMessageAttachment(messageId, attachment);
+                          }
+                        }
+
+                        // Notify client
+                        reply.raw.write(
+                          `data: ${JSON.stringify({
+                            type: "illustration",
+                            data: {
+                              messageId,
+                              imageUrl,
+                              prompt: fullPrompt,
+                              reason: illData.reason,
+                              galleryId: (galleryEntry as any)?.id,
+                            },
+                          })}\n\n`,
+                        );
+                      }
                       logger.info(
-                        `[illustrator] Generated illustration: ${(illData.reason as string)?.slice(0, 80) ?? imagePrompt.slice(0, 80)}...`,
+                        "[illustrator] Generated %d illustration(s): %s...",
+                        imageResults.length,
+                        (illData.reason as string)?.slice(0, 80) ?? imagePrompt.slice(0, 80),
                       );
                       if (resultMessageId) {
                         try {

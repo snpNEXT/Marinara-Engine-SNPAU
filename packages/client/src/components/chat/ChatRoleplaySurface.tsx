@@ -1,4 +1,5 @@
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import {
   Suspense,
   lazy,
@@ -302,6 +303,7 @@ function StreamingIndicator({
   groupChatMode?: string;
   expressionAvatarResolver?: ExpressionAvatarResolver;
 }) {
+  const { t } = useTranslation();
   const streamBuffer = useThrottledStreamBuffer();
   const thinkingBuffer = useChatStore((s) => s.thinkingBuffer);
   const streamingCharacterId = useChatStore((s) => s.streamingCharacterId);
@@ -314,7 +316,7 @@ function StreamingIndicator({
           chatId: activeChatId,
           role: "assistant",
           characterId: streamingCharacterId ?? chatCharIds[0] ?? null,
-          content: streamBuffer || (thinkingBuffer ? "Thinking..." : ""),
+          content: streamBuffer || t("chat.message.thinking"),
           activeSwipeIndex: 0,
           extra: {
             displayText: null,
@@ -343,15 +345,18 @@ function RegeneratingMessageContent({
 }: {
   msg: MessageWithSwipes;
 } & Omit<ComponentProps<typeof ChatMessage>, "message" | "isStreaming">) {
+  const { t } = useTranslation();
   const streamBuffer = useThrottledStreamBuffer();
   const thinkingBuffer = useChatStore((s) => s.thinkingBuffer);
   // Strip old-swipe attachments so a previous illustration doesn't linger
-  // while the new swipe's text is streaming in.
+  // while the new swipe's text is streaming in. The same applies to old
+  // reasoning: expose the action only after this swipe receives its first
+  // reasoning chunk.
   const parsedExtra = typeof msg.extra === "string" ? JSON.parse(msg.extra) : (msg.extra ?? {});
-  const cleanExtra = { ...parsedExtra, attachments: null, thinking: thinkingBuffer || parsedExtra.thinking };
+  const cleanExtra = { ...parsedExtra, attachments: null, thinking: thinkingBuffer || null };
   return (
     <ChatMessage
-      message={{ ...msg, extra: cleanExtra, content: streamBuffer || (thinkingBuffer ? "Thinking..." : "") }}
+      message={{ ...msg, extra: cleanExtra, content: streamBuffer || t("chat.message.thinking") }}
       isStreaming
       {...rest}
     />

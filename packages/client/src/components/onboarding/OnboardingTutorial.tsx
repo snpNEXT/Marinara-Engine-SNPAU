@@ -6,6 +6,7 @@ import { useUIStore, type ChatModeShortcut } from "../../stores/ui.store";
 import { useTrackAchievement } from "../../hooks/use-achievements";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronRight } from "lucide-react";
+import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 
 // ─── Step definitions ─────────────────────────
 
@@ -395,6 +396,8 @@ function TourCardContent({
   onNext: () => void;
   onSkip: () => void;
 }) {
+  const localize = useLocalizedUiText();
+  const localizedBody = localize(currentStep.body);
   return (
     <>
       {/* Professor Mari sprite */}
@@ -412,12 +415,14 @@ function TourCardContent({
 
       {/* Header */}
       <div className="mb-3">
-        <h3 className="text-sm font-semibold text-[var(--marinara-chat-chrome-panel-title)]">{currentStep.title}</h3>
+        <h3 className="text-sm font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
+          {localize(currentStep.title)}
+        </h3>
       </div>
 
       {/* Body */}
       <p className="mb-4 break-words text-xs leading-relaxed text-[var(--marinara-chat-chrome-panel-muted)]">
-        {currentStep.body.split("\n").map((line, i, arr) => (
+        {localizedBody.split("\n").map((line, i, arr) => (
           <span key={i}>
             {line.split(/(\*\*[^*]+\*\*)/).map((part, j) =>
               part.startsWith("**") && part.endsWith("**") ? (
@@ -452,10 +457,10 @@ function TourCardContent({
       {/* Buttons */}
       <div className="flex items-center justify-between">
         <button onClick={onSkip} className={TUTORIAL_SECONDARY_BUTTON_CLASS}>
-          {step === 0 ? "Skip Tutorial" : "Skip"}
+          {localize(step === 0 ? "Skip Tutorial" : "Skip")}
         </button>
         <button onClick={onNext} className={TUTORIAL_PRIMARY_BUTTON_CLASS}>
-          {isLast ? "Get Started" : "Next"}
+          {localize(isLast ? "Get Started" : "Next")}
           {!isLast && <ChevronRight size="0.75rem" />}
         </button>
       </div>

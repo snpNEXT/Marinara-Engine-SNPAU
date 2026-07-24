@@ -28,6 +28,7 @@ export const noodleAccounts = fileTable(
 export const noodlePosts = fileTable("noodle_posts", {
   id: text("id").primaryKey(),
   authorAccountId: text("author_account_id").notNull(),
+  title: text("title"),
   content: text("content").notNull().default(""),
   imageUrl: text("image_url"),
   imagePrompt: text("image_prompt"),

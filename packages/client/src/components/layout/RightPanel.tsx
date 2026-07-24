@@ -2,9 +2,11 @@
 // Layout: Right Panel (polished with panel transitions)
 // ──────────────────────────────────────────────
 import { lazy, Suspense, type ComponentType, type LazyExoticComponent, type ReactNode } from "react";
-import { X, Users, BookOpen, FileText, Link, Sparkles, Settings, User, Bot } from "lucide-react";
+import { X, Users, BookOpen, FileText, Link, Sparkles, Settings, User, Bot, Puzzle } from "lucide-react";
 import { useUIStore } from "../../stores/ui.store";
 import { cn } from "../../lib/utils";
+import { usePersonalExtensionContributions } from "../../lib/personal-extension-contributions";
+import { PersonalExtensionContributionIcon } from "../extensions/PersonalExtensionContributionIcon";
 
 const CharactersPanel = lazy(() =>
   import("../panels/CharactersPanel").then((module) => ({ default: module.CharactersPanel })),
@@ -25,6 +27,9 @@ const SettingsPanel = lazy(() =>
 );
 const BotBrowserPanel = lazy(() =>
   import("../panels/BotBrowserPanel").then((module) => ({ default: module.BotBrowserPanel })),
+);
+const PersonalExtensionPanel = lazy(() =>
+  import("../panels/PersonalExtensionPanel").then((module) => ({ default: module.PersonalExtensionPanel })),
 );
 
 const PANEL_CONFIG: Record<string, { title: string; icon: ReactNode; gradient?: string; gradientClass?: string }> = {
@@ -48,6 +53,7 @@ const PANEL_CONFIG: Record<string, { title: string; icon: ReactNode; gradient?: 
   agents: { title: "Agents", icon: <Sparkles size="0.875rem" />, gradient: "from-violet-400 to-purple-500" },
   personas: { title: "Personas", icon: <User size="0.875rem" />, gradient: "from-emerald-400 to-teal-500" },
   settings: { title: "Settings", icon: <Settings size="0.875rem" />, gradient: "from-gray-400 to-gray-500" },
+  extensions: { title: "Extensions", icon: <Puzzle size="0.875rem" /> },
 };
 
 const PANELS: Record<string, LazyExoticComponent<ComponentType>> = {
@@ -59,6 +65,7 @@ const PANELS: Record<string, LazyExoticComponent<ComponentType>> = {
   agents: AgentsPanel,
   personas: PersonasPanel,
   settings: SettingsPanel,
+  extensions: PersonalExtensionPanel,
 };
 
 // Module-level set survives component remounts (e.g. mobile AnimatePresence unmount/remount)
@@ -71,12 +78,22 @@ function PanelFallback() {
 export function RightPanel() {
   const panel = useUIStore((s) => s.rightPanel);
   const close = useUIStore((s) => s.closeRightPanel);
+  const { contributions, activePanelKey } = usePersonalExtensionContributions();
 
   // Add synchronously so the current panel is in the set for this render.
   // Module-level Set is not React state, so mutating it during render is safe.
   mountedPanels.add(panel);
 
-  const config = PANEL_CONFIG[panel] ?? { title: "Panel", icon: null, gradient: "from-slate-400 to-slate-500" };
+  const activeExtensionPanel = contributions.find(
+    (contribution) => contribution.key === activePanelKey && contribution.kind === "panel",
+  );
+  const config: { title: string; icon: ReactNode; gradient?: string; gradientClass?: string } =
+    panel === "extensions" && activeExtensionPanel
+      ? {
+          title: activeExtensionPanel.label,
+          icon: <PersonalExtensionContributionIcon icon={activeExtensionPanel.icon} />,
+        }
+      : (PANEL_CONFIG[panel] ?? { title: "Panel", icon: null, gradient: "from-slate-400 to-slate-500" });
 
   return (
     <section

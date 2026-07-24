@@ -10,6 +10,7 @@ import { useChatStore } from "../../stores/chat.store";
 import { compareChatsByActivityDesc } from "../../lib/chat-recency";
 import { cn, getAvatarCropStyle, type AvatarCropValue } from "../../lib/utils";
 import type { Chat } from "@marinara-engine/shared";
+import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 
 const MODE_BADGE: Record<string, { icon: React.ReactNode; label: string; logoModeClass: string }> =
   {
@@ -46,6 +47,7 @@ function parseRecentChatCharacterIds(value: Chat["characterIds"]): string[] {
 }
 
 export function RecentChats() {
+  const localize = useLocalizedUiText();
   const { data: chats } = useChats();
   const setActiveChatId = useChatStore((s) => s.setActiveChatId);
 
@@ -81,7 +83,7 @@ export function RecentChats() {
     >
       {recentChats.length === 0 ? (
         <p className="rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-panel-bg)] px-3 py-1.5 text-xs text-[var(--marinara-chat-chrome-panel-muted)]">
-          No chats yet
+          {localize("No chats yet")}
         </p>
       ) : (
         <div className="w-full overflow-x-auto">
@@ -110,6 +112,7 @@ function RecentChatChip({
   charLookup: Map<string, { name: string; avatarUrl: string | null; avatarCrop?: AvatarCropValue | null }>;
   onClick: () => void;
 }) {
+  const localize = useLocalizedUiText();
   const mode = MODE_BADGE[chat.mode] ?? MODE_BADGE.conversation;
 
   const charIds = useMemo(() => parseRecentChatCharacterIds(chat.characterIds), [chat.characterIds]);
@@ -162,7 +165,7 @@ function RecentChatChip({
             "mari-chat-mode-badge absolute -top-0.5 -left-0.5 flex h-3 w-3 items-center justify-center rounded-full ring-1 ring-[var(--card)]",
             mode.logoModeClass,
           )}
-          title={mode.label}
+          title={localize(mode.label)}
         >
           {mode.icon}
         </div>

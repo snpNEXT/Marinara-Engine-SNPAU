@@ -712,6 +712,18 @@ export function useDeleteCharacterGalleryImage(characterId: string) {
   });
 }
 
+export function useSetCharacterGalleryImageAsAvatar(characterId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (imageId: string) => api.post(`/characters/${characterId}/gallery/${imageId}/avatar`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: characterKeys.detail(characterId) });
+      qc.invalidateQueries({ queryKey: characterKeys.list() });
+      qc.invalidateQueries({ queryKey: characterKeys.listWithBuiltIns() });
+    },
+  });
+}
+
 export function useTagCharacterGalleryImage(characterId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -843,6 +855,18 @@ export function useDeletePersonaGalleryImage(personaId: string) {
     mutationFn: (imageId: string) => api.delete(`/characters/personas/${personaId}/gallery/${imageId}`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: characterKeys.personaGallery(personaId) });
+    },
+  });
+}
+
+export function useSetPersonaGalleryImageAsAvatar(personaId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (imageId: string) => api.post(`/characters/personas/${personaId}/gallery/${imageId}/avatar`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: characterKeys.personaDetail(personaId) });
+      qc.invalidateQueries({ queryKey: characterKeys.personas });
+      qc.invalidateQueries({ queryKey: characterKeys.personaActive() });
     },
   });
 }

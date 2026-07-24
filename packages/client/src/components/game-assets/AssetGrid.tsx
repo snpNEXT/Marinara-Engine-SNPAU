@@ -151,7 +151,7 @@ export function AssetGrid({
                 className={
                   "group relative flex flex-col items-center gap-2 rounded-xl border bg-[var(--card)] p-[clamp(0.5rem,1.3vmin,0.875rem)] transition-all hover:border-[var(--foreground)]/25 hover:shadow-sm " +
                   (isSelected
-                    ? "border-[var(--foreground)]/30 ring-2 ring-[var(--foreground)]/20"
+                    ? "border-[var(--primary)]/45 ring-2 ring-[var(--primary)]/20"
                     : "border-[var(--border)]")
                 }
               >
@@ -165,7 +165,7 @@ export function AssetGrid({
                       type="checkbox"
                       checked={isSelected}
                       onChange={() => onToggleSelect(node)}
-                      className="h-3.5 w-3.5 accent-[var(--foreground)]"
+                      className="h-3.5 w-3.5 accent-[var(--primary)]"
                     />
                   </label>
                 )}
@@ -179,8 +179,8 @@ export function AssetGrid({
                     className={
                       "absolute left-1.5 top-1.5 z-10 flex h-6 w-6 items-center justify-center rounded-full border shadow-sm transition-colors " +
                       (folderSelectionStatus === "excluded"
-                        ? "border-[var(--border)] bg-[var(--background)] text-[var(--muted-foreground)] hover:border-[var(--foreground)]/30"
-                        : "border-[var(--foreground)]/25 bg-[var(--foreground)]/10 text-[var(--foreground)] hover:bg-[var(--foreground)]/15")
+                        ? "border-[var(--border)] bg-[var(--background)] text-[var(--muted-foreground)] hover:border-[var(--primary)]/40"
+                        : "border-[var(--primary)]/35 bg-[var(--primary)]/10 text-[var(--primary)] hover:bg-[var(--primary)]/15")
                     }
                     title="Select assets for this game"
                     aria-label={`Select ${node.name} assets for this game`}
@@ -260,7 +260,7 @@ export function AssetGrid({
             }}
             className={
               `group grid ${gridColsClass} items-center gap-3 rounded-lg px-3 py-2 transition-colors ` +
-              (isSelected ? "bg-[var(--foreground)]/10" : "hover:bg-[var(--accent)]")
+              (isSelected ? "bg-[var(--primary)]/10" : "hover:bg-[var(--accent)]")
             }
           >
             {/* Checkbox — files only */}
@@ -270,7 +270,7 @@ export function AssetGrid({
                   type="checkbox"
                   checked={isSelected}
                   onChange={() => onToggleSelect(node)}
-                  className="h-3.5 w-3.5 rounded border-[var(--border)] accent-[var(--foreground)]"
+                  className="h-3.5 w-3.5 rounded border-[var(--border)] accent-[var(--primary)]"
                 />
               )}
               {folderSelectionStatus && (
@@ -283,8 +283,8 @@ export function AssetGrid({
                   className={
                     "flex h-5 w-5 items-center justify-center rounded-full border transition-colors " +
                     (folderSelectionStatus === "excluded"
-                      ? "border-[var(--border)] text-[var(--muted-foreground)] hover:border-[var(--foreground)]/30"
-                      : "border-[var(--foreground)]/25 bg-[var(--foreground)]/10 text-[var(--foreground)] hover:bg-[var(--foreground)]/15")
+                      ? "border-[var(--border)] text-[var(--muted-foreground)] hover:border-[var(--primary)]/40"
+                      : "border-[var(--primary)]/35 bg-[var(--primary)]/10 text-[var(--primary)] hover:bg-[var(--primary)]/15")
                   }
                   title="Select assets for this game"
                   aria-label={`Select ${node.name} assets for this game`}

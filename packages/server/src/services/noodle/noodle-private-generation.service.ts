@@ -1,12 +1,13 @@
 import {
-  createNoodlePoll,
+  NOODLE_PRIVATE_POST_CONTENT_MAX_LENGTH,
+  NOODLE_PRIVATE_POST_TITLE_MAX_LENGTH,
   noodleGeneratedPrivatePostSchema,
   type APIProvider,
   type NoodleAccount,
   type NoodleIdentityDisclosure,
-  type NoodlePost,
   type NoodlePrivateGenerationRequest,
   type NoodleStageProfileInput,
+  type NoodlerManagedPost,
 } from "@marinara-engine/shared";
 import { isDebugAgentsEnabled } from "../../config/runtime-config.js";
 import type { DB } from "../../db/connection.js";
@@ -20,20 +21,16 @@ import type { ChatMessage } from "../llm/base-provider.js";
 import { createLLMProvider } from "../llm/provider-registry.js";
 import { createConnectionsStorage } from "../storage/connections.storage.js";
 import { createNoodleStorage } from "../storage/noodle.storage.js";
-import { normalizeNoodleImagePrompt } from "./noodle-image-prompt.js";
 import { formatNoodleMessagesForLog } from "./noodle-generation-log.js";
 import { noodleResponseFormat } from "./noodle-response-format.js";
 
 type GenerationConnection = NonNullable<Awaited<ReturnType<ReturnType<typeof createConnectionsStorage>["getWithKey"]>>>;
 
 export type PrivatePostGenerationInput = {
+  account: NoodleAccount;
   request: NoodlePrivateGenerationRequest;
   connection: GenerationConnection;
 };
-
-export type PrivatePostGenerationResult =
-  | { ok: true; post: NoodlePost }
-  | { ok: false; error: "private_account_not_found"; message: string };
 
 const PRIVATE_POST_MAX_TOKENS = 2048;
 
@@ -93,12 +90,25 @@ export function protectPrivateGeneratedIdentity(
     .trim();
 }
 
-function formatPrivatePostHistory(posts: NoodlePost[], protect: (value: string) => string): string {
+function protectBoundedPrivateGeneratedText(
+  value: string | null | undefined,
+  mode: NoodleIdentityDisclosure,
+  publicIdentity: PublicIdentity | null,
+  maxLength: number,
+): string | null {
+  const protectedValue = protectPrivateGeneratedIdentity(value, mode, publicIdentity);
+  if (!protectedValue || protectedValue.length <= maxLength) return protectedValue;
+  const lastCodeUnit = protectedValue.charCodeAt(maxLength - 1);
+  const safeEnd = lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff ? maxLength - 1 : maxLength;
+  return protectedValue.slice(0, safeEnd).trimEnd();
+}
+
+function formatPrivatePostHistory(posts: NoodlerManagedPost[], protect: (value: string) => string): string {
   if (posts.length === 0) return "No previous posts on this private page.";
   return posts
     .slice()
     .reverse()
-    .map((post) => `- ${post.createdAt}: ${protect(post.content)}`)
+    .map((post) => `- ${post.createdAt}: ${post.title ? `${protect(post.title)} — ` : ""}${protect(post.content)}`)
     .join("\n");
 }
 
@@ -107,7 +117,7 @@ export function buildPrivatePostMessages(input: {
   stagePersonality: string;
   disclosureMode: NoodleIdentityDisclosure;
   publicIdentity: PublicIdentity | null;
-  recentPosts: NoodlePost[];
+  recentPosts: NoodlerManagedPost[];
   request: Pick<NoodlePrivateGenerationRequest, "privatePostGuide" | "privateProjectWork">;
 }): ChatMessage[] {
   const protect = (value: string) =>
@@ -117,8 +127,8 @@ export function buildPrivatePostMessages(input: {
     "Write only as the supplied private account. Do not create other accounts, interactions, follows, or public timeline activity.",
     "Use the private stage profile as supplied.",
     identityInstruction(input.disclosureMode, input.publicIdentity),
-    "An optional imagePrompt must be a concrete visual description for this post, or null when no image fits.",
-    "Return one JSON object with content, imagePrompt, and poll. Set poll to null unless a two-to-four-option poll naturally fits.",
+    "Write a concise title and a body for the post.",
+    "Return one JSON object with title and content only. Do not create a poll or image prompt.",
     "Return JSON only. No prose outside the JSON object.",
   ].join("\n");
   const user = [
@@ -148,16 +158,9 @@ function parsePrivatePost(content: string) {
 export async function generatePrivatePost(
   db: DB,
   input: PrivatePostGenerationInput,
-): Promise<PrivatePostGenerationResult> {
+): Promise<NoodlerManagedPost> {
   const noodle = createNoodleStorage(db);
-  const account = await noodle.getPrivateAccountById(input.request.targetAccountId);
-  if (!account) {
-    return {
-      ok: false,
-      error: "private_account_not_found",
-      message: "NoodleR account not found.",
-    };
-  }
+  const { account } = input;
 
   const connections = createConnectionsStorage(db);
   const fallbackConnection = await connections.getFallbackForMain();
@@ -227,7 +230,7 @@ export async function generatePrivatePost(
       {
         role: "user",
         content:
-          "The response was not one valid private-post JSON object. Return exactly one object with content, imagePrompt, and poll. Return JSON only.",
+          "The response was not one valid private-post JSON object. Return exactly one object with title and content only. Do not include a poll or image prompt. Return JSON only.",
       },
     ];
     logDebugOverride(
@@ -241,21 +244,29 @@ export async function generatePrivatePost(
     generated = parsePrivatePost(content);
   }
 
-  const poll = generated.poll ? createNoodlePoll(generated.poll) : null;
-  const protectedContent = protectPrivateGeneratedIdentity(generated.content, disclosureMode, publicIdentity);
-  if (!protectedContent) throw new Error("Private generation returned no usable post content.");
+  const protectedGenerated = {
+    title: protectBoundedPrivateGeneratedText(
+      generated.title,
+      disclosureMode,
+      publicIdentity,
+      NOODLE_PRIVATE_POST_TITLE_MAX_LENGTH,
+    ),
+    content: protectBoundedPrivateGeneratedText(
+      generated.content,
+      disclosureMode,
+      publicIdentity,
+      NOODLE_PRIVATE_POST_CONTENT_MAX_LENGTH,
+    ),
+  };
+  if (!protectedGenerated.content) throw new Error("Private generation returned no usable post content.");
   const post = await noodle.createPrivatePost({
     authorAccountId: account.id,
-    content: protectedContent,
-    imageUrl: null,
-    imagePrompt: normalizeNoodleImagePrompt(
-      protectPrivateGeneratedIdentity(generated.imagePrompt, disclosureMode, publicIdentity),
-    ),
+    title: protectedGenerated.title,
+    content: protectedGenerated.content,
     source: "generated",
     access: input.request.access,
     ppvPrice: input.request.access === "ppv" ? (input.request.ppvPrice ?? null) : null,
-    metadata: { ...(poll ? { poll } : {}) },
   });
   if (!post) throw new Error("Failed to persist the generated private NoodleR post.");
-  return { ok: true, post };
+  return post;
 }
