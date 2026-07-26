@@ -41,21 +41,22 @@ The product experience therefore needs both agency and life:
 | 5 | Stage identity + guided generation (open/hinted/secret disclosure and identity-leak protection) | #3830 |
 | 6 | Subscriptions & access (subscriber posts, PPV unlocks, hidden-from, viewer-persona scoping) | #3856 |
 | 6b | Shell/feed parity and private interactions (real component reuse, pink theming, merged feed, access-gated interactions, coin popover, mode toggle) | #3888 |
+| 7 | Roleplay authoring and creator-profile parity (literal Post, optional Guide, titles, unified profiles, stage creation) | #3969 |
 
 ## Current status and intended order
 
 | Order | Work | Status | Dependency |
 | --- | --- | --- | --- |
 | 0 | Slice 6b stabilization and browser proof | Integrated Playwright proof passed with a Guided-output coverage gap; bare staging proof not isolated | Merged 1A–6b |
-| 1 | Slice 7 — roleplay authoring and creator-profile parity | Local branch contains the text-only Guided correction and unified profile implementation; focused validation and seeded browser proof pass; real-provider smoke remains; not merged | 4, 5, 6, 6b |
+| 1 | Slice 7 — roleplay authoring and creator-profile parity | Merged through #3969 | 4, 5, 6, 6b |
 | 2 | Slice 8 — toggleable text-only automatic creator posting and control plane | **Release-candidate requirement** | 7 authoring operation and stabilization gate |
-| 3 | Slice 8b — access-protected generated creator images | High-priority visual follow-up | 7 and 8 posting paths |
+| 3 | Slice 8b — access-protected generated creator images | Local branch implements image generation on the manual Guide and automatic-post paths (NoodleR-owned enablement + single-image-per-post `imagesEnabled` policy on the autoPosting subtree), identity-protected image prompts, private-media namespace served through an access-checked endpoint, prompt-review lease path, and delete cleanup; `pnpm check` + `regression:noodle` pass; real-provider image smoke remains; not merged | 7 and 8 posting paths |
 | 4 | Slice 9a — quiet synthetic fan engagement | Planned after auto-posting | 6, 6b, 8 |
 | 5 | Slice 9c — persona-first named superfans and non-economic visible moments | Roleplay-first, compute-bounded follow-up | 9a |
 | 6 | Slice 9d — opt-in real-character named fans | Planned later | 9c |
 | 7 | Slice 9b — support points and visible economic events | Optional low-priority fun addition | 9a; defer if scope grows |
 | 8 | Slice 9e — named-fan profiles and access-filtered history | Ambient identity follow-up | 9c; extended by 9d |
-| 9 | Slice 10 — composer media parity | Independent later polish | 6b |
+| 9 | Slice 10 — composer media parity | Implemented in draft PR #3981; automated gate passed, manual UI proof pending | 6b, 7 authoring UI |
 | 10 | Slice 11 — cross-mode integration | Blocked on product contract | manual/automatic posting paths |
 | 11 | Slice 12 — creator projects/milestones | Last | Explicit prerequisites to be defined |
 
@@ -702,13 +703,35 @@ batch and all targets must be revalidated transactionally.
 
 ## Slice 10 — Composer media parity
 
-Add user image upload and polls through real schema/storage/mutation plumbing, then
-enable the existing disabled composer controls last. This is independent polish and
-does not block automatic posting or fan engagement.
+Implementation status: draft PR #3981 contains the complete code and documentation
+path. `pnpm check`, the Noodle regression suite, the installer-artifact guard, and a
+focused upload/access/persistence/deletion proof pass. Final browser and usability
+verification remains manual.
 
-User-uploaded media remains distinct from Slice 8b's LLM-generated private images.
-Slice 10 reuses only shared media presentation/storage primitives and does not reopen
-Slice 8b's generation, disclosure, or prompt-review contract.
+Add one user-uploaded image and one optional two-to-four-option poll through real
+schema, private storage, mutation, projection, voting, and cleanup plumbing. Enable
+the existing disabled composer controls only after those paths work. The title remains
+optional; an image or poll may stand alone without a body. A user may deliberately add
+either attachment or both to one post.
+
+Literal **Post** publishes the user's title, body, image, poll, access, and PPV values.
+**Guide** may change title/body text only and must preserve the selected image, poll,
+access level, and PPV price. The private text model remains title/body-only; this slice
+must not re-enable generated image prompts or generated polls.
+
+Uploaded bytes use Slice 8b's post-owned NoodleR private-media namespace, never the
+public Noodle/global gallery. A draft keeps its local file or source URL in the client;
+the Post, Guide, or edit request promotes the bytes and persists the post's serving URL
+and `metadata.privateMediaPath` together. Replacement promotes the new file before the
+post update, removes the old file only after that update succeeds, and compensates the
+new file on failure. This deliberately avoids a second unattached-asset table, claim
+lifecycle, and stale-draft cleanup job. Locked projections expose neither image URLs
+nor poll metadata. Media delivery repeats the viewer access check, and poll voting
+uses the existing viewer-persona access and creator self-interaction gates.
+
+User-uploaded media remains distinct from Slice 8b's LLM-generated private images at
+the authoring boundary, while sharing its post-owned storage and serving contract.
+Slice 10 does not reopen Slice 8b's generation, disclosure, or prompt-review contract.
 
 ## Slice 11 — Cross-mode integration
 

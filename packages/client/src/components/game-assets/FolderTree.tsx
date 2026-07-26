@@ -6,6 +6,7 @@ import type { TreeNode } from "../../hooks/use-game-assets";
 import type { GameAssetSelectionStatus } from "../../lib/game-asset-selection";
 import { cn } from "../../lib/utils";
 import { CATEGORY_ICONS } from "./constants";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 /**
  * Props for the FolderTree component.
@@ -53,6 +54,7 @@ export function FolderTree({
   getFolderSelectionStatus,
   onOpenFolderSelection,
 }: FolderTreeProps) {
+  const { t: localizeUi } = useUiTranslation();
   const isExpanded = expanded.has(node.path);
   const isSelected = selectedPath === node.path;
   const hasChildren = !!(node.children && node.children.length > 0);
@@ -77,8 +79,8 @@ export function FolderTree({
             type="button"
             aria-label={
               isExpanded
-                ? `Collapse ${isRoot ? "Game Assets" : node.name}`
-                : `Expand ${isRoot ? "Game Assets" : node.name}`
+                ?localizeUi("ui.gameAssets.foldertree.collapseValue1", { value1: isRoot ?localizeUi("game.toolbar.assets") : node.name })
+                :localizeUi("ui.gameAssets.foldertree.expandValue1", { value1: isRoot ?localizeUi("game.toolbar.assets") : node.name })
             }
             aria-expanded={isExpanded}
             onClick={() => onToggle(node.path)}
@@ -95,7 +97,7 @@ export function FolderTree({
           className="flex flex-1 items-center gap-1.5 overflow-hidden"
         >
           <CategoryIcon size="0.875rem" className="shrink-0" />
-          <span className="truncate">{isRoot ? "Game Assets" : node.name}</span>
+          <span className="truncate">{isRoot ?localizeUi("game.toolbar.assets") : node.name}</span>
         </button>
         {selectionStatus && (
           <button
@@ -110,8 +112,8 @@ export function FolderTree({
                 ? "border-[var(--border)] text-[var(--muted-foreground)] hover:border-[var(--primary)]/40"
                 : "border-[var(--primary)]/35 bg-[var(--primary)]/10 text-[var(--primary)] hover:bg-[var(--primary)]/15")
             }
-            title="Select assets for this game"
-            aria-label={`Select ${node.name} assets for this game`}
+            title={localizeUi("ui.gameAssets.assetgrid.selectAssetsForThisGame")}
+            aria-label={localizeUi("ui.gameAssets.assetgrid.selectValue1AssetsForThisGame", { value1: node.name })}
           >
             <FolderSelectionMark status={selectionStatus} />
           </button>

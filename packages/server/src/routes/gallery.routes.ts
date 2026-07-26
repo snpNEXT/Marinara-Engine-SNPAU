@@ -19,6 +19,7 @@ import { createCharactersStorage } from "../services/storage/characters.storage.
 import { createCharacterGalleryStorage } from "../services/storage/character-gallery.storage.js";
 import { createPersonaGalleryStorage } from "../services/storage/persona-gallery.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
+import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createGameSceneVideosStorage } from "../services/storage/game-scene-videos.storage.js";
 import { createPromptOverridesStorage } from "../services/storage/prompt-overrides.storage.js";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
@@ -30,10 +31,15 @@ import {
   type VideoReferenceImage,
 } from "../services/video/video-generation.js";
 import { resolveGameVideoRuntime } from "../services/video/game-video-runtime.js";
-import { generateImage, saveImageToDisk } from "../services/image/image-generation.js";
+import { generateImage, removeSavedImageFromDisk, saveImageToDisk } from "../services/image/image-generation.js";
+import { resolveGalleryImagePath } from "../services/image/gallery-image-path.js";
 import { resolveConnectionImageDefaults } from "../services/image/image-generation-defaults.js";
 import { loadImageGenerationUserSettings } from "../services/image/image-generation-settings.js";
-import { compileImagePrompt } from "../services/image/image-prompt-compiler.js";
+import {
+  compileImagePrompt,
+  formatImageStylePromptGuidance,
+  resolveImageStyleGuidanceText,
+} from "../services/image/image-prompt-compiler.js";
 import {
   resolveImagePromptReviewSize,
   resolveReviewedImagePromptSubmission,
@@ -46,6 +52,7 @@ import {
   resolveVideoConnectionFallback,
 } from "../services/generation/media-connection-fallback.js";
 import { resolveIllustratorPromptRuntime } from "../services/generation/illustrator-prompt-runtime.js";
+import { resolveIllustratorImageConnectionId } from "../services/generation/illustrator-background-generation.js";
 import { resolveConversationSelfieSystemPrompt } from "../services/conversation/selfie-prompt.js";
 import { suppressesReferencePromptLine, resolveIllustratorCharacterReferences } from "./generate/illustrator-references.js";
 import { resolveBaseUrl } from "./generate/generate-route-utils.js";
@@ -118,6 +125,11 @@ const generateConversationSelfieSchema = z.object({
   negativePromptOverride: z.string().max(200_000).optional(),
   previewOnly: z.boolean().optional().default(false),
   queueImageGenerationRequests: z.boolean().optional().default(true),
+  debugMode: z.boolean().optional().default(false),
+});
+
+const generateGalleryImageSchema = z.object({
+  prompt: z.string().trim().min(1).max(7_000),
   debugMode: z.boolean().optional().default(false),
 });
 
@@ -246,6 +258,36 @@ function readTrimmedString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+async function resolveGalleryImageConnection(
+  app: FastifyInstance,
+  chatMode: string,
+  metadata: Record<string, unknown>,
+) {
+  const agents = createAgentsStorage(app.db);
+  const connections = createConnectionsStorage(app.db);
+  const illustrator = await agents.getByType("illustrator").catch((err) => {
+    logger.warn(err, "[gallery/generate-image] Failed to read Illustrator settings");
+    return null;
+  });
+  const configuredId = resolveIllustratorImageConnectionId(
+    chatMode,
+    metadata,
+    parseJsonRecord(illustrator?.settings).imageConnectionId,
+  );
+  let connection = configuredId ? await connections.getWithKey(configuredId) : null;
+  if (configuredId && connection?.provider !== "image_generation") {
+    connection = null;
+  }
+  if (configuredId && !connection) {
+    logger.warn(
+      "[gallery/generate-image] Image connection %s could not be resolved; using the default Images connection",
+      configuredId,
+    );
+  }
+  connection ??= await connections.getDefaultForImageGeneration();
+  return { connection, connections };
+}
+
 function readStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
@@ -281,22 +323,6 @@ function sceneTitleFromGalleryImage(image: ChatGalleryImageRow): string {
 
 function sourceGalleryImagePathForMetadata(image: ChatGalleryImageRow): string {
   return `gallery/${image.filePath.replace(/\\/g, "/")}`;
-}
-
-function resolveGalleryImagePath(image: ChatGalleryImageRow): string | null {
-  const normalizedPath = image.filePath.replace(/\\/g, "/");
-  const filename = basename(normalizedPath);
-  const candidates = new Set([normalizedPath, `${image.chatId}/${filename}`]);
-  for (const candidate of candidates) {
-    if (!candidate || candidate.includes("..") || candidate.includes("\0")) continue;
-    try {
-      const resolved = assertInsideDir(GALLERY_DIR, join(GALLERY_DIR, candidate));
-      if (existsSync(resolved)) return resolved;
-    } catch {
-      // Ignore invalid gallery path candidates and try the next one.
-    }
-  }
-  return null;
 }
 
 function imageMimeTypeForPath(path: string): VideoReferenceImage["mimeType"] | null {
@@ -788,7 +814,7 @@ export async function galleryRoutes(app: FastifyInstance) {
     const sceneVideos = createGameSceneVideosStorage(app.db);
     const { videoConnectionId, galleryImage, videoRuntime, durationSeconds, aspectRatio, prompt, videoFallback } =
       prepared;
-    const { source, serviceHint, baseUrl, apiKey, model, resolution, publicReferenceUpload, comfyWorkflow } =
+    const { source, serviceHint, baseUrl, apiKey, model, resolution, publicReferenceUpload, comfyWorkflow, comfyLoras } =
       videoRuntime;
 
     const galleryImagePath = resolveGalleryImagePath(galleryImage);
@@ -828,6 +854,7 @@ export async function galleryRoutes(app: FastifyInstance) {
         aspectRatio,
         resolution,
         comfyWorkflow,
+        comfyLoras,
         referenceImage,
         publicReferenceUpload,
         queue: input.queueMediaGenerationRequests,
@@ -923,12 +950,30 @@ export async function galleryRoutes(app: FastifyInstance) {
     const selfiePositivePrompt = readTrimmedString(meta.selfiePositivePrompt) ?? selfieTags.join(", ").trim();
     const selfieNegativePrompt = readTrimmedString(meta.selfieNegativePrompt) ?? "";
     const promptOverridesStorage = createPromptOverridesStorage(app.db);
-    const selfieSystemPrompt = await resolveConversationSelfieSystemPrompt({
+    const imageDefaults = resolveConnectionImageDefaults(imageConn);
+    const imageSettings = await loadImageGenerationUserSettings(app.db);
+    const configuredStyleProfileId =
+      ((meta.gameSetupConfig as Record<string, unknown> | undefined)?.imageStyleProfileId as string | undefined) ??
+      (meta.imageStyleProfileId as string | undefined) ??
+      null;
+    const styleProfileId =
+      (typeof configuredStyleProfileId === "string" && configuredStyleProfileId.trim()
+        ? configuredStyleProfileId.trim()
+        : undefined) ??
+      imageDefaults?.styleProfileId ??
+      imageSettings.styleProfiles.defaultProfileId;
+    // Style feeds the prompt-building model as guidance rather than being pasted
+    // verbatim into the final image prompt (#4028).
+    const styleGuidance = resolveImageStyleGuidanceText(imageSettings.styleProfiles, styleProfileId);
+    const baseSelfieSystemPrompt = await resolveConversationSelfieSystemPrompt({
       promptOverridesStorage,
       chatPromptTemplate: selfiePromptTemplate,
       appearance,
       charName: characterName,
     });
+    const selfieSystemPrompt = styleGuidance
+      ? `${baseSelfieSystemPrompt}${formatImageStylePromptGuidance(styleGuidance)}`
+      : baseSelfieSystemPrompt;
 
     const selfieAbortSignal = createResponseAbortSignal(reply, SCENE_VIDEO_GENERATION_TIMEOUT_MS, "Selfie generation");
     let promptRuntime;
@@ -1035,16 +1080,6 @@ export async function galleryRoutes(app: FastifyInstance) {
       }
     }
 
-    const imageDefaults = resolveConnectionImageDefaults(imageConn);
-    const imageSettings = await loadImageGenerationUserSettings(app.db);
-    const configuredStyleProfileId =
-      ((meta.gameSetupConfig as Record<string, unknown> | undefined)?.imageStyleProfileId as string | undefined) ??
-      (meta.imageStyleProfileId as string | undefined) ??
-      null;
-    const styleProfileId =
-      typeof configuredStyleProfileId === "string" && configuredStyleProfileId.trim()
-        ? configuredStyleProfileId.trim()
-        : imageSettings.styleProfiles.defaultProfileId;
     const selfieResolution = readTrimmedString(meta.selfieResolution) ?? "";
     const [selfieWidth, selfieHeight] = selfieResolution.split("x").map(Number) as [number, number];
     const width = Number.isSafeInteger(selfieWidth) && selfieWidth > 0 ? selfieWidth : imageSettings.selfie.width;
@@ -1056,6 +1091,7 @@ export async function galleryRoutes(app: FastifyInstance) {
       styleProfiles: imageSettings.styleProfiles,
       styleProfileId,
       imageDefaults,
+      omitProfileStyleText: true,
     });
     const imageModel = imageConn.model || "";
     const imageBaseUrl = imageConn.baseUrl || "https://image.pollinations.ai";
@@ -1169,6 +1205,112 @@ export async function galleryRoutes(app: FastifyInstance) {
       logger.warn(err, "[gallery/selfie] Selfie generation failed for chat %s", chatId);
       const message = err instanceof Error ? err.message : "Selfie generation failed";
       return reply.status(502).send({ error: message });
+    }
+  });
+
+  app.post<{ Params: { chatId: string } }>("/:chatId/generate-image", async (req, reply) => {
+    const { chatId } = req.params;
+    if (!isValidChatId(chatId)) return reply.status(400).send({ error: "Invalid chatId" });
+
+    const input = generateGalleryImageSchema.parse(req.body);
+    const chat = await chats.getById(chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    if (!new Set(["roleplay", "visual_novel", "game"]).has(chat.mode)) {
+      return reply.status(400).send({ error: "Gallery image generation is available in Roleplay and Game modes." });
+    }
+
+    const metadata = parseChatMetadata(chat.metadata);
+    const { connection: imageConnection, connections } = await resolveGalleryImageConnection(
+      app,
+      chat.mode,
+      metadata,
+    );
+    if (!imageConnection) {
+      return reply.status(400).send({
+        error: "Choose an image connection for Illustrator or set a default Images connection first.",
+      });
+    }
+
+    const debugOverrideEnabled = input.debugMode === true || isDebugAgentsEnabled();
+    const debugLog = (message: string, ...args: unknown[]) => {
+      logDebugOverride(debugOverrideEnabled, message, ...args);
+    };
+    const imageSettings = await loadImageGenerationUserSettings(app.db);
+    const imageDefaults = resolveConnectionImageDefaults(imageConnection);
+    const setupConfig = parseJsonRecord(metadata.gameSetupConfig);
+    const styleProfileId =
+      readTrimmedString(setupConfig.imageStyleProfileId) ??
+      readTrimmedString(metadata.imageStyleProfileId) ??
+      imageDefaults?.styleProfileId ??
+      imageSettings.styleProfiles.defaultProfileId;
+    const compiledPrompt = compileImagePrompt({
+      kind: "background",
+      prompt: input.prompt,
+      styleProfiles: imageSettings.styleProfiles,
+      styleProfileId,
+      imageDefaults,
+    });
+    const imageModel = imageConnection.model || "";
+    const imageBaseUrl = imageConnection.baseUrl || "https://image.pollinations.ai";
+    const imageSource = imageConnection.imageGenerationSource || imageModel;
+    const imageServiceHint = imageConnection.imageService || imageSource;
+    const imageFallback = await resolveImageConnectionFallback(connections, imageConnection.id);
+    const signal = createResponseAbortSignal(reply, SCENE_VIDEO_GENERATION_TIMEOUT_MS, "Gallery image generation");
+
+    debugLog("[debug/gallery/generate-image] prompt:\n%s", compiledPrompt.prompt);
+    if (compiledPrompt.negativePrompt) {
+      debugLog("[debug/gallery/generate-image] negative prompt:\n%s", compiledPrompt.negativePrompt);
+    }
+
+    let savedFilePath: string | null = null;
+    let metadataSaved = false;
+    try {
+      const connectionKey = imageConnection.id?.trim() || `${imageServiceHint}:${imageBaseUrl}:${imageModel}`;
+      const generated = await runImageGenerationRequest({
+        connectionKey,
+        queue: true,
+        signal,
+        task: () =>
+          generateImage(imageSource, imageBaseUrl, imageConnection.apiKey || "", imageServiceHint, {
+            prompt: compiledPrompt.prompt,
+            negativePrompt: compiledPrompt.negativePrompt || undefined,
+            model: imageModel,
+            width: imageSettings.background.width,
+            height: imageSettings.background.height,
+            imageEndpointId: imageConnection.imageEndpointId || undefined,
+            comfyWorkflow: imageConnection.comfyuiWorkflow || undefined,
+            imageDefaults,
+            signal,
+            fallback: imageFallback,
+          }),
+      });
+      const filePath = saveImageToDisk(chatId, generated.base64, generated.ext);
+      savedFilePath = filePath;
+      const image = await storage.create({
+        chatId,
+        filePath,
+        prompt: compiledPrompt.prompt,
+        provider: imageConnection.provider ?? "image_generation",
+        model: imageModel || "unknown",
+        width: imageSettings.background.width,
+        height: imageSettings.background.height,
+      });
+      if (!image) throw new Error("Generated Gallery image metadata could not be saved");
+      metadataSaved = true;
+      logger.info("[gallery/generate-image] Generated Gallery image for chat %s", chatId);
+      return { ...image, url: buildGalleryImageUrl(image, chatId) };
+    } catch (err) {
+      if (savedFilePath && !metadataSaved) {
+        try {
+          removeSavedImageFromDisk(savedFilePath);
+        } catch (cleanupErr) {
+          logger.warn(cleanupErr, "[gallery/generate-image] Failed to clean up orphaned image file %s", savedFilePath);
+        }
+      }
+      logger.warn(err, "[gallery/generate-image] Image generation failed for chat %s", chatId);
+      return reply.status(502).send({
+        error: err instanceof Error ? err.message : "Gallery image generation failed",
+      });
     }
   });
 

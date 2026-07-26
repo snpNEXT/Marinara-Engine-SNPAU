@@ -2,8 +2,11 @@ import { useEffect, useState, type CSSProperties, type ReactNode, type KeyboardE
 import { ChevronDown } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { HelpTooltip } from "../../components/ui/HelpTooltip";
+import { useUIStore } from "../../stores/ui.store";
 
 interface ChatSettingsSectionProps {
+  /** Stable id used to remember this section's expand/collapse state across reopens. */
+  id?: string;
   label: string;
   icon?: ReactNode;
   count?: number;
@@ -14,6 +17,7 @@ interface ChatSettingsSectionProps {
 }
 
 export function ChatSettingsSection({
+  id,
   label,
   icon,
   count,
@@ -22,11 +26,18 @@ export function ChatSettingsSection({
   initialOpen = false,
   children,
 }: ChatSettingsSectionProps) {
-  const [open, setOpen] = useState(initialOpen);
+  const rememberedOpen = useUIStore((s) => (id ? s.chatSettingsExpandedSections[id] : undefined));
+  const setSectionExpanded = useUIStore((s) => s.setChatSettingsSectionExpanded);
+  // Remembered state wins once it exists; otherwise fall back to initialOpen.
+  const [open, setOpen] = useState(rememberedOpen ?? initialOpen);
   useEffect(() => {
-    if (initialOpen) setOpen(true);
-  }, [initialOpen]);
-  const toggleOpen = () => setOpen((o) => !o);
+    if (rememberedOpen === undefined && initialOpen) setOpen(true);
+  }, [initialOpen, rememberedOpen]);
+  const toggleOpen = () => {
+    const next = !open;
+    setOpen(next);
+    if (id) setSectionExpanded(id, next);
+  };
   const handleHeaderKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) return;
     if (event.key !== "Enter" && event.key !== " ") return;
@@ -35,7 +46,7 @@ export function ChatSettingsSection({
   };
 
   return (
-    <div className="border-b border-[var(--border)]" style={style}>
+    <div data-chat-settings-section={id} className="border-b border-[var(--border)]" style={style}>
       <div
         role="button"
         tabIndex={0}

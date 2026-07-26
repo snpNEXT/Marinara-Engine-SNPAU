@@ -38,21 +38,31 @@ assert.ok(Date.parse(second) > Date.parse(first));
 assert.deepEqual(noodleAutoPostingSettingsSchema.parse({}), {
   enabled: false,
   intensity: 1,
+  imagesEnabled: false,
   nextRunAt: null,
 });
 // Storage normalization: omitted autoPosting falls back to the disabled defaults.
-const DEFAULTS = { enabled: false, intensity: 1, nextRunAt: null } as const;
+const DEFAULTS = { enabled: false, intensity: 1, imagesEnabled: false, nextRunAt: null } as const;
 assert.deepEqual(normalizeScheduler({}).autoPosting, DEFAULTS);
 assert.deepEqual(normalizeScheduler({ scheduler: {} }).autoPosting, DEFAULTS);
 // Malformed values fall back per field without discarding the other valid fields.
 assert.deepEqual(
-  normalizeScheduler({ autoPosting: { enabled: true, intensity: 2, nextRunAt: "not-a-date" } }).autoPosting,
-  { enabled: true, intensity: 1, nextRunAt: null },
+  normalizeScheduler({
+    autoPosting: { enabled: true, intensity: 2, imagesEnabled: true, nextRunAt: "not-a-date" },
+  }).autoPosting,
+  { enabled: true, intensity: 1, imagesEnabled: true, nextRunAt: null },
 );
 // A valid persisted run is preserved.
 assert.deepEqual(
-  normalizeScheduler({ autoPosting: { enabled: true, intensity: 6, nextRunAt: now.toISOString() } }).autoPosting,
-  { enabled: true, intensity: 6, nextRunAt: now.toISOString() },
+  normalizeScheduler({
+    autoPosting: {
+      enabled: true,
+      intensity: 6,
+      imagesEnabled: true,
+      nextRunAt: now.toISOString(),
+    },
+  }).autoPosting,
+  { enabled: true, intensity: 6, imagesEnabled: true, nextRunAt: now.toISOString() },
 );
 // Client patch cannot carry the server-owned nextRunAt.
 assert.throws(() => noodleAccountSchedulerPatchSchema.parse({ autoPosting: { nextRunAt: now.toISOString() } }));

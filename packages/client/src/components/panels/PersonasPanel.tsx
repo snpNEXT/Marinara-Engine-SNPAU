@@ -22,6 +22,7 @@ import {
   Plus,
   Trash2,
   User,
+  VenetianMask,
   Camera,
   ArrowUpDown,
   Download,
@@ -44,6 +45,8 @@ import { SelectionActionBar } from "../ui/SelectionActionBar";
 import { SmoothFolderContent } from "../ui/SmoothFolderContent";
 import { TouchDragHandle } from "../ui/TouchDragHandle";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
+import { useTranslation as useUiTranslation } from "react-i18next";
+import { PanelLoadMoreBar } from "./PanelLoadMoreBar";
 
 type PersonaRow = {
   id: string;
@@ -129,6 +132,7 @@ function useTouchSafePersonaDragMode() {
 }
 
 export function PersonasPanel() {
+  const { t: localizeUi } = useUiTranslation();
   const localize = useLocalizedUiText();
   const deletePersona = useDeletePersona();
   const duplicatePersona = useDuplicatePersona();
@@ -195,7 +199,7 @@ export function PersonasPanel() {
       .catch(() => {
         if (!cancelled) {
           setCompleteFilteredPersonas(null);
-          toast.error("Failed to load all matching personas");
+          toast.error(localizeUi("ui.panels.personaspanel.failedToLoadAllMatchingPersonas"));
         }
       })
       .finally(() => {
@@ -205,7 +209,7 @@ export function PersonasPanel() {
     return () => {
       cancelled = true;
     };
-  }, [clientOnlyPersonaFilterActive, search, sort]);
+  }, [clientOnlyPersonaFilterActive, search, sort, localizeUi]);
 
   const handleCreate = () => {
     openModal("create-persona");
@@ -258,9 +262,9 @@ export function PersonasPanel() {
     async (tag: string) => {
       if (
         !(await showConfirmDialog({
-          title: "Remove Tag",
-          message: `Remove tag "${tag}" from all personas?`,
-          confirmLabel: "Remove",
+          title: localizeUi("ui.panels.characterspanel.removeTag"),
+          message: localizeUi("ui.panels.personaspanel.removeTagValue1FromAllPersonas", { value1: tag }),
+          confirmLabel: localizeUi("settings.notifications.customSound.actions.remove"),
           tone: "destructive",
         }))
       ) {
@@ -275,10 +279,10 @@ export function PersonasPanel() {
         }
         if (activeTag === tag) setActiveTag(null);
       } catch {
-        toast.error("Failed to remove tag from some personas");
+        toast.error(localizeUi("ui.panels.personaspanel.failedToRemoveTagFromSomePersonas"));
       }
     },
-    [sort, updatePersona, activeTag],
+    [sort, updatePersona, activeTag, localizeUi],
   );
 
   const personaMap = useMemo(() => {
@@ -503,13 +507,20 @@ export function PersonasPanel() {
         { ids: [...selectedPersonaIds], format: "native" },
         "marinara-personas.zip",
       );
-      toast.success(`Exported ${selectedPersonaIds.size} persona${selectedPersonaIds.size === 1 ? "" : "s"}`);
+      toast.success(
+        localizeUi("ui.panels.personaspanel.exportedValue1PersonaValue2", {
+          value1: selectedPersonaIds.size,
+          value2: selectedPersonaIds.size === 1 ? "" : localizeUi("ui.noodle.stageprofileview.s"),
+        }),
+      );
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to export personas");
+      toast.error(
+        error instanceof Error ? error.message : localizeUi("ui.panels.personaspanel.failedToExportPersonas"),
+      );
     } finally {
       setExportingSelected(false);
     }
-  }, [selectedPersonaIds]);
+  }, [selectedPersonaIds, localizeUi]);
 
   const handleDeleteSelected = useCallback(async () => {
     const ids = [...selectedPersonaIds];
@@ -517,9 +528,12 @@ export function PersonasPanel() {
 
     if (
       !(await showConfirmDialog({
-        title: "Delete Personas",
-        message: `Delete ${ids.length} persona${ids.length === 1 ? "" : "s"}? This cannot be undone.`,
-        confirmLabel: "Delete",
+        title: localizeUi("ui.panels.personaspanel.deletePersonas"),
+        message: localizeUi("ui.panels.personaspanel.deleteValue1PersonaValue2ThisCannotBeUndone", {
+          value1: ids.length,
+          value2: ids.length === 1 ? "" : localizeUi("ui.noodle.stageprofileview.s"),
+        }),
+        confirmLabel: localizeUi("lorebook.editor.batch.delete"),
         tone: "destructive",
       }))
     ) {
@@ -531,27 +545,37 @@ export function PersonasPanel() {
     const deletedCount = ids.length - failedIds.length;
 
     if (deletedCount > 0) {
-      toast.success(`Deleted ${deletedCount} persona${deletedCount === 1 ? "" : "s"}`);
+      toast.success(
+        localizeUi("ui.panels.personaspanel.deletedValue1PersonaValue2", {
+          value1: deletedCount,
+          value2: deletedCount === 1 ? "" : localizeUi("ui.noodle.stageprofileview.s"),
+        }),
+      );
     }
 
     if (failedIds.length > 0) {
       setSelectedPersonaIds(new Set(failedIds));
-      toast.error(`Failed to delete ${failedIds.length} persona${failedIds.length === 1 ? "" : "s"}`);
+      toast.error(
+        localizeUi("ui.panels.personaspanel.failedToDeleteValue1PersonaValue2", {
+          value1: failedIds.length,
+          value2: failedIds.length === 1 ? "" : localizeUi("ui.noodle.stageprofileview.s"),
+        }),
+      );
       return;
     }
 
     exitSelectionMode();
-  }, [deletePersona, exitSelectionMode, selectedPersonaIds]);
+  }, [deletePersona, exitSelectionMode, selectedPersonaIds, localizeUi]);
 
   return (
     <div className="flex min-h-full flex-col gap-2 p-3">
       <button
         onClick={openPersonaLibrary}
         className="mari-chrome-control mari-chrome-control--primary w-full text-xs"
-        title="Open full persona library"
+        title={localizeUi("ui.panels.personaspanel.openFullPersonaLibrary")}
       >
-        <User size="0.875rem" />
-        Open Full Library
+        <VenetianMask size="0.875rem" />
+        {localizeUi("ui.panels.characterspanel.openFullLibrary_336ca82")}
       </button>
 
       {/* Actions */}
@@ -559,14 +583,14 @@ export function PersonasPanel() {
         <button
           onClick={handleCreate}
           className="mari-panel-gradient-button mari-panel-gradient--personas flex-1 text-xs"
-          title="New"
+          title={localizeUi("ui.lorebooks.lorebookassignmentsection.new")}
         >
           <Plus size="0.8125rem" />
         </button>
         <button
           onClick={() => openModal("import-persona")}
           className="mari-chrome-control mari-chrome-control--primary flex-1 text-xs"
-          title="Import"
+          title={localizeUi("ui.chat.chatbranchselector.import")}
         >
           <Download size="0.8125rem" />
         </button>
@@ -579,7 +603,7 @@ export function PersonasPanel() {
             "mari-chrome-control mari-chrome-control--primary flex-1 text-xs",
             selectionMode && "mari-chrome-control--selected",
           )}
-          title="Select"
+          title={localizeUi("settings.common.select")}
         >
           <Check size="0.8125rem" />
         </button>
@@ -601,13 +625,13 @@ export function PersonasPanel() {
             value={sort}
             onChange={(e) => setSort(e.target.value as SortOption)}
             className="mari-chrome-field mari-chrome-sort-field mari-accent-animated h-10 appearance-none py-0 pl-2.5 pr-7 text-[0.6875rem] md:h-9"
-            title="Sort order"
+            title={localizeUi("ui.panels.agentspanel.sortOrder")}
           >
-            <option value="name-asc">A-Z</option>
-            <option value="name-desc">Z-A</option>
-            <option value="newest">Newest</option>
-            <option value="oldest">Oldest</option>
-            <option value="tokens">Tokens</option>
+            <option value="name-asc">{localizeUi("ui.panels.backgroundpicker.aZ")}</option>
+            <option value="name-desc">{localizeUi("ui.panels.backgroundpicker.zA")}</option>
+            <option value="newest">{localizeUi("ui.panels.backgroundpicker.newest")}</option>
+            <option value="oldest">{localizeUi("ui.panels.backgroundpicker.oldest")}</option>
+            <option value="tokens">{localizeUi("ui.panels.personaspanel.tokens")}</option>
           </select>
           <ArrowUpDown
             size="0.625rem"
@@ -623,11 +647,13 @@ export function PersonasPanel() {
             className="mari-chrome-control mari-chrome-control--small flex-1 justify-start text-[0.6875rem]"
           >
             <FolderPlus size="0.75rem" />
-            New Folder
+            {localizeUi("ui.panels.backgroundpicker.newFolder")}
           </button>
         </div>
         {parsedGroups.length > 0 && (
-          <p className="mari-folder-helper">Drag and drop personas to folders, double-click or double-tap to rename</p>
+          <p className="mari-folder-helper">
+            {localizeUi("ui.panels.personaspanel.dragAndDropPersonasToFoldersDoubleClickOr")}
+          </p>
         )}
       </div>
 
@@ -642,7 +668,11 @@ export function PersonasPanel() {
               favFilter === opt && "mari-chrome-control--selected",
             )}
           >
-            {opt === "all" ? "All" : opt === "active" ? "Active" : "Inactive"}
+            {opt === "all"
+              ? localizeUi("ui.noodle.stageprofilesourcepicker.all")
+              : opt === "active"
+                ? localizeUi("ui.characters.lorebooktab.active")
+                : localizeUi("ui.chat.summaryentryeditor.inactive")}
           </button>
         ))}
         {allTags.length > 0 && (
@@ -654,7 +684,8 @@ export function PersonasPanel() {
             )}
           >
             <Tag size="0.625rem" />
-            Tags ({allTags.length})
+            {localizeUi("ui.panels.backgroundpicker.tags")}
+            {allTags.length})
             <ChevronDown size="0.625rem" className={cn("transition-transform", tagsExpanded && "rotate-180")} />
           </button>
         )}
@@ -667,7 +698,7 @@ export function PersonasPanel() {
               onClick={() => setActiveTag(null)}
               className="mari-chrome-control mari-chrome-control--compact mari-chrome-control--danger"
             >
-              <X size="0.5rem" /> Clear
+              <X size="0.5rem" /> {localizeUi("lorebook.editor.batch.clear")}
             </button>
           )}
           {allTags.map((tag) => (
@@ -695,7 +726,7 @@ export function PersonasPanel() {
                   handleDeleteTag(tag);
                 }}
                 className="ml-0.5 rounded-full p-0.5 transition-colors hover:bg-[var(--destructive)]/20 hover:text-[var(--destructive)]"
-                title={`Delete tag "${tag}"`}
+                title={localizeUi("ui.panels.characterspanel.deleteTagValue1", { value1: tag })}
               >
                 <X size="0.5rem" />
               </button>
@@ -739,8 +770,13 @@ export function PersonasPanel() {
                 role="button"
                 tabIndex={0}
                 aria-expanded={isExpanded}
-                aria-label={`${isExpanded ? "Collapse" : "Expand"} folder ${group.name}. Double-tap or press F2 to rename.`}
-                title="Double-click, double-tap, or press F2 to rename."
+                aria-label={localizeUi("ui.panels.agentspanel.value1FolderValue2DoubleTapOrPressF2To", {
+                  value1: isExpanded
+                    ? localizeUi("ui.panels.ttsconfigcard.collapse")
+                    : localizeUi("ui.panels.ttsconfigcard.expand"),
+                  value2: group.name,
+                })}
+                title={localizeUi("ui.panels.backgroundpicker.doubleClickDoubleTapOrPressF2ToRename")}
                 className="group relative flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 transition-all hover:bg-[var(--sidebar-accent)]/40"
                 onClick={(event) =>
                   handleFolderRenameGesture(group.id, event, {
@@ -805,7 +841,7 @@ export function PersonasPanel() {
                       void handleDeleteGroup(group);
                     }}
                     className="mari-chrome-control mari-chrome-control--small p-1"
-                    title="Delete folder"
+                    title={localizeUi("ui.panels.backgroundpicker.deleteFolder")}
                   >
                     <Trash2 size="0.6875rem" />
                   </button>
@@ -819,7 +855,9 @@ export function PersonasPanel() {
                 innerClassName="flex flex-col gap-0.5"
               >
                 {folderMemberIds.length === 0 ? (
-                  <p className="py-2 text-[0.625rem] italic text-[var(--muted-foreground)]">Drop personas here.</p>
+                  <p className="py-2 text-[0.625rem] italic text-[var(--muted-foreground)]">
+                    {localizeUi("ui.panels.personaspanel.dropPersonasHere")}
+                  </p>
                 ) : (
                   <div className="flex flex-col gap-0.5">
                     {folderMemberIds.map((pid) => {
@@ -889,13 +927,17 @@ export function PersonasPanel() {
                                   ? "border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] text-[var(--marinara-chat-chrome-button-text-active)]"
                                   : "border-[var(--muted-foreground)]/40 bg-[var(--secondary)] text-transparent",
                               )}
-                              aria-label={isBulkSelected ? "Deselect persona" : "Select persona"}
+                              aria-label={
+                                isBulkSelected
+                                  ? localizeUi("ui.panels.personaspanel.deselectPersona")
+                                  : localizeUi("ui.panels.personaspanel.selectPersona")
+                              }
                             >
-                              <Check size="0.75rem" />
+                              {isBulkSelected && <Check size="0.75rem" />}
                             </button>
                           )}
                           <TouchDragHandle
-                            label="Drag persona"
+                            label={localizeUi("ui.panels.personaspanel.dragPersona")}
                             size="0.75rem"
                             onTouchStart={(event) => {
                               startPersonaTouchDrag(event, pid, {
@@ -941,7 +983,7 @@ export function PersonasPanel() {
                                 void movePersonasToFolder([pid], null);
                               }}
                               className="rounded p-0.5 text-[var(--muted-foreground)] opacity-0 transition-all hover:bg-[var(--destructive)]/10 hover:text-[var(--destructive)] group-hover/member:opacity-100 max-md:opacity-100"
-                              title="Remove from folder"
+                              title={localizeUi("ui.panels.characterspanel.removeFromFolder")}
                             >
                               <UserMinus size="0.625rem" />
                             </button>
@@ -968,9 +1010,11 @@ export function PersonasPanel() {
       {!isLoading && list.length === 0 && (
         <div className="flex flex-col items-center gap-2 py-8 text-center">
           <div className="animate-float flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-400/20 to-teal-500/20">
-            <User size="1.25rem" className="text-emerald-400" />
+            <VenetianMask size="1.25rem" className="text-emerald-400" />
           </div>
-          <p className="mari-chrome-text-muted text-xs">No personas yet — create one!</p>
+          <p className="mari-chrome-text-muted text-xs">
+            {localizeUi("ui.panels.personaspanel.noPersonasYetCreateOne")}
+          </p>
         </div>
       )}
 
@@ -988,7 +1032,7 @@ export function PersonasPanel() {
           }}
           className="rounded-xl border border-dashed border-emerald-400/35 bg-emerald-400/5 px-3 py-2 text-[0.625rem] text-emerald-300"
         >
-          Drop here to move out of folder
+          {localizeUi("ui.panels.agentspanel.dropHereToMoveOutOfFolder")}
         </div>
       )}
 
@@ -1047,16 +1091,20 @@ export function PersonasPanel() {
                   className={cn(
                     "flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors",
                     isBulkSelected
-                      ? "border-emerald-400 bg-emerald-400 text-white"
+                      ? "border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] text-[var(--marinara-chat-chrome-button-text-active)]"
                       : "border-[var(--muted-foreground)]/40 bg-[var(--secondary)] text-transparent",
                   )}
-                  aria-label={isBulkSelected ? "Deselect persona" : "Select persona"}
+                  aria-label={
+                    isBulkSelected
+                      ? localizeUi("ui.panels.personaspanel.deselectPersona")
+                      : localizeUi("ui.panels.personaspanel.selectPersona")
+                  }
                 >
-                  <Check size="0.75rem" />
+                  {isBulkSelected && <Check size="0.75rem" />}
                 </button>
               )}
               <TouchDragHandle
-                label="Drag persona"
+                label={localizeUi("ui.panels.personaspanel.dragPersona")}
                 onTouchStart={(event) => {
                   startPersonaTouchDrag(event, persona.id, {
                     allowInteractiveTarget: true,
@@ -1068,7 +1116,7 @@ export function PersonasPanel() {
               <button
                 onClick={(e) => handleAvatarClick(e, persona.id)}
                 className="mari-avatar-placeholder mari-avatar-placeholder--persona relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm group/avatar"
-                title="Change avatar"
+                title={localizeUi("ui.panels.personaspanel.changeAvatar")}
               >
                 {/* Inner clip wrapper — needed because new-format avatarCrop renders the
                     <img> with position:absolute and dimensions larger than the container.
@@ -1126,7 +1174,7 @@ export function PersonasPanel() {
                         activatePersona.mutate(persona.id);
                       }}
                       className="mari-chrome-control mari-chrome-control--small mari-chrome-control--selected p-1.5"
-                      title="Set as active"
+                      title={localizeUi("ui.panels.personaspanel.setAsActive")}
                     >
                       <Check size="0.75rem" />
                     </button>
@@ -1136,12 +1184,14 @@ export function PersonasPanel() {
                       e.stopPropagation();
                       duplicatePersona.mutate(persona.id, {
                         onSuccess: () => {
-                          toast.success(`Duplicated "${persona.name}"`);
+                          toast.success(
+                            localizeUi("ui.panels.characterspanel.duplicatedValue1", { value1: persona.name }),
+                          );
                         },
                       });
                     }}
                     className="mari-chrome-control mari-chrome-control--small p-1.5"
-                    title="Duplicate"
+                    title={localizeUi("ui.presets.sectionstab.duplicate")}
                   >
                     <Copy size="0.75rem" />
                   </button>
@@ -1150,9 +1200,11 @@ export function PersonasPanel() {
                       e.stopPropagation();
                       if (
                         !(await showConfirmDialog({
-                          title: "Delete Persona",
-                          message: `Delete "${persona.name}"? This cannot be undone.`,
-                          confirmLabel: "Delete",
+                          title: localizeUi("ui.panels.personaspanel.deletePersona"),
+                          message: localizeUi("ui.panels.characterspanel.deleteValue1ThisCannotBeUndone", {
+                            value1: persona.name,
+                          }),
+                          confirmLabel: localizeUi("lorebook.editor.batch.delete"),
                           tone: "destructive",
                         }))
                       ) {
@@ -1161,7 +1213,7 @@ export function PersonasPanel() {
                       deletePersona.mutate(persona.id);
                     }}
                     className="mari-chrome-control mari-chrome-control--small p-1.5"
-                    title="Delete"
+                    title={localizeUi("lorebook.editor.batch.delete")}
                   >
                     <Trash2 size="0.75rem" />
                   </button>
@@ -1173,14 +1225,14 @@ export function PersonasPanel() {
       </div>
 
       {!clientOnlyPersonaFilterActive && personaPages.hasNextPage && (
-        <button
-          type="button"
-          onClick={() => void personaPages.fetchNextPage()}
+        <PanelLoadMoreBar
+          onLoadMore={() => void personaPages.fetchNextPage()}
           disabled={personaPages.isFetchingNextPage}
-          className="mari-chrome-control mari-chrome-control--primary justify-center text-xs"
         >
-          {personaPages.isFetchingNextPage ? "Loading..." : `Load more (${rawList.length} loaded)`}
-        </button>
+          {personaPages.isFetchingNextPage
+            ? localizeUi("ui.characters.characterlibraryview.loading")
+            : localizeUi("ui.panels.characterspanel.loadMoreValue1Loaded", { value1: rawList.length })}
+        </PanelLoadMoreBar>
       )}
 
       {selectionMode && (

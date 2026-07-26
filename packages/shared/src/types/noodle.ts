@@ -41,12 +41,30 @@ export interface NoodleAutoPostingSettings {
   enabled: boolean;
   /** Low/Medium/High = at most 1/3/6 automatic posts per day. */
   intensity: NoodleAutoPostingIntensity;
+  /** NoodleR-owned image enablement; independent of public Noodle's enableImagePrompts. */
+  imagesEnabled: boolean;
   /** Server-owned; excluded from client-editable patches. */
   nextRunAt: string | null;
 }
 
 export interface NoodleAccountSchedulerSettings {
   autoPosting?: NoodleAutoPostingSettings;
+}
+
+/** Per-creator outcome of the global "Refresh NoodleR now" action; one creator never rolls back another. */
+export type NoodlerRefreshNowOutcomeStatus =
+  | "generated"
+  | "disabled"
+  | "busy"
+  | "connection_required"
+  | "connection_not_found"
+  | "private_account_not_found"
+  | "skipped"
+  | "error";
+
+export interface NoodlerRefreshNowOutcome {
+  accountId: string;
+  status: NoodlerRefreshNowOutcomeStatus;
 }
 export interface NoodleAccountPrivacySettings {
   identityDisclosure?: NoodleIdentityDisclosure;
@@ -69,6 +87,15 @@ export interface NoodlePollOption {
 export interface NoodlePoll {
   question: string;
   options: NoodlePollOption[];
+}
+
+export interface NoodlePostImageCrop {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  sourceWidth: number;
+  sourceHeight: number;
 }
 
 export interface NoodleSettings {
@@ -106,6 +133,12 @@ export interface NoodleSettings {
   generationReasoningEffort: NoodleReasoningEffort;
   includeChatCharacterStatuses: boolean;
   enableNoodler: boolean;
+  /** Editable creative guidance injected into every NoodleR private-post generation. */
+  privateGenerationGuidance: string;
+  /** Master switch for automatic posting; pauses the scheduler without disabling NoodleR. */
+  autoPostingScheduleEnabled: boolean;
+  /** Cadence applied when a creator's automatic posting is first turned on. */
+  autoPostingDefaultIntensity: NoodleAutoPostingIntensity;
 }
 
 export interface NoodleAccount {
@@ -221,7 +254,10 @@ export interface NoodlerPostView {
   imagePrompt: string | null;
   metadata: Record<string, unknown> | null;
   createdAt: string;
+  /** Empty for locked posts — use likeCount/replyCount for the teaser footer. */
   interactions: NoodleInteraction[];
+  likeCount: number;
+  replyCount: number;
 }
 
 export interface NoodlerViewerCreator {

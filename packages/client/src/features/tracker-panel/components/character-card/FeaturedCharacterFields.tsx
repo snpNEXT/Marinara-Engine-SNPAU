@@ -16,6 +16,7 @@ import { InlineEdit } from "../controls/InlineControls";
 import { StatList } from "../controls/StatList";
 import { TRACKER_PROFILE_FIELD_TILE_CLASS } from "../controls/TrackerProfileChrome";
 import { useTrackerFieldLock, useTrackerLockContext } from "../TrackerLockContext";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 const FEATURED_FIELD_LIST_CLASS =
   "relative z-[1] grid h-full min-h-0 grid-cols-1 gap-0.5 overflow-hidden px-1 py-0.5";
@@ -82,6 +83,7 @@ function FeaturedFieldTile({
   hideMode?: boolean;
   onToggleHidden?: () => void;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   const lock = useTrackerFieldLock(lockKey);
   const hiddenToggleActive = hideMode && !!onToggleHidden;
   if (hidden && !hideMode) return null;
@@ -108,8 +110,8 @@ function FeaturedFieldTile({
         <button
           type="button"
           onClick={onToggleHidden}
-          title={hidden ? `Show ${accessibleLabel.toLowerCase()}` : `Hide ${accessibleLabel.toLowerCase()}`}
-          aria-label={hidden ? `Show ${accessibleLabel.toLowerCase()}` : `Hide ${accessibleLabel.toLowerCase()}`}
+          title={hidden ?localizeUi("ui.trackerPanel.compactcharacterfield.showValue1", { value1: accessibleLabel.toLowerCase() }) :localizeUi("ui.trackerPanel.compactcharacterfield.hideValue1", { value1: accessibleLabel.toLowerCase() })}
+          aria-label={hidden ?localizeUi("ui.trackerPanel.compactcharacterfield.showValue1", { value1: accessibleLabel.toLowerCase() }) :localizeUi("ui.trackerPanel.compactcharacterfield.hideValue1", { value1: accessibleLabel.toLowerCase() })}
           aria-pressed={hidden}
           className={cn(
             "w-full min-w-0 self-center rounded px-0 py-0 text-left transition-colors hover:bg-[var(--accent)]/25",
@@ -123,7 +125,7 @@ function FeaturedFieldTile({
               readable && FEATURED_FIELD_PREVIEW_CLASS_BY_PROFILE[sizeProfile],
             )}
           >
-            {hidden ? "Hidden" : displayValue}
+            {hidden ?localizeUi("ui.trackerPanel.thoughtbubble.hidden") : displayValue}
           </span>
         </button>
       ) : onSave ? (

@@ -12,6 +12,7 @@ import { DATA_DIR } from "../../utils/data-dir.js";
 import { newId } from "../../utils/id-generator.js";
 import {
   COMFYUI_PLACEHOLDER_REFERENCE_BASE64,
+  buildComfyUiLoraWorkflowReplacements,
   DEFAULT_AUTOMATIC1111_DEFAULTS,
   DEFAULT_COMFYUI_DEFAULTS,
   DEFAULT_NOVELAI_DEFAULTS,
@@ -322,6 +323,15 @@ export function saveImageToDisk(chatId: string, base64: string, ext: string): st
     throw error;
   }
   return `${chatId}/${filename}`;
+}
+
+export function removeSavedImageFromDisk(filePath: string): void {
+  const fullPath = assertInsideDir(GALLERY_DIR, join(GALLERY_DIR, filePath));
+  try {
+    unlinkSync(fullPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
 }
 
 export type StagedGalleryImage = {
@@ -2151,7 +2161,108 @@ export function openRouterModalities(model?: string): string[] {
   return ["image", "text"];
 }
 
+export function usesOpenRouterImagesApi(model?: string): boolean {
+  return model?.trim().toLowerCase().startsWith("krea/") === true;
+}
+
+export function openRouterImagesUrl(baseUrl: string): string {
+  const trimmed = baseUrl.replace(/\/+$/, "");
+  try {
+    const url = new URL(trimmed);
+    const path = url.pathname.replace(/\/+$/, "");
+    if (/\/chat\/completions$/i.test(path)) {
+      url.pathname = path.replace(/\/chat\/completions$/i, "/images");
+    } else if (!/\/images$/i.test(path)) {
+      url.pathname =
+        path === "" || path === "/" ? "/api/v1/images" : path.endsWith("/api") ? `${path}/v1/images` : `${path}/images`;
+    }
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return `${trimmed}/images`;
+  }
+}
+
+export function buildOpenRouterImagesRequest(request: ImageGenRequest): Record<string, unknown> {
+  const prompt = request.negativePrompt
+    ? `${request.prompt}\n\nAvoid in the image: ${request.negativePrompt}`
+    : request.prompt;
+  const body: Record<string, unknown> = {
+    model: request.model || "krea/krea-2-medium",
+    prompt,
+    resolution: "1K",
+  };
+  const aspectRatio = openRouterAspectRatio(request.width, request.height);
+  if (aspectRatio) body.aspect_ratio = aspectRatio;
+
+  const references = request.referenceImages ?? (request.referenceImage ? [request.referenceImage] : []);
+  if (references.length > 0) {
+    body.input_references = references.slice(0, 1).map((reference) => ({
+      type: "image_url",
+      image_url: { url: imageDataUrlFromReference(reference) },
+    }));
+  }
+  return body;
+}
+
+async function generateOpenRouterImageApi(
+  baseUrl: string,
+  apiKey: string,
+  request: ImageGenRequest,
+): Promise<ImageGenResult> {
+  const body = buildOpenRouterImagesRequest(request);
+  logDebugOverride(
+    request.debugMode === true,
+    "[debug/image/openrouter-images] final request payload:\n%s",
+    JSON.stringify(
+      {
+        ...body,
+        ...(Array.isArray(body.input_references)
+          ? { input_references: `[${body.input_references.length} reference image(s)]` }
+          : {}),
+      },
+      null,
+      2,
+    ),
+  );
+  const resp = await imageFetch(
+    openRouterImagesUrl(baseUrl),
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: imageRequestSignal(request),
+    },
+    { allowLocal: request.allowLocalUrls },
+  );
+
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "Unknown error");
+    throw new Error(`OpenRouter Images API failed (${resp.status}): ${sanitizeErrorText(errText)}`);
+  }
+
+  const data = (await resp.json()) as {
+    data?: Array<{ b64_json?: string; image_base64?: string; url?: string; media_type?: string }>;
+  };
+  const result = data.data?.[0];
+  const base64 = result?.b64_json ?? result?.image_base64;
+  if (base64) {
+    const mimeType = normalizeImageMimeType(result?.media_type) ?? detectImageMimeType(base64) ?? "image/png";
+    return { base64, mimeType, ext: imageExtensionFromMimeType(mimeType) };
+  }
+  if (result?.url) return downloadImageUrl(result.url, request.allowLocalUrls, request.signal);
+  throw new Error("No image data in OpenRouter Images API response");
+}
+
 async function generateOpenRouter(baseUrl: string, apiKey: string, request: ImageGenRequest): Promise<ImageGenResult> {
+  if (usesOpenRouterImagesApi(request.model)) {
+    return generateOpenRouterImageApi(baseUrl, apiKey, request);
+  }
+
   const body: Record<string, unknown> = {
     model: request.model || "google/gemini-2.5-flash-image",
     messages: [{ role: "user", content: buildChatImageMessageContent(request) }],
@@ -2551,6 +2662,7 @@ async function generateComfyUI(baseUrl: string, request: ImageGenRequest): Promi
     "%denoising_strength%": defaults.denoisingStrength,
     "%clip_skip%": defaults.clipSkip ?? 0,
   };
+  Object.assign(replacements, buildComfyUiLoraWorkflowReplacements(defaults.loras));
   if (request.model) {
     replacements["%model%"] = request.model;
   }

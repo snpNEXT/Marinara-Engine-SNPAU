@@ -11,6 +11,7 @@ import {
   TRACKER_PROFILE_NAMEPLATE_ICON_BUTTON_CLASS,
 } from "../controls/TrackerProfileNameplate";
 import { useTrackerLockContext } from "../TrackerLockContext";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 export function FeaturedCharacterNameplate({
   character,
@@ -35,6 +36,7 @@ export function FeaturedCharacterNameplate({
   action?: ReactNode;
   characterIndex: number;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   const { fieldLocks, lockMode, onToggleFieldLock } = useTrackerLockContext();
   const emojiLockKey = characterTrackerLockKey(character, characterIndex, "emoji");
   const nameLockKey = characterTrackerLockKey(character, characterIndex, "name");
@@ -44,7 +46,7 @@ export function FeaturedCharacterNameplate({
       value={character.emoji || "?"}
       onSave={(emoji) => onUpdate({ ...character, emoji: emoji || "?" })}
       placeholder="?"
-      title={`${character.name || "character"} emoji`}
+      title={localizeUi("ui.trackerPanel.charactertrackeravatar.value1Emoji", { value1: character.name ||localizeUi("ui.noodle.noodlehome.character") })}
       className="h-4 w-4 justify-center rounded-sm px-0 py-0 text-center text-[0.625rem] leading-4"
       showEditHint={false}
       fitPreview
@@ -82,8 +84,8 @@ export function FeaturedCharacterNameplate({
           <button
             type="button"
             onClick={onToggleFeatured}
-            title="Use compact character card"
-            aria-label="Use compact character card"
+            title={localizeUi("ui.trackerPanel.featuredcharacternameplate.useCompactCharacterCard")}
+            aria-label={localizeUi("ui.trackerPanel.featuredcharacternameplate.useCompactCharacterCard")}
             aria-pressed
             className={TRACKER_PROFILE_NAMEPLATE_HEADER_BUTTON_CLASS}
           >
@@ -97,7 +99,7 @@ export function FeaturedCharacterNameplate({
   return (
     <TrackerProfileNameplate
       value={character.name}
-      placeholder="Character"
+      placeholder={localizeUi("ui.characters.cardlibrarydetailcard.character")}
       onSave={onUpdate ? (name) => onUpdate({ ...character, name: name || "Character" }) : undefined}
       primaryControl={thoughtControl}
       primaryControlSide={thoughtControlSide}

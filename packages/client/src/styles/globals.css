@@ -407,7 +407,8 @@
 
   --marinara-custom-cursor-fill: #d4acfb;
   --marinara-custom-cursor-stroke: #050312;
-  --cursor-pink: url("data:image/svg+xml,%3Csvg width='24' height='24' viewBox='0 0 24 24' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3 3L10 20L12 12L20 10L3 3Z' fill='%23D4ACFB' stroke='%23050312' stroke-width='1'/%3E%3C/svg%3E") 3 3;
+  --cursor-pink: url("data:image/svg+xml,%3Csvg width='24' height='24' viewBox='0 0 24 24' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3 3L10 20L12 12L20 10L3 3Z' fill='%23D4ACFB' stroke='%23050312' stroke-width='1'/%3E%3C/svg%3E")
+    3 3;
   --marinara-custom-cursor: var(--cursor-pink), auto;
 
   --y2k-pink: var(--primary);
@@ -726,6 +727,23 @@
   padding: 0.375rem 0.625rem;
 }
 
+.mari-chrome-control--regular-label {
+  font-weight: 400;
+}
+
+.mari-character-row-action {
+  height: 1.75rem;
+  min-height: 1.75rem;
+  padding: 0;
+}
+
+@media (width < 48rem) {
+  .mari-character-row-action {
+    height: 1.5rem;
+    min-height: 1.5rem;
+  }
+}
+
 .mari-chrome-control--selected,
 .mari-chrome-control[aria-pressed="true"] {
   border-color: var(--marinara-chat-chrome-button-border-active);
@@ -991,11 +1009,7 @@
 }
 
 .mari-avatar-placeholder {
-  background: linear-gradient(
-    135deg,
-    var(--mari-avatar-placeholder-start),
-    var(--mari-avatar-placeholder-end)
-  );
+  background: linear-gradient(135deg, var(--mari-avatar-placeholder-start), var(--mari-avatar-placeholder-end));
   color: var(--mari-avatar-placeholder-text);
   box-shadow:
     0 0.25rem 0.75rem color-mix(in srgb, var(--mari-avatar-placeholder-end) 18%, transparent),
@@ -1392,15 +1406,21 @@
 }
 
 [data-marinara-chat-chrome-accent-mode="gradient"]
-  .mari-chrome-control:not(.mari-chrome-control--danger):not(.mari-chat-mode-action):not(.mari-panel-gradient-button):hover {
+  .mari-chrome-control:not(.mari-chrome-control--danger):not(.mari-chat-mode-action):not(
+    .mari-panel-gradient-button
+  ):hover {
   border-color: var(--marinara-chat-chrome-button-border-hover);
   background: var(--marinara-chat-chrome-surface-bg-hover);
 }
 
 [data-marinara-chat-chrome-accent-mode="gradient"]
-  .mari-chrome-control--selected:not(.mari-chrome-control--danger):not(.mari-chat-mode-action):not(.mari-panel-gradient-button),
+  .mari-chrome-control--selected:not(.mari-chrome-control--danger):not(.mari-chat-mode-action):not(
+    .mari-panel-gradient-button
+  ),
 [data-marinara-chat-chrome-accent-mode="gradient"]
-  .mari-chrome-control[aria-pressed="true"]:not(.mari-chrome-control--danger):not(.mari-chat-mode-action):not(.mari-panel-gradient-button) {
+  .mari-chrome-control[aria-pressed="true"]:not(.mari-chrome-control--danger):not(.mari-chat-mode-action):not(
+    .mari-panel-gradient-button
+  ) {
   border-color: var(--marinara-chat-chrome-button-border-active);
   background: var(--marinara-chat-chrome-surface-bg-active);
   color: var(--marinara-chat-chrome-button-text-active);
@@ -1502,6 +1522,8 @@
 
 .mari-editor-header {
   display: flex;
+  height: 3.8125rem;
+  flex: 0 0 3.8125rem;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.75rem;
@@ -1512,10 +1534,109 @@
 
 .mari-editor-header-main {
   display: flex;
+  min-height: 2.25rem;
   min-width: 0;
   flex: 1 1 18rem;
   align-items: center;
   gap: 0.75rem;
+}
+
+.mari-settings-search-header {
+  height: auto;
+  min-height: 3.8125rem;
+  flex: 0 0 auto;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  background: transparent;
+}
+
+.mari-quick-preset-editor {
+  --marinara-editor-bg: transparent;
+  --marinara-editor-surface-bg: var(--marinara-chat-chrome-panel-bg);
+  --marinara-editor-surface-bg-hover: var(--marinara-chat-chrome-highlight-bg-hover);
+  --marinara-editor-control-bg: var(--marinara-chat-chrome-button-bg);
+  --marinara-editor-control-bg-hover: var(--marinara-chat-chrome-button-bg-hover);
+  --marinara-editor-border: var(--marinara-chat-chrome-button-border);
+  --marinara-editor-border-strong: var(--marinara-chat-chrome-button-border-hover);
+  --marinara-editor-divider: var(--marinara-chat-chrome-panel-divider);
+  --marinara-editor-text: var(--marinara-chat-chrome-panel-text);
+  --marinara-editor-muted: var(--marinara-chat-chrome-panel-muted);
+
+  background: transparent;
+  color: var(--marinara-chat-chrome-panel-text);
+}
+
+.mari-quick-preset-editor .mari-editor-panel {
+  border-color: var(--marinara-chat-chrome-button-border);
+  background: var(--marinara-chat-chrome-button-bg);
+  box-shadow: none;
+}
+
+.mari-quick-preset-editor .mari-editor-panel--soft {
+  background: color-mix(in srgb, var(--marinara-chat-chrome-button-bg) 78%, var(--marinara-chat-chrome-panel-bg) 22%);
+}
+
+.mari-quick-preset-editor .mari-editor-toolbar {
+  border-color: var(--marinara-chat-chrome-button-border);
+  background: transparent;
+  box-shadow: none;
+}
+
+.mari-quick-preset-editor .mari-editor-field {
+  border-color: var(--marinara-chat-chrome-input-border);
+  background: var(--marinara-chat-chrome-input-bg);
+  color: var(--marinara-chat-chrome-panel-text);
+}
+
+@media (max-width: 639px) {
+  .mari-quick-preset-editor [data-preset-marker-section="true"] {
+    border-color: color-mix(in srgb, #60a5fa 52%, var(--marinara-chat-chrome-button-border));
+    background: color-mix(in srgb, #3b82f6 13%, var(--marinara-chat-chrome-button-bg));
+  }
+
+  .mari-quick-preset-editor [data-preset-section-group-badge] {
+    display: none;
+  }
+}
+
+.mari-chat-settings-inline-editor {
+  --background: var(--marinara-chat-chrome-panel-bg);
+  --card: var(--marinara-chat-chrome-button-bg);
+  --secondary: var(--marinara-chat-chrome-button-bg);
+  --accent: var(--marinara-chat-chrome-button-bg-hover);
+  --foreground: var(--marinara-chat-chrome-panel-text);
+  --muted-foreground: var(--marinara-chat-chrome-panel-muted);
+  --border: var(--marinara-chat-chrome-button-border);
+  --ring: var(--marinara-chat-chrome-focus-ring);
+  --marinara-editor-bg: transparent;
+  --marinara-editor-surface-bg: var(--marinara-chat-chrome-button-bg);
+  --marinara-editor-surface-bg-hover: var(--marinara-chat-chrome-button-bg-hover);
+  --marinara-editor-control-bg: var(--marinara-chat-chrome-input-bg);
+  --marinara-editor-control-bg-hover: var(--marinara-chat-chrome-button-bg-hover);
+  --marinara-editor-border: var(--marinara-chat-chrome-button-border);
+  --marinara-editor-border-strong: var(--marinara-chat-chrome-button-border-hover);
+  --marinara-editor-divider: var(--marinara-chat-chrome-panel-divider);
+  --marinara-editor-text: var(--marinara-chat-chrome-panel-text);
+  --marinara-editor-muted: var(--marinara-chat-chrome-panel-muted);
+
+  color: var(--marinara-chat-chrome-panel-text);
+}
+
+.mari-chat-settings-inline-editor .mari-editor-panel {
+  border-color: var(--marinara-chat-chrome-button-border);
+  background: var(--marinara-chat-chrome-button-bg);
+  box-shadow: none;
+}
+
+.mari-chat-settings-inline-editor .mari-editor-panel--soft {
+  background: color-mix(in srgb, var(--marinara-chat-chrome-button-bg) 74%, var(--marinara-chat-chrome-panel-bg) 26%);
+}
+
+.mari-chat-settings-inline-editor .mari-editor-field {
+  border-color: var(--marinara-chat-chrome-input-border);
+  background: var(--marinara-chat-chrome-input-bg);
+  color: var(--marinara-chat-chrome-panel-text);
 }
 
 .mari-editor-title,
@@ -1531,16 +1652,66 @@
 .mari-editor-title,
 .mari-editor-title-input {
   color: var(--marinara-editor-text);
-  font-size: 1.125rem;
+  font-size: 1rem;
   font-weight: 700;
-  line-height: 1.35;
+  line-height: 1.2;
 }
 
 .mari-editor-subtitle-input,
 .mari-editor-meta {
   color: var(--marinara-editor-muted);
-  font-size: 0.75rem;
-  line-height: 1.35;
+  font-size: 0.6875rem;
+  line-height: 1.2;
+}
+
+.mari-editor-title-line {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.mari-editor-title-line .mari-editor-title-input {
+  width: auto;
+  max-width: 100%;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  field-sizing: content;
+}
+
+.mari-editor-byline {
+  display: flex;
+  min-width: 0;
+  max-width: 42%;
+  flex: 0 1 auto;
+  align-items: baseline;
+  gap: 0.25rem;
+}
+
+.mari-editor-byline-creator {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mari-editor-byline-version {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.mari-editor-secondary-line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.mari-editor-secondary-line .mari-editor-subtitle-input {
+  width: auto;
+  flex: 1 1 auto;
 }
 
 .mari-editor-meta {
@@ -1575,11 +1746,7 @@
 }
 
 .mari-editor-avatar-tile.mari-avatar-placeholder {
-  background: linear-gradient(
-    135deg,
-    var(--mari-avatar-placeholder-start),
-    var(--mari-avatar-placeholder-end)
-  );
+  background: linear-gradient(135deg, var(--mari-avatar-placeholder-start), var(--mari-avatar-placeholder-end));
   color: var(--mari-avatar-placeholder-text);
   box-shadow:
     0 0.25rem 0.75rem color-mix(in srgb, var(--mari-avatar-placeholder-end) 18%, transparent),
@@ -1665,6 +1832,11 @@
 
 .mari-editor-action--danger {
   color: var(--destructive);
+}
+
+.mari-editor-action--favorite[data-favorite="true"],
+.mari-editor-action--favorite:hover {
+  color: var(--marinara-editor-accent);
 }
 
 .mari-editor-status {
@@ -2048,12 +2220,15 @@
 
 @media (max-width: 767px) {
   .mari-editor-header {
+    height: auto;
+    min-height: 3.8125rem;
+    flex-basis: auto;
     gap: 0.5rem;
     padding-inline: 0.75rem;
   }
 
   .mari-editor-title-input {
-    font-size: 1rem;
+    font-size: 0.9375rem;
   }
 
   .mari-editor-icon-tile,
@@ -2153,7 +2328,11 @@ textarea {
   -webkit-touch-callout: default;
 }
 
-:where(:root[data-marinara-custom-cursor="enabled"] input, :root[data-marinara-custom-cursor="enabled"] select, :root[data-marinara-custom-cursor="enabled"] textarea) {
+:where(
+  :root[data-marinara-custom-cursor="enabled"] input,
+  :root[data-marinara-custom-cursor="enabled"] select,
+  :root[data-marinara-custom-cursor="enabled"] textarea
+) {
   cursor: var(--marinara-custom-cursor) !important;
 }
 
@@ -2465,16 +2644,12 @@ body {
   }
   54% {
     opacity: 0.95;
-    filter:
-      drop-shadow(0 0 0.38rem var(--mari-home-star-glow))
-      drop-shadow(0 0 0.9rem var(--mari-home-star-glow));
+    filter: drop-shadow(0 0 0.38rem var(--mari-home-star-glow)) drop-shadow(0 0 0.9rem var(--mari-home-star-glow));
     transform: translate(-50%, -50%) scale(1.16);
   }
   72% {
     opacity: 0.72;
-    filter:
-      drop-shadow(0 0 0.46rem var(--mari-home-star-glow))
-      drop-shadow(0 0 1.1rem var(--mari-home-star-glow));
+    filter: drop-shadow(0 0 0.46rem var(--mari-home-star-glow)) drop-shadow(0 0 1.1rem var(--mari-home-star-glow));
     transform: translate(-50%, -50%) scale(1.05);
   }
   100% {
@@ -2959,7 +3134,8 @@ strong {
   line-height: calc(1.35rem * var(--tracker-panel-font-scale));
 }
 
-.mari-tracker-panel-scroll[data-tracker-content-constrained="true"] :is(.leading-3, .leading-4, .leading-5, .leading-6) {
+.mari-tracker-panel-scroll[data-tracker-content-constrained="true"]
+  :is(.leading-3, .leading-4, .leading-5, .leading-6) {
   line-height: calc(var(--tracker-panel-base-line-height) * var(--tracker-panel-font-scale));
 }
 
@@ -4640,6 +4816,13 @@ strong {
     /* Safe-area insets handled by AppShell — only apply sides here */
     padding-left: env(safe-area-inset-left);
     padding-right: env(safe-area-inset-right);
+  }
+
+  .mari-app {
+    top: var(--mari-visual-viewport-offset-top, 0px);
+    bottom: auto;
+    height: var(--mari-visual-viewport-height, 100dvh);
+    min-height: 0;
   }
 
   .app-sidebar-mobile {

@@ -16,12 +16,14 @@ import { cn } from "../../../lib/utils";
 import { useTrackerGameState } from "../hooks/use-tracker-game-state";
 import { useTrackerFieldLockUpdater } from "../hooks/use-tracker-field-lock-updater";
 import { useTrackerPanelModel } from "../hooks/use-tracker-panel-model";
+import type { PersonaPortraitSaveSnapshot } from "../hooks/use-persona-portrait-save";
 import type { TrackerEditMode } from "../tracker-panel.types";
 import { EmptySection } from "./controls/SectionControls";
 import { TrackerSectionList } from "./TrackerSectionList";
 import { TrackerSkeleton } from "./TrackerSkeleton";
 import { TrackerSidebarHeader } from "./TrackerSidebarHeader";
 import { TrackerLockProvider } from "./TrackerLockContext";
+import { Translation, useTranslation as useUiTranslation } from "react-i18next";
 
 const TRACKER_PANEL_NEUTRAL_VARS =
   "[--accent:rgb(39_39_42)] [--accent-foreground:rgb(244_244_245)] [--background:rgb(18_18_21)] [--border:rgb(63_63_70)] [--card:rgb(24_24_27)] [--foreground:rgb(244_244_245)] [--input:rgb(63_63_70)] [--muted:rgb(39_39_42)] [--muted-foreground:rgb(161_161_170)] [--popover:rgb(24_24_27)] [--popover-foreground:rgb(244_244_245)] [--primary:rgb(212_212_216)] [--primary-foreground:rgb(18_18_21)] [--ring:rgb(161_161_170)] [--secondary:rgb(39_39_42)] [--tracker-panel-card-background:color-mix(in_srgb,var(--background)_22%,transparent)] [--tracker-panel-section-background:color-mix(in_srgb,var(--card)_6%,transparent)]";
@@ -49,13 +51,30 @@ class TrackerPanelErrorBoundary extends Component<
 
   render() {
     if (this.state.hasError) {
-      return <EmptySection>Tracker data could not be rendered.</EmptySection>;
+      return (
+        <Translation>
+          {(t) => <EmptySection>{t("ui.tracker.trackerDataSidebar.renderError")}</EmptySection>}
+        </Translation>
+      );
     }
     return this.props.children;
   }
 }
 
-export function TrackerDataSidebar({ fillHeight = false }: { fillHeight?: boolean } = {}) {
+export function TrackerDataSidebar({
+  detached = false,
+  fillHeight = false,
+  queuePersonaPortraitSave,
+  flushPersonaPortraitSave,
+  onToggleDetached,
+}: {
+  detached?: boolean;
+  fillHeight?: boolean;
+  queuePersonaPortraitSave: (snapshot: PersonaPortraitSaveSnapshot) => void;
+  flushPersonaPortraitSave: (personaId: string) => void;
+  onToggleDetached?: () => void;
+}) {
+  const { t: localizeUi } = useUiTranslation();
   useRenderTimer("tracker-panel"); // [#3104 diagnostic]
   const activeChatId = useChatStore((s) => s.activeChatId);
   const { patchField, patchPlayerStats, flushPatch } = useGameStatePatcher(activeChatId, "tracker-data-sidebar");
@@ -168,10 +187,12 @@ export function TrackerDataSidebar({ fillHeight = false }: { fillHeight?: boolea
         <TrackerSidebarHeader
           trackerPanelSide={trackerPanelSide}
           sizeProfile={trackerPanelSizeProfile}
+          detached={detached}
           activeEditMode={activeEditMode}
           onSetEditMode={setActiveEditMode}
           onSetSide={setTrackerPanelSide}
           onSetSizeProfile={setTrackerPanelSizeProfile}
+          onToggleDetached={onToggleDetached}
           onClose={() => setTrackerPanelOpen(false, activeChatId)}
         />
 
@@ -204,18 +225,20 @@ export function TrackerDataSidebar({ fillHeight = false }: { fillHeight?: boolea
                 toggleTrackerPanelSectionCollapsed={toggleTrackerPanelSectionCollapsed}
                 deleteMode={deleteMode}
                 addMode={addMode}
+                queuePersonaPortraitSave={queuePersonaPortraitSave}
+                flushPersonaPortraitSave={flushPersonaPortraitSave}
               />
             </TrackerPanelErrorBoundary>
           ) : null}
 
           {!activeChatId ? (
-            <EmptySection>Select a chat to view tracker data.</EmptySection>
+            <EmptySection>{localizeUi("ui.trackerPanel.trackerdatasidebar.selectAChatToViewTrackerData")}</EmptySection>
           ) : isLoadingGameState ? (
             <TrackerSkeleton />
           ) : !currentGameState ? (
-            <EmptySection>No tracker data yet.</EmptySection>
+            <EmptySection>{localizeUi("ui.trackerPanel.trackerdatasidebar.noTrackerDataYet")}</EmptySection>
           ) : !hasFixedTrackerPanel ? (
-            <EmptySection>No enabled tracker panels.</EmptySection>
+            <EmptySection>{localizeUi("ui.trackerPanel.trackerdatasidebar.noEnabledTrackerPanels")}</EmptySection>
           ) : null}
         </div>
       </TrackerLockProvider>

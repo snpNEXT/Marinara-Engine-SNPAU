@@ -594,7 +594,7 @@ function mergeCachedGeneratedMessage(existing: Message, incoming: Message): Mess
   return merged;
 }
 
-function upsertPersistedMessages(qc: QueryClient, chatId: string, incoming: Message[]) {
+export function upsertPersistedMessages(qc: QueryClient, chatId: string, incoming: Message[]) {
   if (incoming.length === 0) return;
 
   const sortedIncoming = sortMessagesByCreatedAt(
@@ -1186,8 +1186,11 @@ export function useGenerate() {
       // Background generations (e.g. autonomous messaging) run silently,
       // tracked only by abortControllers.
       if (isActiveChat()) {
-        setStreaming(true, params.chatId);
+        // Remove any completed response before exposing the next streaming state.
+        // Otherwise the old buffer can render beneath the new user message until
+        // the first token of the new response arrives.
         clearStreamBuffer(params.chatId);
+        setStreaming(true, params.chatId);
         clearThoughtBubbles();
         clearCyoaChoices();
         clearMariChips();
@@ -2241,14 +2244,14 @@ export function useGenerate() {
                 }
                 break;
               }
-              // The server saves fresh Roleplay output before post-processing
-              // agents start. Keep the live stream authoritative until `done`,
-              // otherwise the complete persisted row replaces the animated
-              // buffer as soon as agents begin their work.
+              // Keep the durable row in cache even while the live presentation
+              // remains authoritative. The Roleplay surface shadows the row that
+              // owns the current stream, then reveals it as soon as another
+              // response starts (for example while Illustrator is still working).
               if (!keepStreamLiveThroughPostProcessing) {
                 rememberContinuedMessageContent(savedMessage);
-                upsertPersistedMessages(qc, params.chatId, [savedMessage]);
               }
+              upsertPersistedMessages(qc, params.chatId, [savedMessage]);
               break;
             }
 
@@ -3046,7 +3049,7 @@ export function useGenerate() {
                       deeplxUrl: store.config.deeplxUrl,
                     })
                     .then((result) => {
-                      store.setTranslation(id, result.translatedText);
+                      store.setTranslation(id, result.translatedText, textToTranslate);
                       store.setTranslating(id, false);
                       // Persist to message extra
                       api

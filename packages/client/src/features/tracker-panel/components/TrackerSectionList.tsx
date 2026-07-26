@@ -13,6 +13,7 @@ import type {
 import { useFeaturedCharacterCards } from "../hooks/use-featured-character-cards";
 import { useTrackerMutations } from "../hooks/use-tracker-mutations";
 import { useTrackerRerun } from "../hooks/use-tracker-rerun";
+import type { PersonaPortraitSaveSnapshot } from "../hooks/use-persona-portrait-save";
 import { TRACKER_SECTION_AGENT_TYPES, TRACKER_SECTION_RERUN_TITLES } from "../lib/tracker-panel.constants";
 import type { TrackerPanelSection, TrackerSpriteLookup } from "../tracker-panel.types";
 import { SectionIconButton } from "./controls/SectionControls";
@@ -48,6 +49,8 @@ export function TrackerSectionList({
   toggleTrackerPanelSectionCollapsed,
   deleteMode,
   addMode,
+  queuePersonaPortraitSave,
+  flushPersonaPortraitSave,
 }: {
   activeChatId: string;
   activePersona: Persona | null;
@@ -74,6 +77,8 @@ export function TrackerSectionList({
   toggleTrackerPanelSectionCollapsed: (section: TrackerPanelSection) => void;
   deleteMode: boolean;
   addMode: boolean;
+  queuePersonaPortraitSave: (snapshot: PersonaPortraitSaveSnapshot) => void;
+  flushPersonaPortraitSave: (personaId: string) => void;
 }) {
   const updateAgent = useUpdateAgent();
   const autoGenerateCharacterAvatars = characterTrackerSettings.autoGenerateAvatars === true;
@@ -214,6 +219,8 @@ export function TrackerSectionList({
             onRemoveInventoryItem={removeInventoryItem}
             deleteMode={deleteMode}
             addMode={addMode}
+            queuePersonaPortraitSave={queuePersonaPortraitSave}
+            flushPersonaPortraitSave={flushPersonaPortraitSave}
             collapsed={isPanelCollapsed("persona")}
             onToggleCollapsed={() => toggleTrackerPanelSectionCollapsed("persona")}
           />

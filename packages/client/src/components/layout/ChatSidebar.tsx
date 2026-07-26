@@ -64,7 +64,7 @@ import { getCurrentGameGroupRepresentative } from "../../lib/game-session-resolu
 import { api } from "../../lib/api-client";
 import { SelectionActionBar } from "../ui/SelectionActionBar";
 import { SmoothFolderContent } from "../ui/SmoothFolderContent";
-import { useTranslation } from "react-i18next";
+import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 
 type ChatSortOption = "newest" | "oldest" | "name-asc" | "name-desc";
@@ -204,6 +204,7 @@ function ChatSidebarTitleIcon() {
 }
 
 export function ChatSidebar() {
+  const { t: localizeUi } = useUiTranslation();
   const { t } = useTranslation();
   const localize = useLocalizedUiText();
   const { data: chats, isError: chatsError, isLoading, isFetching, refetch: refetchChats } = useChats();
@@ -596,7 +597,7 @@ export function ChatSidebar() {
       const connectionRows = ((connections ?? []) as Array<{ id: string }>).filter((connection) => !!connection.id);
       if (connectionRows.length === 0) {
         if (mode !== "visual_novel") {
-          setPendingNewChatMode(mode);
+          setPendingNewChatMode(mode, "sidebar");
         }
         if (typeof window !== "undefined" && window.innerWidth < 768) setSidebarOpen(false);
         return;
@@ -670,20 +671,20 @@ export function ChatSidebar() {
           messagesImported?: number;
         }>("/import/st-chat", formData);
         if (data.success === false || data.error) {
-          toast.error(`Import failed: ${data.error ?? "Unknown error"}`);
+          toast.error(localizeUi("ui.layout.chatsidebar.importFailedValue1", { value1: data.error ??localizeUi("ui.layout.chatsidebar.unknownError") }));
           return;
         }
 
-        toast.success(`Imported ${data.messagesImported ?? 0} messages`);
+        toast.success(localizeUi("ui.layout.chatsidebar.importedValue1Messages", { value1: data.messagesImported ?? 0 }));
         await refetchChats();
         if (data.chatId) setActiveChatId(data.chatId);
       } catch (error) {
-        toast.error(error instanceof Error ? `Import failed: ${error.message}` : "Import failed.");
+        toast.error(error instanceof Error ?localizeUi("ui.layout.chatsidebar.importFailedValue1", { value1: error.message }) :localizeUi("chat.branches.importFailed"));
       } finally {
         setIsImportingChat(false);
       }
     },
-    [activeTab, refetchChats, setActiveChatId],
+    [activeTab, refetchChats, setActiveChatId, localizeUi],
   );
 
   const activeModeConfig = MODE_CONFIG[activeTab] ?? MODE_CONFIG.conversation;
@@ -807,10 +808,10 @@ export function ChatSidebar() {
     if (selectedChatIds.size === 0) return;
     if (
       !(await showConfirmDialog({
-        title: "Delete Chats",
-        message: `Delete ${selectedChatIds.size} chat${selectedChatIds.size > 1 ? "s" : ""}?`,
-        confirmLabel: "Delete",
-        tone: "destructive",
+        title:localizeUi("ui.layout.chatsidebar.deleteChats"),
+        message:localizeUi("ui.layout.chatsidebar.deleteValue1ChatValue2", { value1: selectedChatIds.size, value2: selectedChatIds.size > 1 ?localizeUi("ui.noodle.stageprofileview.s") : "" }),
+        confirmLabel:localizeUi("lorebook.editor.batch.delete"),
+        tone: "accent",
       }))
     ) {
       return;
@@ -820,7 +821,7 @@ export function ChatSidebar() {
     }
     if (activeChatId && selectedChatIds.has(activeChatId)) setActiveChatId(null);
     exitMultiSelect();
-  }, [selectedChatIds, deleteChat, activeChatId, setActiveChatId, exitMultiSelect]);
+  }, [selectedChatIds, deleteChat, activeChatId, setActiveChatId, exitMultiSelect, localizeUi]);
 
   const handleBatchExport = useCallback(async () => {
     if (selectedChatIds.size === 0) return;
@@ -832,9 +833,9 @@ export function ChatSidebar() {
       });
       exitMultiSelect();
     } catch (err) {
-      toast.error(err instanceof Error ? `Export failed: ${err.message}` : "Export failed");
+      toast.error(err instanceof Error ?localizeUi("ui.layout.chatsidebar.exportFailedValue1", { value1: err.message }) :localizeUi("ui.layout.chatsidebar.exportFailed"));
     }
-  }, [selectedChatIds, bulkExportChats, exitMultiSelect]);
+  }, [selectedChatIds, bulkExportChats, exitMultiSelect, localizeUi]);
 
   // ── Chat row renderer (shared between unfiled + folder sections) ──
   const renderChatRow = ({ chat, branchCount }: (typeof displayChats)[number]) => {
@@ -881,9 +882,9 @@ export function ChatSidebar() {
             if (editorDirty) {
               if (
                 !(await showConfirmDialog({
-                  title: "Unsaved Changes",
-                  message: "You have unsaved changes. Discard and continue?",
-                  confirmLabel: "Discard",
+                  title:localizeUi("ui.layout.chatsidebar.unsavedChanges"),
+                  message:localizeUi("ui.layout.chatsidebar.youHaveUnsavedChangesDiscardAndContinue"),
+                  confirmLabel:localizeUi("ui.agents.agenteditor.discard"),
                   tone: "destructive",
                 }))
               ) {
@@ -918,8 +919,8 @@ export function ChatSidebar() {
         )}
         <button
           type="button"
-          aria-label="Drag chat"
-          title="Drag chat"
+          aria-label={localizeUi("ui.layout.chatsidebar.dragChat")}
+          title={localizeUi("ui.layout.chatsidebar.dragChat")}
           className="mari-chrome-accent-text-muted mari-accent-animated flex h-8 w-6 shrink-0 cursor-grab touch-none items-center justify-center rounded-md opacity-100 transition-all hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] active:cursor-grabbing active:scale-95 md:h-7 md:w-5 md:opacity-0 md:group-hover:opacity-100"
           onClick={(event) => event.stopPropagation()}
           onPointerDown={(event) => {
@@ -1092,9 +1093,9 @@ export function ChatSidebar() {
               } else {
                 if (
                   await showConfirmDialog({
-                    title: "Delete Chat",
-                    message: "Delete this chat?",
-                    confirmLabel: "Delete",
+                    title:localizeUi("ui.layout.chatsidebar.deleteChat"),
+                    message:localizeUi("ui.layout.chatsidebar.deleteThisChat"),
+                    confirmLabel:localizeUi("lorebook.editor.batch.delete"),
                     tone: "destructive",
                   })
                 ) {
@@ -1242,8 +1243,8 @@ export function ChatSidebar() {
             >
               <option value="newest">{localize("Newest")}</option>
               <option value="oldest">{localize("Oldest")}</option>
-              <option value="name-asc">A-Z</option>
-              <option value="name-desc">Z-A</option>
+              <option value="name-asc">{localizeUi("ui.panels.backgroundpicker.aZ")}</option>
+              <option value="name-desc">{localizeUi("ui.panels.backgroundpicker.zA")}</option>
             </select>
             <ArrowUpDown
               size="0.625rem"
@@ -1266,7 +1267,7 @@ export function ChatSidebar() {
             >
               <Tag size="0.6875rem" className="shrink-0" />
               <span className="max-w-full truncate">
-                {activeTag ? `Tag: ${activeTag}` : `Tags (${allTags.length})`}
+                {activeTag ?localizeUi("ui.layout.chatsidebar.tagValue1", { value1: activeTag }) :localizeUi("ui.layout.chatsidebar.tagsValue1", { value1: allTags.length })}
               </span>
               {tagsExpanded ? (
                 <ChevronUp size="0.625rem" className="shrink-0" />
@@ -1302,8 +1303,7 @@ export function ChatSidebar() {
                 onClick={() => setTagsExpanded(true)}
                 className="mari-chrome-control mari-chrome-control--compact"
               >
-                +{allTags.length - 4} more
-              </button>
+                +{allTags.length - 4} {localizeUi("ui.layout.chatsidebar.more")}</button>
             )}
           </div>
         )}
@@ -1362,9 +1362,7 @@ export function ChatSidebar() {
             <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--destructive)]/10">
               <AlertTriangle size="1.25rem" className="text-[var(--destructive)]" />
             </div>
-            <p className="text-xs text-[var(--muted-foreground)]">
-              Marinara is still waking up. Chats should appear in a moment.
-            </p>
+            <p className="text-xs text-[var(--muted-foreground)]">{localizeUi("ui.layout.chatsidebar.marinaraIsStillWakingUpChatsShouldAppearIn")}</p>
             <button
               onClick={() => void refetchChats()}
               disabled={isFetching}
@@ -1479,6 +1477,7 @@ export function ChatSidebar() {
           selectedCount={selectedChatIds.size}
           onExport={() => void handleBatchExport()}
           onDelete={handleBatchDelete}
+          deleteTone="accent"
           exporting={bulkExportChats.isPending}
           className="static mx-0"
         />
@@ -1488,18 +1487,15 @@ export function ChatSidebar() {
       <UserStatusFooter />
 
       {/* ── Delete Branch Modal ── */}
-      <Modal open={deleteTarget !== null} onClose={() => setDeleteTarget(null)} title="Delete Chat" width="max-w-sm">
+      <Modal open={deleteTarget !== null} onClose={() => setDeleteTarget(null)} title={localizeUi("ui.layout.chatsidebar.deleteChat")} width="max-w-sm">
         {deleteTarget && (
           <div className="flex flex-col gap-4">
             <div className="flex items-start gap-3">
               <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--destructive)]/10">
                 <AlertTriangle size="1.125rem" className="text-[var(--destructive)]" />
               </div>
-              <p className="text-sm text-[var(--muted-foreground)]">
-                This conversation has{" "}
-                <strong className="text-[var(--foreground)]">{deleteTarget.branchCount} branches</strong>. What would
-                you like to delete?
-              </p>
+              <p className="text-sm text-[var(--muted-foreground)]">{localizeUi("ui.layout.chatsidebar.thisConversationHas")}{" "}
+                <strong className="text-[var(--foreground)]">{deleteTarget.branchCount} {localizeUi("ui.layout.chatsidebar.branches")}</strong>{localizeUi("ui.layout.chatsidebar.whatWouldYouLikeToDelete")}</p>
             </div>
             <div className="flex flex-col gap-2">
               <button
@@ -1510,9 +1506,7 @@ export function ChatSidebar() {
                 }}
                 className="mari-chrome-control mari-chrome-control--primary w-full text-xs"
               >
-                <Trash2 size="0.8125rem" />
-                Delete This Branch Only
-              </button>
+                <Trash2 size="0.8125rem" />{localizeUi("ui.layout.chatsidebar.deleteThisBranchOnly")}</button>
               <button
                 onClick={() => {
                   if (deleteTarget.groupId) {
@@ -1523,9 +1517,7 @@ export function ChatSidebar() {
                 }}
                 className="mari-chrome-control mari-chrome-control--primary w-full text-xs"
               >
-                <Trash2 size="0.8125rem" />
-                Delete All {deleteTarget.branchCount} Branches
-              </button>
+                <Trash2 size="0.8125rem" />{localizeUi("ui.characters.spritestab.deleteAll")} {deleteTarget.branchCount} {localizeUi("ui.layout.chatsidebar.branches_f578227")}</button>
             </div>
           </div>
         )}
@@ -1558,6 +1550,7 @@ function FolderRow({
   draggedChatId: string | null;
   onDropChat: (chatIds: string[], folderId: string | null) => void;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   const dragControls = useDragControls();
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(folder.name);
@@ -1632,8 +1625,8 @@ function FolderRow({
           role="button"
           tabIndex={0}
           aria-expanded={isExpanded}
-          aria-label={`${isExpanded ? "Collapse" : "Expand"} folder ${folder.name}. Double-tap or press F2 to rename.`}
-          title="Double-click, double-tap, or press F2 to rename."
+          aria-label={localizeUi("ui.layout.folderrow.value1FolderValue2DoubleTapOrPressF2To", { value1: isExpanded ?localizeUi("ui.panels.ttsconfigcard.collapse") :localizeUi("ui.panels.ttsconfigcard.expand"), value2: folder.name })}
+          title={localizeUi("ui.panels.backgroundpicker.doubleClickDoubleTapOrPressF2ToRename")}
           onClick={(e) =>
             handleFolderRenameGesture(folder.id, e, {
               onSingleClick: () => {
@@ -1754,6 +1747,7 @@ const STATUS_OPTIONS: Array<{
 ];
 
 function UserStatusFooter() {
+  const { t: localizeUi } = useUiTranslation();
   const userStatus = useUIStore((s) => s.userStatus);
   const userActivity = useUIStore((s) => s.userActivity);
   const recentUserActivities = useUIStore((s) => s.recentUserActivities);
@@ -1825,9 +1819,7 @@ function UserStatusFooter() {
       )}
       {activityFocused && !open && recentActivitySuggestions.length > 0 && (
         <div className="absolute bottom-full left-2 right-2 mb-1 rounded-xl bg-[var(--popover)] p-1.5 shadow-xl ring-1 ring-[var(--border)]/40">
-          <div className="px-2 pb-1 pt-0.5 text-[0.625rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
-            Recent status
-          </div>
+          <div className="px-2 pb-1 pt-0.5 text-[0.625rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{localizeUi("ui.layout.userstatusfooter.recentStatus")}</div>
           {recentActivitySuggestions.map((activity) => (
             <button
               key={activity}
@@ -1846,8 +1838,8 @@ function UserStatusFooter() {
         <button
           onClick={() => setOpen((v) => !v)}
           className="mari-chrome-control mari-chrome-control--small min-w-0 shrink-0 px-2 py-1.5 max-md:h-9 max-md:min-h-9"
-          title="Change activity status"
-          aria-label="Change activity status"
+          title={localizeUi("ui.layout.userstatusfooter.changeActivityStatus")}
+          aria-label={localizeUi("ui.layout.userstatusfooter.changeActivityStatus")}
         >
           <span className={`h-2 w-2 shrink-0 rounded-full ${current.color}`} />
           <span className="mari-chrome-text max-w-20 truncate text-xs">{current.label}</span>
@@ -1869,8 +1861,8 @@ function UserStatusFooter() {
             }
           }}
           maxLength={120}
-          placeholder="What are you doing?"
-          aria-label="Custom activity"
+          placeholder={localizeUi("ui.layout.userstatusfooter.whatAreYouDoing")}
+          aria-label={localizeUi("ui.layout.userstatusfooter.customActivity")}
           className="mari-chrome-field mari-chrome-field--compact min-w-0 flex-1 px-2 py-1.5 text-xs max-md:h-9 max-md:min-h-9"
         />
       </div>

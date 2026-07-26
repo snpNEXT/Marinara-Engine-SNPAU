@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import { Bell, BellRing, Loader2, Play, Trash2, Upload, Volume2 } from "lucide-react";
-import { useTranslation } from "react-i18next";
+import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useUIStore } from "../../../stores/ui.store";
 import {
@@ -103,6 +103,7 @@ export function SettingsSection({
 }
 
 export function ConversationSoundSetting() {
+  const { t: localizeUi } = useUiTranslation();
   const localize = useLocalizedUiText();
   const convoNotificationSound = useUIStore((s) => s.convoNotificationSound);
   const setConvoNotificationSound = useUIStore((s) => s.setConvoNotificationSound);
@@ -175,12 +176,12 @@ export function ConversationSoundSetting() {
       setPreference(false);
       toast.error(
         permission === "insecure"
-          ? "Browser notifications require HTTPS or localhost. Open Marinara through a secure address and try again."
+          ?localizeUi("ui.panels.conversationsoundsetting.browserNotificationsRequireHttpsOrLocalhostOpenMarinaraThrough")
           : permission === "unsupported"
-            ? "Browser notifications are not available in this environment."
+            ?localizeUi("ui.panels.conversationsoundsetting.browserNotificationsAreNotAvailableInThisEnvironment")
             : permission === "denied"
-              ? "Browser notifications are blocked. Reset this site's notification permission, then try again."
-              : "Browser notification permission was not granted.",
+              ?localizeUi("ui.panels.conversationsoundsetting.browserNotificationsAreBlockedResetThisSiteSNotification")
+              :localizeUi("ui.panels.conversationsoundsetting.browserNotificationPermissionWasNotGranted"),
       );
     });
   };
@@ -205,13 +206,13 @@ export function ConversationSoundSetting() {
         setPreference(false);
         toast.error(
           permission === "unsupported"
-            ? "Mobile notifications require the Marinara Android app."
-            : "Android notification permission was not granted.",
+            ?localizeUi("ui.panels.conversationsoundsetting.mobileNotificationsRequireTheMarinaraAndroidApp")
+            :localizeUi("ui.panels.conversationsoundsetting.androidNotificationPermissionWasNotGranted"),
         );
       })
       .catch(() => {
         setPreference(false);
-        toast.error("Android notification permission could not be requested.");
+        toast.error(localizeUi("ui.panels.conversationsoundsetting.androidNotificationPermissionCouldNotBeRequested"));
       });
   };
 
@@ -226,7 +227,7 @@ export function ConversationSoundSetting() {
       </div>
       <ToggleSetting
         anchorId="settings-control-notification-conversation-sound"
-        label="Conversation mode"
+        label={localizeUi("settings.notifications.conversationMode")}
         checked={convoNotificationSound}
         onChange={(v) => {
           setConvoNotificationSound(v);
@@ -235,7 +236,7 @@ export function ConversationSoundSetting() {
       />
       <ToggleSetting
         anchorId="settings-control-notification-roleplay-sound"
-        label="Roleplay mode"
+        label={localizeUi("settings.notifications.roleplayMode")}
         checked={rpNotificationSound}
         onChange={(v) => {
           setRpNotificationSound(v);
@@ -244,7 +245,7 @@ export function ConversationSoundSetting() {
       />
       <ToggleSetting
         anchorId="settings-control-notification-game-sound"
-        label="Game mode"
+        label={localizeUi("settings.notifications.gameMode")}
         checked={gameNotificationSound}
         onChange={(v) => {
           setGameNotificationSound(v);
@@ -253,7 +254,7 @@ export function ConversationSoundSetting() {
       />
       <ToggleSetting
         anchorId="settings-control-notification-unfocused-only"
-        label="Only when Marinara is unfocused"
+        label={localizeUi("settings.notifications.unfocusedOnly")}
         checked={notificationSoundsOnlyWhenUnfocused}
         onChange={setNotificationSoundsOnlyWhenUnfocused}
       />
@@ -269,7 +270,7 @@ export function ConversationSoundSetting() {
       </div>
       <ToggleSetting
         anchorId="settings-control-browser-background-notifications"
-        label="Browser"
+        label={localizeUi("settings.notifications.browser")}
         checked={conversationBrowserNotifications && browserPermission === "granted"}
         onChange={(enabled) =>
           handleBrowserNotificationToggle(
@@ -282,7 +283,7 @@ export function ConversationSoundSetting() {
       />
       <ToggleSetting
         anchorId="settings-control-mobile-background-notifications"
-        label="Mobile app"
+        label={localizeUi("settings.notifications.mobileApp")}
         checked={conversationMobileNotifications && nativePermission === "granted"}
         onChange={(enabled) =>
           handleMobileNotificationToggle(
@@ -294,8 +295,8 @@ export function ConversationSoundSetting() {
         disabled={!nativeNotificationsAvailable}
         help={
           nativeNotificationsAvailable
-            ? "Uses native Android notifications from the installed Marinara app."
-            : "Available in the updated Marinara Android APK. Browser and PWA installations use the Browser toggle above."
+            ?localizeUi("ui.panels.conversationsoundsetting.usesNativeAndroidNotificationsFromTheInstalledMarinaraApp")
+            :localizeUi("ui.panels.conversationsoundsetting.availableInTheUpdatedMarinaraAndroidApkBrowserAnd")
         }
       />
       <div className="mt-1 flex items-center gap-1.5">
@@ -309,7 +310,7 @@ export function ConversationSoundSetting() {
       </div>
       <ToggleSetting
         anchorId="settings-control-browser-generation-notifications"
-        label="Browser"
+        label={localizeUi("settings.notifications.browser")}
         checked={generationBrowserNotifications && browserPermission === "granted"}
         onChange={(enabled) =>
           handleBrowserNotificationToggle(
@@ -322,7 +323,7 @@ export function ConversationSoundSetting() {
       />
       <ToggleSetting
         anchorId="settings-control-mobile-generation-notifications"
-        label="Mobile app"
+        label={localizeUi("settings.notifications.mobileApp")}
         checked={generationMobileNotifications && nativePermission === "granted"}
         onChange={(enabled) =>
           handleMobileNotificationToggle(
@@ -334,8 +335,8 @@ export function ConversationSoundSetting() {
         disabled={!nativeNotificationsAvailable}
         help={
           nativeNotificationsAvailable
-            ? "Uses native Android notifications from the installed Marinara app."
-            : "Available in the updated Marinara Android APK. Browser and PWA installations use the Browser toggle above."
+            ?localizeUi("ui.panels.conversationsoundsetting.usesNativeAndroidNotificationsFromTheInstalledMarinaraApp")
+            :localizeUi("ui.panels.conversationsoundsetting.availableInTheUpdatedMarinaraAndroidApkBrowserAnd")
         }
       />
     </div>

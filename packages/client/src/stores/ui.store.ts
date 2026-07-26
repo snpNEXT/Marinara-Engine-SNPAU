@@ -3,6 +3,7 @@
 // ──────────────────────────────────────────────
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
+import { generateClientId } from "../lib/utils";
 import {
   IMAGE_STYLE_PROFILES_STORAGE_KEY,
   normalizeImageStyleProfileSettings,
@@ -61,6 +62,7 @@ function normalizeConnectionPanelSort(value: unknown): ConnectionPanelSort {
 type FontSize = 12 | 14 | 16 | 17 | 19 | 22;
 export type VisualTheme = "default" | "sillytavern";
 export type ConversationMessageStyle = "classic" | "bubble";
+export type ConversationAvatarShape = "circle" | "square";
 export type TrackerPanelSide = "left" | "right";
 export type TrackerThoughtBubbleDisplay = "inline" | "floating";
 export type MusicPlayerSource = "spotify" | "youtube" | "custom";
@@ -349,6 +351,10 @@ export function normalizeConversationMessageStyle(value: unknown): ConversationM
   return value === "bubble" || value === "classic" ? value : "classic";
 }
 
+export function normalizeConversationAvatarShape(value: unknown): ConversationAvatarShape {
+  return value === "square" ? "square" : "circle";
+}
+
 export function normalizeTrackerThoughtBubbleDisplay(value: unknown): TrackerThoughtBubbleDisplay {
   return value === "inline" || value === "floating" ? value : "inline";
 }
@@ -411,6 +417,13 @@ export interface CustomTheme {
   installedAt: string;
 }
 
+/** A user-defined quick reply that sends a fixed prompt, macro, or slash command. */
+export interface CustomQuickReply {
+  id: string;
+  label: string;
+  content: string;
+}
+
 interface UIState {
   sidebarOpen: boolean;
   sidebarWidth: number;
@@ -469,6 +482,10 @@ interface UIState {
   regexDetailReturn: { characterId: string; tab?: string } | null;
   /** One-shot tab the character editor should open to (set by the regex-editor return path) */
   characterDetailInitialTab: string | null;
+  /** One-shot tab the lorebook editor should open to. */
+  lorebookDetailInitialTab: string | null;
+  /** One-shot tab the persona editor should open to. */
+  personaDetailInitialTab: string | null;
   /** When true, the main area shows the browser */
   botBrowserOpen: boolean;
   /** When true, the main area shows the game assets browser */
@@ -519,7 +536,7 @@ interface UIState {
   lorebookPanelActiveTag: string | null;
   /** Whether the compact Lorebooks panel tag/category shelf is expanded */
   lorebookPanelTagsExpanded: boolean;
-  /** Sort order for imported characters in the Card Browser panel */
+  /** Sort order for imported characters in the Browser panel */
   botBrowserPanelSort: ResourcePanelSort;
   /** Sort order for the compact Presets panel */
   presetPanelSort: ResourcePanelSort;
@@ -566,6 +583,8 @@ interface UIState {
   imageBackgroundHeight: number;
   imageIllustrationWidth: number;
   imageIllustrationHeight: number;
+  imageGameWidth: number;
+  imageGameHeight: number;
   imagePortraitWidth: number;
   imagePortraitHeight: number;
   imageSelfieWidth: number;
@@ -573,6 +592,7 @@ interface UIState {
   imageStyleProfiles: ImageStyleProfileSettings;
 
   conversationMessageStyle: ConversationMessageStyle;
+  conversationAvatarShape: ConversationAvatarShape;
   showTimestamps: boolean;
   showModelName: boolean;
   showTokenUsage: boolean;
@@ -582,6 +602,10 @@ interface UIState {
   showQuickReplyPostOnly: boolean;
   showQuickReplyGuide: boolean;
   showQuickReplyImpersonate: boolean;
+  /** User-defined quick replies that send a fixed prompt, macro, or slash command. */
+  customQuickReplies: CustomQuickReply[];
+  /** Remembered expand/collapse state of Chat Settings sections, keyed by section id. */
+  chatSettingsExpandedSections: Record<string, boolean>;
   confirmBeforeDelete: boolean;
   /** When true, chat exports include saved thinking/reasoning metadata. */
   includeReasoningInExports: boolean;
@@ -807,9 +831,9 @@ interface UIState {
   setPresetPanelSort: (sort: ResourcePanelSort) => void;
   setConnectionPanelSort: (sort: ConnectionPanelSort) => void;
   setAgentPanelSort: (sort: ResourcePanelSort) => void;
-  openCharacterDetail: (id: string, options?: { preserveCharacterLibrary?: boolean }) => void;
+  openCharacterDetail: (id: string, options?: { preserveCharacterLibrary?: boolean; initialTab?: string }) => void;
   closeCharacterDetail: () => void;
-  openLorebookDetail: (id: string) => void;
+  openLorebookDetail: (id: string, options?: { initialTab?: string }) => void;
   closeLorebookDetail: () => void;
   openPresetDetail: (id: string) => void;
   closePresetDetail: () => void;
@@ -819,7 +843,7 @@ interface UIState {
   closeAgentDetail: () => void;
   openToolDetail: (id: string) => void;
   closeToolDetail: () => void;
-  openPersonaDetail: (id: string, options?: { preservePersonaLibrary?: boolean }) => void;
+  openPersonaDetail: (id: string, options?: { preservePersonaLibrary?: boolean; initialTab?: string }) => void;
   closePersonaDetail: () => void;
   openRegexDetail: (
     id: string,
@@ -868,11 +892,13 @@ interface UIState {
   setReviewImagePromptsBeforeSend: (v: boolean) => void;
   setImageBackgroundDimensions: (width: number, height: number) => void;
   setImageIllustrationDimensions: (width: number, height: number) => void;
+  setImageGameDimensions: (width: number, height: number) => void;
   setImagePortraitDimensions: (width: number, height: number) => void;
   setImageSelfieDimensions: (width: number, height: number) => void;
   setImageStyleProfiles: (settings: ImageStyleProfileSettings) => void;
 
   setConversationMessageStyle: (v: ConversationMessageStyle) => void;
+  setConversationAvatarShape: (v: ConversationAvatarShape) => void;
   setShowTimestamps: (v: boolean) => void;
   setShowModelName: (v: boolean) => void;
   setShowTokenUsage: (v: boolean) => void;
@@ -882,6 +908,10 @@ interface UIState {
   setShowQuickReplyPostOnly: (v: boolean) => void;
   setShowQuickReplyGuide: (v: boolean) => void;
   setShowQuickReplyImpersonate: (v: boolean) => void;
+  addCustomQuickReply: (label: string, content: string) => void;
+  updateCustomQuickReply: (id: string, patch: Partial<Omit<CustomQuickReply, "id">>) => void;
+  removeCustomQuickReply: (id: string) => void;
+  setChatSettingsSectionExpanded: (id: string, open: boolean) => void;
   setConfirmBeforeDelete: (v: boolean) => void;
   setIncludeReasoningInExports: (v: boolean) => void;
   setMessagesPerPage: (n: number) => void;
@@ -1060,6 +1090,8 @@ export function pickSyncedSettings(state: UIState) {
     imageBackgroundHeight: state.imageBackgroundHeight,
     imageIllustrationWidth: state.imageIllustrationWidth,
     imageIllustrationHeight: state.imageIllustrationHeight,
+    imageGameWidth: state.imageGameWidth,
+    imageGameHeight: state.imageGameHeight,
     imagePortraitWidth: state.imagePortraitWidth,
     imagePortraitHeight: state.imagePortraitHeight,
     imageSelfieWidth: state.imageSelfieWidth,
@@ -1067,6 +1099,7 @@ export function pickSyncedSettings(state: UIState) {
     [IMAGE_STYLE_PROFILES_STORAGE_KEY]: state.imageStyleProfiles,
 
     conversationMessageStyle: state.conversationMessageStyle,
+    conversationAvatarShape: state.conversationAvatarShape,
     showTimestamps: state.showTimestamps,
     showModelName: state.showModelName,
     showTokenUsage: state.showTokenUsage,
@@ -1076,6 +1109,8 @@ export function pickSyncedSettings(state: UIState) {
     showQuickReplyPostOnly: state.showQuickReplyPostOnly,
     showQuickReplyGuide: state.showQuickReplyGuide,
     showQuickReplyImpersonate: state.showQuickReplyImpersonate,
+    customQuickReplies: state.customQuickReplies,
+    chatSettingsExpandedSections: state.chatSettingsExpandedSections,
     confirmBeforeDelete: state.confirmBeforeDelete,
     includeReasoningInExports: state.includeReasoningInExports,
     messagesPerPage: state.messagesPerPage,
@@ -1194,6 +1229,8 @@ export const useUIStore = create<UIState>()(
       regexDetailDefaultCharacterIds: null,
       regexDetailReturn: null,
       characterDetailInitialTab: null,
+      lorebookDetailInitialTab: null,
+      personaDetailInitialTab: null,
       botBrowserOpen: false,
       gameAssetsBrowserOpen: false,
       noodleOpen: false,
@@ -1245,6 +1282,8 @@ export const useUIStore = create<UIState>()(
       imageBackgroundHeight: 720,
       imageIllustrationWidth: 896,
       imageIllustrationHeight: 1280,
+      imageGameWidth: 1280,
+      imageGameHeight: 720,
       imagePortraitWidth: 1024,
       imagePortraitHeight: 1024,
       imageSelfieWidth: 896,
@@ -1252,6 +1291,7 @@ export const useUIStore = create<UIState>()(
       imageStyleProfiles: normalizeImageStyleProfileSettings(null),
 
       conversationMessageStyle: "classic" as ConversationMessageStyle,
+      conversationAvatarShape: "circle" as ConversationAvatarShape,
       showTimestamps: false,
       showModelName: false,
       showTokenUsage: false,
@@ -1261,6 +1301,8 @@ export const useUIStore = create<UIState>()(
       showQuickReplyPostOnly: true,
       showQuickReplyGuide: true,
       showQuickReplyImpersonate: true,
+      customQuickReplies: [],
+      chatSettingsExpandedSections: {},
       confirmBeforeDelete: true,
       includeReasoningInExports: false,
       messagesPerPage: 20,
@@ -1491,7 +1533,7 @@ export const useUIStore = create<UIState>()(
             options?.preserveCharacterLibrary ?? (s.characterLibraryOpen && s.cardLibraryKind === "characters");
           return {
             characterDetailId: id,
-            characterDetailInitialTab: null,
+            characterDetailInitialTab: options?.initialTab ?? null,
             lorebookDetailId: null,
             presetDetailId: null,
             connectionDetailId: null,
@@ -1515,9 +1557,10 @@ export const useUIStore = create<UIState>()(
           editorDirty: false,
           ...restoreMobileDetailReturnPanel(s.detailReturnRightPanel),
         })),
-      openLorebookDetail: (id) =>
+      openLorebookDetail: (id, options) =>
         set((s) => ({
           lorebookDetailId: id,
+          lorebookDetailInitialTab: options?.initialTab ?? null,
           characterLibraryOpen: false,
           agentCatalogOpen: false,
           botBrowserOpen: false,
@@ -1641,6 +1684,7 @@ export const useUIStore = create<UIState>()(
             options?.preservePersonaLibrary ?? (s.characterLibraryOpen && s.cardLibraryKind === "personas");
           return {
             personaDetailId: id,
+            personaDetailInitialTab: options?.initialTab ?? null,
             characterLibraryOpen: preservePersonaLibrary ? s.characterLibraryOpen : false,
             personaLibrarySelectedId: preservePersonaLibrary ? id : s.personaLibrarySelectedId,
             agentCatalogOpen: false,
@@ -1971,6 +2015,11 @@ export const useUIStore = create<UIState>()(
           imageIllustrationWidth: clampImageDimension(width),
           imageIllustrationHeight: clampImageDimension(height),
         }),
+      setImageGameDimensions: (width, height) =>
+        set({
+          imageGameWidth: clampImageDimension(width),
+          imageGameHeight: clampImageDimension(height),
+        }),
       setImagePortraitDimensions: (width, height) =>
         set({
           imagePortraitWidth: clampImageDimension(width),
@@ -1984,6 +2033,7 @@ export const useUIStore = create<UIState>()(
       setImageStyleProfiles: (settings) => set({ imageStyleProfiles: normalizeImageStyleProfileSettings(settings) }),
 
       setConversationMessageStyle: (v) => set({ conversationMessageStyle: normalizeConversationMessageStyle(v) }),
+      setConversationAvatarShape: (v) => set({ conversationAvatarShape: normalizeConversationAvatarShape(v) }),
       setShowTimestamps: (v) => set({ showTimestamps: v }),
       setShowModelName: (v) => set({ showModelName: v }),
       setShowTokenUsage: (v) => set({ showTokenUsage: v }),
@@ -1993,6 +2043,27 @@ export const useUIStore = create<UIState>()(
       setShowQuickReplyPostOnly: (v) => set({ showQuickReplyPostOnly: v }),
       setShowQuickReplyGuide: (v) => set({ showQuickReplyGuide: v }),
       setShowQuickReplyImpersonate: (v) => set({ showQuickReplyImpersonate: v }),
+      addCustomQuickReply: (label, content) =>
+        set((state) => ({
+          customQuickReplies: [
+            ...state.customQuickReplies,
+            { id: generateClientId(), label: label.trim(), content },
+          ],
+        })),
+      updateCustomQuickReply: (id, patch) =>
+        set((state) => ({
+          customQuickReplies: state.customQuickReplies.map((entry) =>
+            entry.id === id
+              ? { ...entry, ...(patch.label !== undefined ? { label: patch.label } : {}), ...(patch.content !== undefined ? { content: patch.content } : {}) }
+              : entry,
+          ),
+        })),
+      removeCustomQuickReply: (id) =>
+        set((state) => ({ customQuickReplies: state.customQuickReplies.filter((entry) => entry.id !== id) })),
+      setChatSettingsSectionExpanded: (id, open) =>
+        set((state) => ({
+          chatSettingsExpandedSections: { ...state.chatSettingsExpandedSections, [id]: open },
+        })),
       setConfirmBeforeDelete: (v) => set({ confirmBeforeDelete: v }),
       setIncludeReasoningInExports: (v) => set({ includeReasoningInExports: v }),
       setMessagesPerPage: (n) => set({ messagesPerPage: n }),
@@ -2089,6 +2160,7 @@ export const useUIStore = create<UIState>()(
           chatFontSize: 16,
           fontFamily: "",
           conversationMessageStyle: "classic" as ConversationMessageStyle,
+          conversationAvatarShape: "circle" as ConversationAvatarShape,
           chatFontColor: "",
           defaultDialogueColor: "",
           chatChromeTextColor: "",
@@ -2192,7 +2264,7 @@ export const useUIStore = create<UIState>()(
     }),
     {
       name: "marinara-engine-ui",
-      version: 82,
+      version: 84,
       // Debounce localStorage writes to avoid sync I/O on every state change
       storage: createJSONStorage(() => {
         let timer: ReturnType<typeof setTimeout> | null = null;
@@ -2549,6 +2621,8 @@ export const useUIStore = create<UIState>()(
         }
         // v39 -> v40: selectable Conversation message layout.
         persisted.conversationMessageStyle = normalizeConversationMessageStyle(persisted.conversationMessageStyle);
+        // v82 -> v83: selectable Conversation avatar corners, circular by default.
+        persisted.conversationAvatarShape = normalizeConversationAvatarShape(persisted.conversationAvatarShape);
         // v40 -> v41: reconcile parallel v40 UI preference additions.
         if (persisted.editMessageOnDoubleClick === undefined) {
           persisted.editMessageOnDoubleClick = true;
@@ -2760,6 +2834,10 @@ export const useUIStore = create<UIState>()(
         if (version <= 81) {
           delete persisted.defaultDialogueColorEnabled;
         }
+        if (version <= 83) {
+          if (persisted.imageGameWidth === undefined) persisted.imageGameWidth = 1280;
+          if (persisted.imageGameHeight === undefined) persisted.imageGameHeight = 720;
+        }
         persisted.appAccentRgbMode = persisted.appAccentRgbMode === true;
         persisted.customCursorEnabled = persisted.customCursorEnabled !== false;
         persisted.professorMariSuggestionsEnabled = persisted.professorMariSuggestionsEnabled !== false;
@@ -2853,6 +2931,8 @@ export const useUIStore = create<UIState>()(
         imageBackgroundHeight: state.imageBackgroundHeight,
         imageIllustrationWidth: state.imageIllustrationWidth,
         imageIllustrationHeight: state.imageIllustrationHeight,
+        imageGameWidth: state.imageGameWidth,
+        imageGameHeight: state.imageGameHeight,
         imagePortraitWidth: state.imagePortraitWidth,
         imagePortraitHeight: state.imagePortraitHeight,
         imageSelfieWidth: state.imageSelfieWidth,
@@ -2860,6 +2940,7 @@ export const useUIStore = create<UIState>()(
         imageStyleProfiles: state.imageStyleProfiles,
 
         conversationMessageStyle: state.conversationMessageStyle,
+        conversationAvatarShape: state.conversationAvatarShape,
         showTimestamps: state.showTimestamps,
         showModelName: state.showModelName,
         showTokenUsage: state.showTokenUsage,
@@ -2869,6 +2950,8 @@ export const useUIStore = create<UIState>()(
         showQuickReplyPostOnly: state.showQuickReplyPostOnly,
         showQuickReplyGuide: state.showQuickReplyGuide,
         showQuickReplyImpersonate: state.showQuickReplyImpersonate,
+        customQuickReplies: state.customQuickReplies,
+        chatSettingsExpandedSections: state.chatSettingsExpandedSections,
         confirmBeforeDelete: state.confirmBeforeDelete,
         includeReasoningInExports: state.includeReasoningInExports,
         messagesPerPage: state.messagesPerPage,

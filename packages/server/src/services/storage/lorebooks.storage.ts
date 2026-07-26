@@ -933,10 +933,50 @@ export function createLorebooksStorage(db: DB) {
         throw new Error("One or more selected entries do not belong to this lorebook");
       }
 
-      const updates: Record<string, unknown> = { updatedAt: now() };
-      for (const [field, value] of Object.entries(changes)) {
-        if (value !== undefined) updates[field] = String(value);
+      if (changes.folderId !== undefined) {
+        await assertFolderBelongsToLorebook(lorebookId, changes.folderId);
       }
+
+      const updates: Record<string, unknown> = { updatedAt: now() };
+      if (changes.enabled !== undefined) updates.enabled = String(changes.enabled);
+      if (changes.constant !== undefined) updates.constant = String(changes.constant);
+      if (changes.selective !== undefined) updates.selective = String(changes.selective);
+      if (changes.selectiveLogic !== undefined) updates.selectiveLogic = changes.selectiveLogic;
+      if (changes.probability !== undefined) updates.probability = changes.probability;
+      if (changes.scanDepth !== undefined) updates.scanDepth = changes.scanDepth;
+      if (changes.matchWholeWords !== undefined) updates.matchWholeWords = String(changes.matchWholeWords);
+      if (changes.caseSensitive !== undefined) updates.caseSensitive = String(changes.caseSensitive);
+      if (changes.useRegex !== undefined) updates.useRegex = String(changes.useRegex);
+      if (changes.characterFilterMode !== undefined) updates.characterFilterMode = changes.characterFilterMode;
+      if (changes.characterFilterIds !== undefined)
+        updates.characterFilterIds = JSON.stringify(changes.characterFilterIds);
+      if (changes.characterTagFilterMode !== undefined) updates.characterTagFilterMode = changes.characterTagFilterMode;
+      if (changes.characterTagFilters !== undefined)
+        updates.characterTagFilters = JSON.stringify(changes.characterTagFilters);
+      if (changes.generationTriggerFilterMode !== undefined)
+        updates.generationTriggerFilterMode = changes.generationTriggerFilterMode;
+      if (changes.generationTriggerFilters !== undefined)
+        updates.generationTriggerFilters = JSON.stringify(changes.generationTriggerFilters);
+      if (changes.additionalMatchingSources !== undefined)
+        updates.additionalMatchingSources = JSON.stringify(changes.additionalMatchingSources);
+      if (changes.position !== undefined) updates.position = changes.position;
+      if (changes.depth !== undefined) updates.depth = changes.depth;
+      if (changes.order !== undefined) updates.order = changes.order;
+      if (changes.role !== undefined) updates.role = changes.role;
+      if (changes.sticky !== undefined) updates.sticky = changes.sticky;
+      if (changes.cooldown !== undefined) updates.cooldown = changes.cooldown;
+      if (changes.delay !== undefined) updates.delay = changes.delay;
+      if (changes.ephemeral !== undefined) updates.ephemeral = changes.ephemeral;
+      if (changes.group !== undefined) updates.group = changes.group;
+      if (changes.groupWeight !== undefined) updates.groupWeight = changes.groupWeight;
+      if (changes.folderId !== undefined) updates.folderId = changes.folderId;
+      if (changes.tag !== undefined) updates.tag = changes.tag;
+      if (changes.locked !== undefined) updates.locked = String(changes.locked);
+      if (changes.preventRecursion !== undefined) updates.preventRecursion = String(changes.preventRecursion);
+      if (changes.excludeRecursion !== undefined) updates.excludeRecursion = String(changes.excludeRecursion);
+      if (changes.delayUntilRecursion !== undefined) updates.delayUntilRecursion = String(changes.delayUntilRecursion);
+      if (changes.excludeFromVectorization !== undefined)
+        updates.excludeFromVectorization = String(changes.excludeFromVectorization);
       if (changes.excludeFromVectorization === true) updates.embedding = null;
 
       await db

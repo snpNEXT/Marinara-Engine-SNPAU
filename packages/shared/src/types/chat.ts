@@ -276,6 +276,8 @@ export interface ChatMetadata {
   illustratorUseAvatarReferences?: boolean;
   /** Optional per-chat LLM connection override used only to write Illustrator/selfie image prompts. */
   illustratorPromptConnectionId?: string | null;
+  /** Optional per-chat image generation connection override used by Illustrator. */
+  illustratorImageConnectionId?: string | null;
   /** Number of image variants generated for each Illustrator request. */
   illustratorImagesPerGeneration?: number;
   /** Whether Roleplay Illustrator may generate and activate a reusable background after a scene-location change. */
@@ -415,6 +417,8 @@ export interface ChatMetadata {
   translationInputPrompt?: string | null;
   /** AI system prompt for incoming response translation. Supports {{targetLanguage}}. */
   translationOutputPrompt?: string | null;
+  /** Show only the translated text in place of the original message once a translation exists. */
+  translationDisplayOnly?: boolean;
   /** Allow roleplay characters to create direct-message conversation chats with hidden [dm] commands. */
   roleplayDmCommandsEnabled?: boolean;
   /** Chat-scoped Intiface Central WebSocket URL for haptic manual and auto-connect. */
@@ -544,6 +548,8 @@ export interface ChatMetadata {
   gameLastIllustrationTag?: string;
   /** Connection used for Game Mode scene-video generation. */
   gameVideoConnectionId?: string | null;
+  /** Master visibility/runtime switch for manual Game Mode scene videos. */
+  gameSceneVideosEnabled?: boolean;
   /** Selected Game Mode scene/storyboard video prompt template. */
   gameVideoPromptTemplateId?: string | null;
   /** Selected Game Mode prompt template for storyboard keyframe clips only. */
@@ -558,6 +564,8 @@ export interface ChatMetadata {
   gameStoryboardAutoIllustrationsEnabled?: boolean;
   /** When true, completed Game Mode GM turns automatically create storyboard keyframe videos. */
   gameStoryboardAutoGenerationEnabled?: boolean;
+  /** Master visibility/runtime switch for Game Mode storyboard controls. */
+  gameStoryboardsEnabled?: boolean;
   /** Target number of Game Mode storyboard keyframes to create per GM turn. */
   gameStoryboardKeyframeCount?: number;
   /** Per-chat storyboard animation clip duration in seconds. Null/omitted uses Video Generation settings. */

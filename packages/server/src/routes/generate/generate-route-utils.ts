@@ -1108,6 +1108,11 @@ export function parseStoredGenerationParameters(raw: unknown): StoredGenerationP
   if (isPlainRecord(source.customParameters)) {
     out.customParameters = mergeCustomParameters({}, source.customParameters);
   }
+  if (isPlainRecord(source.managedCustomParameters)) {
+    const managedCustomParameters =
+      generationParametersSchema.shape.managedCustomParameters.safeParse(source.managedCustomParameters);
+    if (managedCustomParameters.success) out.managedCustomParameters = managedCustomParameters.data;
+  }
   if (isPlainRecord(source.enabledParameters)) {
     const enabledParameters: GenerationParameterSendMap = {};
     for (const key of GENERATION_PARAMETER_SEND_KEYS) {

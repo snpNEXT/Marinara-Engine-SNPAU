@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronRight, Puzzle } from "lucide-react";
-import { useTranslation } from "react-i18next";
+import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
 import type { PersonalExtensionHostContribution } from "@marinara-engine/shared";
 import { useUIStore } from "../../stores/ui.store";
 import {
@@ -25,6 +25,7 @@ function ContributionAttribution({ contribution }: { contribution: PersonalExten
 }
 
 export function PersonalExtensionTopbarButtons() {
+  const { t: localizeUi } = useUiTranslation();
   const { contributions } = usePersonalExtensionContributions();
   const buttons = contributions.filter((contribution) => contribution.kind === "button").slice(0, 2);
 
@@ -34,8 +35,8 @@ export function PersonalExtensionTopbarButtons() {
       type="button"
       onClick={() => activatePersonalExtensionContribution(contribution.key)}
       className={TOPBAR_CONTRIBUTION_CLASS}
-      title={`${contribution.label} (${contribution.extensionName})`}
-      aria-label={`${contribution.label} (${contribution.extensionName})`}
+      title={localizeUi("ui.layout.personalextensiontopbarbuttons.value1Value2", { value1: contribution.label, value2: contribution.extensionName })}
+      aria-label={localizeUi("ui.layout.personalextensiontopbarbuttons.value1Value2", { value1: contribution.label, value2: contribution.extensionName })}
     >
       <PersonalExtensionContributionIcon icon={contribution.icon} size={15} />
     </button>

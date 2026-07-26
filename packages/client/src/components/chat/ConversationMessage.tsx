@@ -44,6 +44,7 @@ import {
   USER_REACTOR,
   type ReactionSegmentTarget,
 } from "../../lib/reactions";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 const EMPTY_CUSTOM_EMOJI_MAP = new Map<string, string>();
 const EMPTY_CUSTOM_STICKER_MAP = new Map<string, string>();
@@ -145,6 +146,7 @@ export const ConversationMessage = memo(function ConversationMessage({
   onToggleSelect,
   hasDraftInput = false,
 }: ConversationMessageProps) {
+  const { t: localizeUi } = useUiTranslation();
   // ── Local state ──
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(message.content);
@@ -166,6 +168,7 @@ export const ConversationMessage = memo(function ConversationMessage({
   const chatFontColor = useUIStore((s) => s.chatFontColor);
   const showMessageNumbers = useUIStore((s) => s.showMessageNumbers);
   const quoteFormat = useUIStore((s) => s.quoteFormat);
+  const conversationAvatarShape = useUIStore((s) => s.conversationAvatarShape);
 
   // ── Translation ──
   const { translate, translations, translating } = useTranslate();
@@ -375,12 +378,12 @@ export const ConversationMessage = memo(function ConversationMessage({
         await api.patch(`/chats/${message.chatId}/messages/${message.id}/extra`, { attachments: updated });
       } catch (err) {
         qc.setQueryData(msgKey, previous);
-        toast.error(err instanceof Error ? err.message : "Failed to remove attachment.");
+        toast.error(err instanceof Error ? err.message :localizeUi("ui.chat.conversationmessage.failedToRemoveAttachment"));
       } finally {
         await qc.invalidateQueries({ queryKey: msgKey });
       }
     },
-    [extra.attachments, message.chatId, message.id, qc],
+    [extra.attachments, message.chatId, message.id, qc, localizeUi],
   );
 
   // ── Reactions ──
@@ -407,12 +410,12 @@ export const ConversationMessage = memo(function ConversationMessage({
         await api.patch(`/chats/${message.chatId}/messages/${message.id}/extra`, { reactions: next });
       } catch (err) {
         qc.setQueryData(msgKey, previous);
-        toast.error(err instanceof Error ? err.message : "Failed to update reaction.");
+        toast.error(err instanceof Error ? err.message :localizeUi("ui.chat.conversationmessage.failedToUpdateReaction"));
       } finally {
         await qc.invalidateQueries({ queryKey: msgKey });
       }
     },
-    [message.chatId, message.id, qc],
+    [message.chatId, message.id, qc, localizeUi],
   );
 
   // Toggle the human's reaction. `target` aims it at one grouped speaker segment
@@ -731,6 +734,7 @@ export const ConversationMessage = memo(function ConversationMessage({
     displayName: headerDisplayName,
     avatarUrl,
     avatarCropStyle,
+    avatarCornerClass: conversationAvatarShape === "square" ? "rounded-lg" : "rounded-full",
     nameColor,
     onOpenAboutMe,
     mentionNames,
@@ -914,7 +918,7 @@ export const ConversationMessage = memo(function ConversationMessage({
                   "absolute -right-1 -top-1 rounded-md p-1 text-[var(--muted-foreground)]/30 opacity-0 transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] group-hover:opacity-100",
                   showActions && "opacity-100",
                 )}
-                title="Delete"
+                title={localizeUi("lorebook.editor.batch.delete")}
               >
                 <Trash2 size="0.75rem" />
               </button>
@@ -951,7 +955,7 @@ export const ConversationMessage = memo(function ConversationMessage({
                 "absolute -right-1 -top-1 rounded-md p-1 text-[var(--muted-foreground)]/30 opacity-0 transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] group-hover:opacity-100",
                 showActions && "opacity-100",
               )}
-              title="Delete"
+              title={localizeUi("lorebook.editor.batch.delete")}
             >
               <Trash2 size="0.75rem" />
             </button>
@@ -994,6 +998,7 @@ export const ConversationMessage = memo(function ConversationMessage({
           isConversationStart && cn("rounded-lg ring-1", CONVERSATION_MESSAGE_CHROME_RING_CLASS),
           isHiddenFromAI && cn("rounded-lg ring-1 saturate-75", CONVERSATION_MESSAGE_CHROME_RING_CLASS),
           multiSelectMode && isSelected && MESSAGE_SELECTION_SURFACE_CLASS,
+          hideActions && thinking && !isUser && "max-sm:pb-8",
         )}
         data-message-id={message.id}
         data-message-role={message.role}

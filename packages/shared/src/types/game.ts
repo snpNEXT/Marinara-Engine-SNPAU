@@ -193,6 +193,8 @@ export interface GameSetupConfig {
   /** Connection to use for the scene wrap-up turn (backgrounds, music, widgets, etc.).
    *  When omitted, falls back to sidecar (if available) or skips the wrap-up. */
   sceneConnectionId?: string;
+  /** Enable installed agents and agent-driven Game Mode features for this game. */
+  enableAgents?: boolean;
   /** Enable automatic sprite generation for characters using image model */
   enableSpriteGeneration?: boolean;
   /** Connection ID for image generation (NPC portraits + location backgrounds) */
@@ -203,6 +205,8 @@ export interface GameSetupConfig {
   gameStoryboardAutoIllustrationsEnabled?: boolean;
   /** Automatically create storyboard keyframe videos after completed GM turns. */
   gameStoryboardAutoGenerationEnabled?: boolean;
+  /** Master switch for Game Mode storyboard controls and automatic generation. */
+  gameStoryboardsEnabled?: boolean;
   /** Target number of storyboard keyframes to create per completed GM turn. */
   gameStoryboardKeyframeCount?: number;
   /** Selected built-in or chat-local GM prompt template. */

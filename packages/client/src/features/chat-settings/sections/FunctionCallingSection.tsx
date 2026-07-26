@@ -3,6 +3,7 @@ import { cn } from "../../../lib/utils";
 import { SettingsSwitch } from "../../../components/panels/settings/SettingControls";
 import { ChatSettingsSection } from "../ChatSettingsSection";
 import { PickerDropdown } from "../PickerDropdown";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 export interface FunctionToolOption {
   id: string;
@@ -41,20 +42,22 @@ export function FunctionCallingSection({
   onAddPendingTools,
   onCreateCustomTool,
 }: FunctionCallingSectionProps) {
+  const { t: localizeUi } = useUiTranslation();
   const inactiveTools = availableTools.filter((tool) => !activeToolIds.includes(tool.id));
   const visibleInactiveTools = inactiveTools.filter((tool) => tool.name.toLowerCase().includes(toolSearch.toLowerCase()));
 
   return (
     <ChatSettingsSection
-      label="Function Calling"
+      id="function-calling"
+      label={localizeUi("ui.chatSettings.functioncallingsection.functionCalling")}
       icon={<Wrench size="0.875rem" />}
       count={activeToolIds.length}
-      help="When enabled, the AI can call built-in tools like dice rolls, game state updates, and lorebook searches during conversation."
+      help={localizeUi("ui.chatSettings.functioncallingsection.whenEnabledTheAiCanCallBuiltInTools")}
     >
       <div className="space-y-2">
         <SettingsSwitch
-          label="Enable Tool Use"
-          description="Allow AI to call functions (dice rolls, game state, etc.)"
+          label={localizeUi("ui.chatSettings.functioncallingsection.enableToolUse")}
+          description={localizeUi("ui.chatSettings.functioncallingsection.allowAiToCallFunctionsDiceRollsGameState")}
           checked={!!enableTools}
           onChange={onEnableToolsChange}
           labelPosition="start"
@@ -68,17 +71,14 @@ export function FunctionCallingSection({
         />
         <p className="text-[0.625rem] text-[var(--muted-foreground)] px-1">
           {enableTools
-            ? "If enabled, this chat can use globally enabled tools (or any tools you add below)."
-            : "If disabled, no functions will be available."}
+            ?localizeUi("ui.chatSettings.functioncallingsection.ifEnabledThisChatCanUseGloballyEnabledTools")
+            :localizeUi("ui.chatSettings.functioncallingsection.ifDisabledNoFunctionsWillBeAvailable")}
         </p>
 
         {enableTools && (
           <>
             {activeToolIds.length === 0 ? (
-              <p className="text-[0.6875rem] text-[var(--muted-foreground)] px-1">
-                All globally enabled tools are available to this chat. Add tools below to restrict this chat to a
-                specific set.
-              </p>
+              <p className="text-[0.6875rem] text-[var(--muted-foreground)] px-1">{localizeUi("ui.chatSettings.functioncallingsection.allGloballyEnabledToolsAreAvailableToThisChat")}</p>
             ) : (
               <div className="flex max-h-40 flex-col gap-1 overflow-y-auto">
                 {activeToolIds.map((toolId) => {
@@ -96,7 +96,7 @@ export function FunctionCallingSection({
                       <button
                         onClick={() => onToggleTool(tool.id)}
                         className="flex h-5 w-5 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)]/15 hover:text-[var(--destructive)]"
-                        title="Remove from chat"
+                        title={localizeUi("ui.chatSettings.functioncallingsection.removeFromChat")}
                       >
                         <Trash2 size="0.6875rem" />
                       </button>
@@ -117,22 +117,20 @@ export function FunctionCallingSection({
                   }}
                   className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-[var(--border)] px-3 py-2 text-xs text-[var(--muted-foreground)] transition-colors hover:border-[var(--primary)]/40 hover:text-[var(--primary)]"
                 >
-                  <Plus size="0.75rem" /> Add Functions
-                </button>
+                  <Plus size="0.75rem" /> {localizeUi("ui.chatSettings.functioncallingsection.addFunctions")}</button>
                 <button
                   type="button"
                   onClick={onCreateCustomTool}
                   className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-[var(--border)] px-3 py-2 text-xs text-[var(--muted-foreground)] transition-colors hover:border-[var(--primary)]/40 hover:text-[var(--primary)]"
                 >
-                  <FilePlus2 size="0.75rem" /> New Custom Function
-                </button>
+                  <FilePlus2 size="0.75rem" /> {localizeUi("ui.chatSettings.functioncallingsection.newCustomFunction")}</button>
               </div>
             ) : (
               <PickerDropdown
                 search={toolSearch}
                 onSearchChange={onToolSearchChange}
                 onClose={() => onShowToolPickerChange(false)}
-                placeholder="Search functions…"
+                placeholder={localizeUi("ui.chatSettings.functioncallingsection.searchFunctions")}
                 footer={
                   <div className="grid gap-2 border-t border-[var(--border)] px-3 py-2 sm:grid-cols-2">
                     <button
@@ -140,8 +138,7 @@ export function FunctionCallingSection({
                       onClick={onCreateCustomTool}
                       className="flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
                     >
-                      <FilePlus2 size="0.75rem" /> New Custom Function
-                    </button>
+                      <FilePlus2 size="0.75rem" /> {localizeUi("ui.chatSettings.functioncallingsection.newCustomFunction")}</button>
                     <button
                       type="button"
                       disabled={pendingToolIds.length === 0}
@@ -150,8 +147,8 @@ export function FunctionCallingSection({
                     >
                       <Plus size="0.75rem" />
                       {pendingToolIds.length > 0
-                        ? `Add ${pendingToolIds.length} Function${pendingToolIds.length === 1 ? "" : "s"}`
-                        : "Add Selected"}
+                        ?localizeUi("ui.chatSettings.functioncallingsection.addValue1FunctionValue2", { value1: pendingToolIds.length, value2: pendingToolIds.length === 1 ? "" :localizeUi("ui.noodle.stageprofileview.s") })
+                        :localizeUi("ui.chatSettings.functioncallingsection.addSelected")}
                     </button>
                   </div>
                 }
@@ -192,7 +189,7 @@ export function FunctionCallingSection({
                 })}
                 {visibleInactiveTools.length === 0 && (
                   <p className="px-3 py-2 text-[0.6875rem] text-[var(--muted-foreground)]">
-                    {inactiveTools.length === 0 ? "All functions already added." : "No matches."}
+                    {inactiveTools.length === 0 ?localizeUi("ui.chatSettings.functioncallingsection.allFunctionsAlreadyAdded") :localizeUi("ui.lorebooks.linkedresourcepicker.noMatches")}
                   </p>
                 )}
               </PickerDropdown>

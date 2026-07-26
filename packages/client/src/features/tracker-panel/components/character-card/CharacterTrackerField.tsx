@@ -3,6 +3,7 @@ import { cn } from "../../../../lib/utils";
 import { visibleText } from "../../lib/tracker-display";
 import { InlineEdit } from "../controls/InlineControls";
 import { useTrackerFieldLock } from "../TrackerLockContext";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 type CompactCharacterFieldTone = "mood" | "appearance" | "outfit" | "thoughts";
 
@@ -55,6 +56,7 @@ export function CompactCharacterField({
   hideMode?: boolean;
   onToggleHidden?: () => void;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   const lock = useTrackerFieldLock(lockKey);
   const hiddenToggleActive = hideMode && !!onToggleHidden;
   if (hidden && !hideMode) return null;
@@ -84,8 +86,8 @@ export function CompactCharacterField({
         <button
           type="button"
           onClick={onToggleHidden}
-          title={hidden ? `Show ${accessibleLabel.toLowerCase()}` : `Hide ${accessibleLabel.toLowerCase()}`}
-          aria-label={hidden ? `Show ${accessibleLabel.toLowerCase()}` : `Hide ${accessibleLabel.toLowerCase()}`}
+          title={hidden ?localizeUi("ui.trackerPanel.compactcharacterfield.showValue1", { value1: accessibleLabel.toLowerCase() }) :localizeUi("ui.trackerPanel.compactcharacterfield.hideValue1", { value1: accessibleLabel.toLowerCase() })}
+          aria-label={hidden ?localizeUi("ui.trackerPanel.compactcharacterfield.showValue1", { value1: accessibleLabel.toLowerCase() }) :localizeUi("ui.trackerPanel.compactcharacterfield.hideValue1", { value1: accessibleLabel.toLowerCase() })}
           aria-pressed={hidden}
           className={cn(
             "relative z-[1] flex min-w-0 rounded px-0 py-0 text-left text-[0.5625rem] leading-[0.875rem] transition-colors hover:bg-[var(--accent)]/20 @min-[176px]:text-[0.625rem]",
@@ -97,7 +99,7 @@ export function CompactCharacterField({
           )}
         >
           <span className={cn("min-w-0", readable ? "line-clamp-2 whitespace-normal break-words" : "truncate")}>
-            {hidden ? "Hidden" : visibleText(value, placeholder)}
+            {hidden ?localizeUi("ui.trackerPanel.thoughtbubble.hidden") : visibleText(value, placeholder)}
           </span>
         </button>
       ) : onSave ? (

@@ -184,6 +184,8 @@ async function resolveSceneBackgroundImageConnection(
 
   if (mode === "game") {
     pushCandidate(readTrimmedString(metadata.gameImageConnectionId));
+  } else {
+    pushCandidate(readTrimmedString(metadata.illustratorImageConnectionId));
   }
   pushCandidate(await readIllustratorImageConnectionId(agents));
 
@@ -271,7 +273,8 @@ export async function backgroundsRoutes(app: FastifyInstance) {
 
   app.post("/folders", async (req, reply) => {
     const parsed = backgroundFolderNameSchema.safeParse(req.body);
-    if (!parsed.success) return reply.status(400).send({ error: "Folder name is required and must be 80 characters or fewer" });
+    if (!parsed.success)
+      return reply.status(400).send({ error: "Folder name is required and must be 80 characters or fewer" });
     const organization = readOrganization();
     const now = new Date().toISOString();
     const folder = { id: randomUUID(), name: parsed.data.name, createdAt: now, updatedAt: now };
@@ -283,7 +286,8 @@ export async function backgroundsRoutes(app: FastifyInstance) {
   app.patch("/folders/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
     const parsed = backgroundFolderNameSchema.safeParse(req.body);
-    if (!parsed.success) return reply.status(400).send({ error: "Folder name is required and must be 80 characters or fewer" });
+    if (!parsed.success)
+      return reply.status(400).send({ error: "Folder name is required and must be 80 characters or fewer" });
     const organization = readOrganization();
     const folder = organization.folders.find((candidate) => candidate.id === id);
     if (!folder) return reply.status(404).send({ error: "Folder not found" });
@@ -375,7 +379,10 @@ export async function backgroundsRoutes(app: FastifyInstance) {
     };
   });
 
-  async function resolveSceneBackgroundRequest(input: z.infer<typeof generateSceneBackgroundSchema>, reply: FastifyReply) {
+  async function resolveSceneBackgroundRequest(
+    input: z.infer<typeof generateSceneBackgroundSchema>,
+    reply: FastifyReply,
+  ) {
     const debugOverrideEnabled = input.debugMode === true || isDebugAgentsEnabled();
     const debugLog = (message: string, ...args: any[]) => {
       logDebugOverride(debugOverrideEnabled, message, ...args);
@@ -387,7 +394,9 @@ export async function backgroundsRoutes(app: FastifyInstance) {
     const mode = String(chat.mode ?? "");
     if (!SCENE_BACKGROUND_MODES.has(mode)) {
       return {
-        response: reply.status(400).send({ error: "Scene background generation is available in Roleplay and Game modes." }),
+        response: reply
+          .status(400)
+          .send({ error: "Scene background generation is available in Roleplay and Game modes." }),
       };
     }
 
@@ -398,7 +407,8 @@ export async function backgroundsRoutes(app: FastifyInstance) {
     if (!imgConn) {
       return {
         response: reply.status(400).send({
-          error: "Choose an image generation connection for the Illustrator agent, or mark one as the default image connection.",
+          error:
+            "Choose an image generation connection for the Illustrator agent, or mark one as the default image connection.",
         }),
       };
     }
@@ -415,7 +425,9 @@ export async function backgroundsRoutes(app: FastifyInstance) {
     const styleProfileId =
       readTrimmedString(setupConfig.imageStyleProfileId) ?? readTrimmedString(metadata.imageStyleProfileId);
     const locationSlug = input.locationSlug?.trim() || input.reason?.trim() || chat.name || "current-scene";
-    const promptOverride = (input.promptOverrides ?? []).find((item) => item.id === sceneBackgroundPromptReviewId(input));
+    const promptOverride = (input.promptOverrides ?? []).find(
+      (item) => item.id === sceneBackgroundPromptReviewId(input),
+    );
 
     return {
       context: {
@@ -623,11 +635,7 @@ export async function backgroundsRoutes(app: FastifyInstance) {
     }
     writeMeta(meta);
 
-    const organization = moveBackgroundAssignment(
-      readOrganization(),
-      `user:${filename}`,
-      `user:${newFilename}`,
-    );
+    const organization = moveBackgroundAssignment(readOrganization(), `user:${filename}`, `user:${newFilename}`);
     writeOrganization(organization);
 
     // Rebuild game asset manifest

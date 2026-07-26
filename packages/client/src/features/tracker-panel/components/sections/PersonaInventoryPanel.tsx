@@ -3,11 +3,7 @@ import { HeartPulse, Package, Sparkles } from "lucide-react";
 import type { CharacterStat, InventoryItem, Persona } from "@marinara-engine/shared";
 import { isTrackerFieldLocked, personaStatTrackerLockKey, personaStatusTrackerLockKey } from "@marinara-engine/shared";
 import type { TrackerPanelSide, TrackerPanelSizeProfile } from "../../../../stores/ui.store";
-import {
-  useCharacterSprites,
-  useUpdatePersona,
-  type SpriteInfo,
-} from "../../../../hooks/use-characters";
+import { useCharacterSprites, type SpriteInfo } from "../../../../hooks/use-characters";
 import {
   getTrackerCardPortraitView,
   parseTrackerCardColorConfig,
@@ -49,8 +45,11 @@ import {
 import { AddRowButton, SectionHeader } from "../controls/SectionControls";
 import { StatList } from "../controls/StatList";
 import { useTrackerLockContext } from "../TrackerLockContext";
+import { useTrackerWindow } from "../TrackerWindowContext";
+import type { PersonaPortraitSaveSnapshot } from "../../hooks/use-persona-portrait-save";
 import { PersonaInventoryRow } from "./PersonaInventoryRow";
 import { PersonaPortraitStage } from "./PersonaPortraitStage";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 const PERSONA_COCKPIT_SHELF_CLASS = cn(
   "pointer-events-none absolute inset-x-0 top-5 z-0 h-[9rem] overflow-hidden border-b border-[color-mix(in_srgb,var(--tracker-profile-dialogue-border)_46%,transparent)] shadow-[inset_0_10px_18px_color-mix(in_srgb,var(--background)_20%,transparent),inset_0_-12px_22px_color-mix(in_srgb,var(--background)_44%,transparent)] @min-[380px]:h-[10.5rem]",
@@ -67,25 +66,6 @@ const PERSONA_STATUS_STRIP_CLASS = cn(TRACKER_PROFILE_STATUS_STRIP_CLASS, "mx-0.
 const PERSONA_INVENTORY_HEADER_CLASS =
   "relative mx-0.5 flex min-h-6 items-center gap-1 overflow-hidden px-0.5 text-[0.625rem] leading-3";
 const PERSONA_INVENTORY_SHELF_CLASS = cn(TRACKER_PROFILE_EMPTY_SURFACE_CLASS, "min-h-0 flex-1");
-
-interface PersonaPortraitPendingSave {
-  id: string;
-  portraitFocusX: number;
-  portraitFocusY: number;
-  portraitZoom: number;
-}
-
-function isSamePersonaPortraitPendingSave(
-  current: PersonaPortraitPendingSave | null,
-  expected: PersonaPortraitPendingSave,
-) {
-  return (
-    current?.id === expected.id &&
-    current.portraitFocusX === expected.portraitFocusX &&
-    current.portraitFocusY === expected.portraitFocusY &&
-    current.portraitZoom === expected.portraitZoom
-  );
-}
 
 export function PersonaInventoryPanel({
   persona,
@@ -104,6 +84,8 @@ export function PersonaInventoryPanel({
   onRemoveInventoryItem,
   deleteMode,
   addMode,
+  queuePersonaPortraitSave,
+  flushPersonaPortraitSave,
   collapsed = false,
   onToggleCollapsed,
 }: {
@@ -123,17 +105,15 @@ export function PersonaInventoryPanel({
   onRemoveInventoryItem: (index: number) => void;
   deleteMode: boolean;
   addMode: boolean;
+  queuePersonaPortraitSave: (snapshot: PersonaPortraitSaveSnapshot) => void;
+  flushPersonaPortraitSave: (personaId: string) => void;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   const { fieldLocks, lockMode, onToggleFieldLock } = useTrackerLockContext();
-  const updatePersona = useUpdatePersona();
-  const personaPortraitSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const personaPortraitPendingSaveRef = useRef<PersonaPortraitPendingSave | null>(null);
-  const personaPortraitLatestSaveRef = useRef<PersonaPortraitPendingSave | null>(null);
-  const flushPersonaPortraitPendingSaveRef = useRef<
-    (pendingSave: PersonaPortraitPendingSave, keepalive?: boolean) => void
-  >(() => {});
+  const trackerWindow = useTrackerWindow();
+  const personaPortraitSaveTimeoutsRef = useRef(new Map<string, number>());
   const [personaPortraitFocusOverride, setPersonaPortraitFocusOverride] = useState<{
     personaId: string;
     x: number;
@@ -159,35 +139,6 @@ export function PersonaInventoryPanel({
     personaPortraitFocusOverride && personaPortraitFocusOverride.personaId === persona?.id
       ? personaPortraitFocusOverride
       : personaSavedPortraitFocus;
-  const flushPersonaPortraitPendingSave = (pendingSave: PersonaPortraitPendingSave, keepalive = false) => {
-    updatePersona.mutate(
-      {
-        id: pendingSave.id,
-        keepalive,
-        trackerCardPortrait: {
-          portraitFocusX: pendingSave.portraitFocusX,
-          portraitFocusY: pendingSave.portraitFocusY,
-          portraitZoom: pendingSave.portraitZoom,
-        },
-      },
-      {
-        onSuccess: () => {
-          if (isSamePersonaPortraitPendingSave(personaPortraitPendingSaveRef.current, pendingSave)) {
-            personaPortraitPendingSaveRef.current = null;
-          }
-        },
-        onError: () => {
-          if (
-            !personaPortraitPendingSaveRef.current &&
-            isSamePersonaPortraitPendingSave(personaPortraitLatestSaveRef.current, pendingSave)
-          ) {
-            personaPortraitPendingSaveRef.current = pendingSave;
-          }
-        },
-      },
-    );
-  };
-  flushPersonaPortraitPendingSaveRef.current = flushPersonaPortraitPendingSave;
   const updatePersonaPortraitFocus =
     persona?.id && personaPortraitMediaKind
       ? (portraitFocusX: number, portraitFocusY: number, portraitZoom: number) => {
@@ -197,16 +148,18 @@ export function PersonaInventoryPanel({
             y: portraitFocusY,
             zoom: portraitZoom,
           });
-          const pendingSave = { id: persona.id, portraitFocusX, portraitFocusY, portraitZoom };
-          personaPortraitLatestSaveRef.current = pendingSave;
-          personaPortraitPendingSaveRef.current = pendingSave;
-          if (personaPortraitSaveTimeoutRef.current) clearTimeout(personaPortraitSaveTimeoutRef.current);
-          personaPortraitSaveTimeoutRef.current = setTimeout(() => {
-            if (isSamePersonaPortraitPendingSave(personaPortraitPendingSaveRef.current, pendingSave)) {
-              flushPersonaPortraitPendingSaveRef.current(pendingSave);
-            }
-            personaPortraitSaveTimeoutRef.current = null;
+          queuePersonaPortraitSave({ id: persona.id, portraitFocusX, portraitFocusY, portraitZoom });
+          const existingTimeout = personaPortraitSaveTimeoutsRef.current.get(persona.id);
+          if (existingTimeout !== undefined) {
+            trackerWindow.clearTimeout(existingTimeout);
+            personaPortraitSaveTimeoutsRef.current.delete(persona.id);
+          }
+          const timeoutId = trackerWindow.setTimeout(() => {
+            if (personaPortraitSaveTimeoutsRef.current.get(persona.id) !== timeoutId) return;
+            personaPortraitSaveTimeoutsRef.current.delete(persona.id);
+            flushPersonaPortraitSave(persona.id);
           }, 180);
+          personaPortraitSaveTimeoutsRef.current.set(persona.id, timeoutId);
         }
       : undefined;
   const personaPortraitStageRem =
@@ -228,12 +181,10 @@ export function PersonaInventoryPanel({
           size="0.6875rem"
           className="relative z-[1] shrink-0 text-[color-mix(in_srgb,var(--tracker-profile-label-muted-text)_42%,var(--tracker-profile-label-icon)_58%)]"
         />
-        <span className="relative z-[1] min-w-0 flex-1 truncate font-semibold uppercase tracking-[0.06em] text-[color-mix(in_srgb,var(--tracker-profile-label-muted-text)_62%,var(--tracker-profile-label-text)_38%)]">
-          Inventory
-        </span>
+        <span className="relative z-[1] min-w-0 flex-1 truncate font-semibold uppercase tracking-[0.06em] text-[color-mix(in_srgb,var(--tracker-profile-label-muted-text)_62%,var(--tracker-profile-label-text)_38%)]">{localizeUi("ui.trackerPanel.personainventorypanel.inventory")}</span>
         {addMode && (
           <span className="relative z-[1]">
-            <AddRowButton title="Add item" onClick={onAddInventoryItem} />
+            <AddRowButton title={localizeUi("ui.trackerPanel.personainventorypanel.addItem")} onClick={onAddInventoryItem} />
           </span>
         )}
         <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-[linear-gradient(90deg,transparent,color-mix(in_srgb,var(--tracker-profile-dialogue-border)_42%,transparent),transparent)] opacity-80" />
@@ -264,7 +215,7 @@ export function PersonaInventoryPanel({
         )}
       >
         {inventory.length === 0 ? (
-          <span className="relative z-[1]">Inventory empty.</span>
+          <span className="relative z-[1]">{localizeUi("ui.trackerPanel.personainventorypanel.inventoryEmpty")}</span>
         ) : (
           inventory.map((item, index) => (
             <PersonaInventoryRow
@@ -288,19 +239,23 @@ export function PersonaInventoryPanel({
 
   useEffect(() => {
     const flushOnPageHide = () => {
-      if (personaPortraitSaveTimeoutRef.current) {
-        clearTimeout(personaPortraitSaveTimeoutRef.current);
-        personaPortraitSaveTimeoutRef.current = null;
+      const livePersonaIds = [...personaPortraitSaveTimeoutsRef.current.keys()];
+      for (const personaId of livePersonaIds) {
+        const timeoutId = personaPortraitSaveTimeoutsRef.current.get(personaId);
+        if (timeoutId !== undefined) trackerWindow.clearTimeout(timeoutId);
       }
-      const pendingSave = personaPortraitPendingSaveRef.current;
-      if (pendingSave) flushPersonaPortraitPendingSaveRef.current(pendingSave, true);
+      personaPortraitSaveTimeoutsRef.current.clear();
+
+      for (const personaId of livePersonaIds) {
+        flushPersonaPortraitSave(personaId);
+      }
     };
-    window.addEventListener("pagehide", flushOnPageHide);
+    trackerWindow.addEventListener("pagehide", flushOnPageHide);
     return () => {
-      window.removeEventListener("pagehide", flushOnPageHide);
+      trackerWindow.removeEventListener("pagehide", flushOnPageHide);
       flushOnPageHide();
     };
-  }, []);
+  }, [flushPersonaPortraitSave, trackerWindow]);
 
   return (
     <div className="relative z-10 overflow-hidden border-b border-[color-mix(in_srgb,var(--border)_72%,transparent)] bg-[var(--tracker-panel-section-background,color-mix(in_srgb,var(--card)_5%,transparent))] shadow-inner transition-colors duration-200">
@@ -308,7 +263,7 @@ export function PersonaInventoryPanel({
 
       <SectionHeader
         icon={<Sparkles size="0.6875rem" />}
-        title="Persona"
+        title={localizeUi("ui.characters.cardlibrarydetailcard.persona")}
         action={action}
         className="bg-[color-mix(in_srgb,var(--background)_86%,var(--card)_14%)] [--primary:var(--foreground)] [--tracker-profile-icon:var(--muted-foreground)]"
         collapsed={collapsed}
@@ -332,7 +287,7 @@ export function PersonaInventoryPanel({
                 TRACKER_PROFILE_GRID_CLASS_BY_PORTRAIT_SIDE[personaPortraitSide],
               )}
             >
-              <TrackerProfileNameplate placeholder="Persona" value={persona?.name} />
+              <TrackerProfileNameplate placeholder={localizeUi("ui.characters.cardlibrarydetailcard.persona")} value={persona?.name} />
               <div aria-hidden="true" className={PERSONA_COCKPIT_SHELF_CLASS}>
                 <div className={TRACKER_PROFILE_SURFACE_TEXTURE_CLASS} />
                 <div className={TRACKER_PROFILE_SURFACE_TOP_RULE_CLASS} />
@@ -358,7 +313,7 @@ export function PersonaInventoryPanel({
                         {addMode && (
                           <InlineAddRow
                             onClick={onAddPersonaStat}
-                            title="Add stat"
+                            title={localizeUi("ui.trackerPanel.statlist.addStat")}
                             className="shrink-0 rounded-[5px] border border-[color-mix(in_srgb,var(--tracker-profile-dialogue-border)_32%,transparent)] bg-[image:var(--tracker-profile-field-material)] [background-blend-mode:var(--tracker-profile-field-material-blend)]"
                           />
                         )}
@@ -404,12 +359,12 @@ export function PersonaInventoryPanel({
                   <InlineEdit
                     value={status}
                     onSave={onSaveStatus}
-                    placeholder="Status"
+                    placeholder={localizeUi("ui.trackerPanel.personainventorypanel.status")}
                     className={cn(
                       "relative z-[1] min-h-5 flex-1 rounded-[2px] px-0.5 py-0 text-[0.6875rem] font-medium leading-[0.875rem] text-[color-mix(in_srgb,var(--tracker-profile-text)_92%,var(--muted-foreground)_8%)] hover:bg-[var(--accent)]/18",
                       trackerPanelSizeProfile === "compact" && "h-5",
                     )}
-                    title={`${personaName} status`}
+                    title={localizeUi("ui.trackerPanel.personainventorypanel.value1Status", { value1: personaName })}
                     scrollOnHover={trackerPanelSizeProfile === "compact"}
                     previewLineCount={trackerPanelSizeProfile === "compact" ? undefined : 2}
                     showEditHint={false}

@@ -191,3 +191,34 @@ export function noodleDigestAccountLabel(account: Pick<NoodleAccount, "kind" | "
   const identity = `${account.displayName} (@${account.handle})`;
   return account.kind === "persona" ? `Persona ${identity}` : identity;
 }
+
+/**
+ * Drops character accounts whose character card no longer exists.
+ *
+ * A Noodle account stores its own name and handle, so a stale account keeps rendering in the
+ * "Active Noodle Accounts" list while `characters.getById` returns null for it. The refresh prompt
+ * then carries the name with no character card, and the lorebook scan is scoped to a character ID
+ * that cannot match anything — every character and lore detail silently disappears from generation
+ * with no error. Accounts are left in place (posts still reference them); they are only skipped
+ * when choosing who takes part in a refresh.
+ *
+ * Accounts go stale whenever a character's row stops matching the stored entityId: deleting the
+ * character (`characters.remove` does not touch noodle_accounts, and there is no cascade), or any
+ * re-create path that mints a fresh ID, such as a profile import (`characters.create` calls newId).
+ */
+export async function filterResolvableNoodleParticipants(
+  accounts: NoodleAccount[],
+  characters: ReturnType<typeof createCharactersStorage>,
+): Promise<{ resolvable: NoodleAccount[]; staleAccounts: NoodleAccount[] }> {
+  const resolvable: NoodleAccount[] = [];
+  const staleAccounts: NoodleAccount[] = [];
+  for (const account of accounts) {
+    if (account.kind !== "character") {
+      resolvable.push(account);
+      continue;
+    }
+    if (await characters.getById(account.entityId)) resolvable.push(account);
+    else staleAccounts.push(account);
+  }
+  return { resolvable, staleAccounts };
+}

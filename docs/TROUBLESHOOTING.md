@@ -268,6 +268,18 @@ pnpm store prune
 
 Do not delete `data`, `storage`, or `marinara-engine.db`; those locations may contain your chats and settings. If the command still stops, capture the lines beginning at `Installing dependencies` and include the phone's free-space and memory figures in the report.
 
+### In-app update fails when switching between Stable and Staging on Android
+
+Switching channels (Stable ↔ Staging) forces a near-full dependency reinstall, which on Termux's slower storage can take much longer than an ordinary update. The in-app updater now allows extra time for each step on Android, so a channel switch that used to stop with a bare `Update failed: Command failed: corepack pnpm ... install` should complete.
+
+If an update still fails, the error now names the step that failed and includes the tail of its output. Read that message: a genuine dependency or lockfile error is reported there. You can also run the update by hand from Termux with the manual command shown in the error's hint, or reclaim space first:
+
+```bash
+cd Marinara-Engine
+pnpm store prune
+./start-termux.sh
+```
+
 ### Noodle shows `Etc/Unknown` or schedules use the wrong timezone
 
 For Conversation schedules, open Conversation Chat Settings or a character schedule editor and choose **Schedule timezone**. This global selection applies to every Conversation chat, including background autonomous messages, and can be reset with **Use device**.

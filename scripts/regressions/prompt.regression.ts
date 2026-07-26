@@ -6,6 +6,8 @@ import {
   ANIME_GAME_VIDEO_PROMPT_TEMPLATE_ID,
   COMIC_PAGE_GAME_VIDEO_PROMPT_TEMPLATE,
   COMIC_PAGE_GAME_VIDEO_PROMPT_TEMPLATE_ID,
+  LTX_DIRECTOR_GAME_VIDEO_PROMPT_TEMPLATE,
+  LTX_DIRECTOR_GAME_VIDEO_PROMPT_TEMPLATE_ID,
   applyTrackerFieldLocksToGameStatePatch,
   characterTrackerLockKey,
   applyRegexReplacement,
@@ -51,12 +53,18 @@ import {
   GAME_STORYBOARD_ILLUSTRATION_PROMPT_TEMPLATES,
   GAME_STORYBOARD_IMAGE_BUILT_IN_PROMPT_TEMPLATES,
   GAME_STORYBOARD_IMAGE_PROMPT_TEMPLATE_ID,
+  STORYBOARD_FIRST_FRAME_IMAGE_PROMPT_TEMPLATE,
+  STORYBOARD_FIRST_FRAME_IMAGE_PROMPT_TEMPLATE_ID,
   STORYBOARD_OPTIMIZED_IMAGE_PROMPT_TEMPLATE,
   STORYBOARD_OPTIMIZED_IMAGE_PROMPT_TEMPLATE_ID,
   GAME_STORYBOARD_NOVELAI_ANIMATION_PROMPT_TEMPLATE,
   GAME_STORYBOARD_NOVELAI_ANIMATION_PROMPT_TEMPLATE_ID,
   GAME_STORYBOARD_NOVELAI_PROMPT_TEMPLATE,
   GAME_STORYBOARD_NOVELAI_PROMPT_TEMPLATE_ID,
+  GAME_STORYBOARD_LTX_DIRECTOR_PROMPT_TEMPLATE,
+  GAME_STORYBOARD_LTX_DIRECTOR_PROMPT_TEMPLATE_ID,
+  GAME_STORYBOARD_LTX_SIMPLE_PROMPT_TEMPLATE,
+  GAME_STORYBOARD_LTX_SIMPLE_PROMPT_TEMPLATE_ID,
   GAME_STORYBOARD_STILL_ANIMATION_PROMPT_TEMPLATE,
   GAME_STORYBOARD_STILL_ANIMATION_PROMPT_TEMPLATE_ID,
   DEFERRED_RELOCATION_CONDITIONAL_TOKEN_RE,
@@ -74,6 +82,7 @@ import {
   formatNoodleTimelineForPrompt,
   NOODLE_PERSONA_IDENTITY_INSTRUCTION,
 } from "../../packages/server/src/services/noodle/noodle-prompt.js";
+import { buildPartyRecruitCardPrompt } from "../../packages/server/src/services/game/gm-prompts.js";
 
 const personaA = {
   id: "noodle-account-a",
@@ -134,6 +143,27 @@ assert.match(formattedPersonaTimeline, /Persona A \(@persona_a; persona accountK
 assert.match(formattedPersonaTimeline, /Persona B \(@persona_b; persona accountKey=persona:persona-b\)/);
 assert.match(formattedPersonaTimeline, /replyId=reply-b.*accountKey=persona:persona-b/);
 assert.match(NOODLE_PERSONA_IDENTITY_INSTRUCTION, /separate user identity/);
+
+const regeneratedSheetPrompt = buildPartyRecruitCardPrompt({
+  targetCharacterName: "Nadia",
+  targetCharacterCard: "Name: Nadia\nPersonality: Resolute\nScenario: The flooded vault",
+  currentPartyNames: ["Alex", "Nadia"],
+  currentPartyCards: '[{"name":"Alex","class":"Warden"}]',
+  existingTargetCard: '{"name":"Nadia","class":"bad log output"}',
+  worldOverview: "A drowned city beneath a glass sea.",
+  storyArc: "Recover the seven tide keys.",
+  plotTwists: ["The cartographer serves the Leviathan."],
+  campaignHistory: '[{"sessionNumber":1,"summary":"The party opened the first lock."}]',
+  currentState: '{"location":"Flooded Vault"}',
+  language: "Polish",
+  purpose: "regenerate",
+});
+assert.match(regeneratedSheetPrompt, /Regenerate one clean JSON character card/u);
+assert.match(regeneratedSheetPrompt, /<existing_target_party_sheet>/u);
+assert.match(regeneratedSheetPrompt, /<campaign_history>/u);
+assert.match(regeneratedSheetPrompt, /Write every natural-language string value in Polish/u);
+assert.match(regeneratedSheetPrompt, /Scenario: The flooded vault/u);
+assert.doesNotMatch(regeneratedSheetPrompt, /A new companion is joining the party/u);
 
 const REGRESSION_AGENT_IDS = [
   "about-me-keeper",
@@ -215,6 +245,13 @@ import {
   executeAgentBatch,
   renderAgentPromptTemplate,
 } from "../../packages/server/src/services/agents/agent-executor.js";
+import {
+  CLEAN_HTML_FIND_REGEX,
+  CLEAN_HTML_ID,
+  LEGACY_CLEAN_HTML_FIND_REGEX,
+  shouldMigrateCleanHtmlPattern,
+} from "../../packages/server/src/db/seed-regex.js";
+import { applyRegexScriptsToPromptText } from "../../packages/server/src/services/regex/regex-application.js";
 import { shouldSkipAgentByAssistantInterval } from "../../packages/server/src/services/generation/agent-cadence.js";
 import { filterPromptMessagesForCharacterAudience } from "../../packages/server/src/services/generation/prompt-message-scope.js";
 import {
@@ -223,6 +260,10 @@ import {
 } from "../../packages/server/src/services/prompt/merger.js";
 import type { ResolvedAgent } from "../../packages/server/src/services/agents/agent-pipeline.js";
 import { loadGameVideoPrompt } from "../../packages/server/src/services/video/game-video-prompt.js";
+import {
+  resolveComfyUiVideoWorkflowPlaceholders,
+  resolveLtxDirectorPromptInput,
+} from "../../packages/server/src/services/video/video-generation.js";
 import { loadGameStoryboardImagePrompt } from "../../packages/server/src/services/image/game-storyboard-image-prompt.js";
 import { formatAgentFailuresToast, toAgentFailure } from "../../packages/client/src/lib/agent-failures.js";
 import { formatGenerationParameterError } from "../../packages/client/src/lib/generation-parameter-errors.js";
@@ -455,6 +496,7 @@ import {
   buildLorebookScanMessagesWithGenerationGuide,
   resolveLorebookTokenBudget,
 } from "../../packages/server/src/services/generation/lorebook-generation-runtime.js";
+import { createAgentLorebookTriggerResolver } from "../../packages/server/src/services/generation/agent-lorebook-triggers.js";
 import {
   buildGameIllustratorAppearanceContextBlock,
   buildDynamicGameImagePromptMessages,
@@ -550,7 +592,11 @@ import {
   GAME_STORYBOARD_ILLUSTRATION_DIRECTOR,
   listPromptOverrideKeys,
 } from "../../packages/server/src/services/prompt-overrides/index.js";
-import { buildElevenLabsTextInput } from "../../packages/server/src/routes/tts.routes.js";
+import {
+  buildElevenLabsTextInput,
+  detectTTSAudioMimeType,
+  resolveTTSAudioResponseContentType,
+} from "../../packages/server/src/routes/tts.routes.js";
 import {
   buildCommittedTrackerContextBlock,
   MAX_WORLD_CUSTOM_FIELDS_IN_COMMITTED_CONTEXT,
@@ -1208,10 +1254,7 @@ const cases: RegressionCase[] = [
         };
         assert.equal(payload.indexedTrackCount, allTrackUris.length);
         assert.equal(payload.recentAvoidedCount, recentTrackUris.length);
-        assert.deepEqual(
-          new Set((payload.tracks ?? []).map((track) => track.uri)),
-          new Set(freshTrackUris),
-        );
+        assert.deepEqual(new Set((payload.tracks ?? []).map((track) => track.uri)), new Set(freshTrackUris));
       } finally {
         globalThis.fetch = originalFetch;
       }
@@ -1333,6 +1376,33 @@ const cases: RegressionCase[] = [
       );
       assert.equal(buildElevenLabsTextInput("Your ribs require rest.", "thinking"), "Your ribs require rest.");
       assert.equal(buildElevenLabsTextInput("A bold strategy.", "smirk"), "A bold strategy.");
+    },
+  },
+  {
+    name: "TTS recognizes encoded audio when providers omit or mislabel the content type",
+    run() {
+      const mpeg = new Uint8Array([0x49, 0x44, 0x33, 0x04, 0x00, 0x00]);
+      const wav = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x41, 0x56, 0x45]);
+      const ogg = new Uint8Array([0x4f, 0x67, 0x67, 0x53]);
+      const flac = new Uint8Array([0x66, 0x4c, 0x61, 0x43]);
+      const webm = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3]);
+      const mp4 = new Uint8Array([0, 0, 0, 0, 0x66, 0x74, 0x79, 0x70, 0, 0, 0, 0]);
+      const providerError = new TextEncoder().encode('{"error":"provider failure"}');
+
+      assert.equal(detectTTSAudioMimeType(mpeg), "audio/mpeg");
+      assert.equal(detectTTSAudioMimeType(wav), "audio/wav");
+      assert.equal(detectTTSAudioMimeType(ogg), "audio/ogg");
+      assert.equal(detectTTSAudioMimeType(flac), "audio/flac");
+      assert.equal(detectTTSAudioMimeType(webm), "audio/webm");
+      assert.equal(detectTTSAudioMimeType(mp4), "audio/mp4");
+      assert.equal(detectTTSAudioMimeType(providerError), null);
+
+      assert.equal(resolveTTSAudioResponseContentType(null, mpeg), "audio/mpeg");
+      assert.equal(resolveTTSAudioResponseContentType("audio/mpeg", providerError), "audio/mpeg");
+      assert.equal(resolveTTSAudioResponseContentType("application/octet-stream", wav), "audio/wav");
+      assert.equal(resolveTTSAudioResponseContentType("application/octet-stream", providerError), null);
+      assert.equal(resolveTTSAudioResponseContentType("application/json", providerError), null);
+      assert.equal(resolveTTSAudioResponseContentType("text/plain", ogg), "audio/ogg");
     },
   },
   {
@@ -1811,6 +1881,97 @@ const cases: RegressionCase[] = [
     },
   },
   {
+    name: "Clean HTML default is safe and removes prompt markup without clobbering exclusions",
+    run() {
+      assert.equal(isPatternSafe(LEGACY_CLEAN_HTML_FIND_REGEX), false);
+      assert.equal(isPatternSafe(CLEAN_HTML_FIND_REGEX), true);
+      assert.equal(
+        createRegexScriptSchema.safeParse({
+          name: "Clean HTML (Outgoing Prompt)",
+          findRegex: CLEAN_HTML_FIND_REGEX,
+          placement: ["user_input", "ai_output"],
+          flags: "g",
+          promptOnly: true,
+          applyMode: "prompt",
+        }).success,
+        true,
+      );
+
+      const source = [
+        "<!DOCTYPE html>",
+        '<section class="immersive-frame"><div data-speaker="Albedo">A rendered memory.</div></section>',
+        '<speaker="Dottore">"Observe the result."</speaker>',
+        '<font color="#f0f">Keep font markup.</font>',
+        "<lie>Keep lie markup.</lie>",
+        "<filter>Keep filter markup.</filter>",
+        "<!-- keep the author comment -->",
+      ].join("\n");
+      const cleaned = applyRegexScriptsToPromptText(
+        source,
+        [
+          {
+            id: CLEAN_HTML_ID,
+            name: "Clean HTML (Outgoing Prompt)",
+            enabled: "true",
+            findRegex: CLEAN_HTML_FIND_REGEX,
+            replaceString: "",
+            trimStrings: "[]",
+            placement: '["user_input","ai_output"]',
+            flags: "g",
+            promptOnly: "true",
+            applyMode: "prompt",
+            targetCharacterIds: "[]",
+            minDepth: null,
+            maxDepth: null,
+          },
+        ],
+        "ai_output",
+        0,
+      );
+
+      assert.doesNotMatch(cleaned, /<!DOCTYPE|<\/?(?:section|div|speaker)\b/u);
+      assert.match(cleaned, /A rendered memory\./u);
+      assert.match(cleaned, /"Observe the result\."/u);
+      assert.match(cleaned, /<font color="#f0f">Keep font markup\.<\/font>/u);
+      assert.match(cleaned, /<lie>Keep lie markup\.<\/lie>/u);
+      assert.match(cleaned, /<filter>Keep filter markup\.<\/filter>/u);
+      assert.match(cleaned, /<!-- keep the author comment -->/u);
+    },
+  },
+  {
+    name: "Clean HTML seed migration only replaces the exact broken built-in pattern",
+    run() {
+      assert.equal(
+        shouldMigrateCleanHtmlPattern({
+          id: CLEAN_HTML_ID,
+          findRegex: LEGACY_CLEAN_HTML_FIND_REGEX,
+        }),
+        true,
+      );
+      assert.equal(
+        shouldMigrateCleanHtmlPattern({
+          id: CLEAN_HTML_ID,
+          findRegex: CLEAN_HTML_FIND_REGEX,
+        }),
+        false,
+      );
+      assert.equal(
+        shouldMigrateCleanHtmlPattern({
+          id: CLEAN_HTML_ID,
+          findRegex: "<custom-tag>",
+        }),
+        false,
+      );
+      assert.equal(
+        shouldMigrateCleanHtmlPattern({
+          id: "user-clean-html",
+          findRegex: LEGACY_CLEAN_HTML_FIND_REGEX,
+        }),
+        false,
+      );
+    },
+  },
+  {
     name: "regex replacement matches native named-group fallback and preserves literal backslashes",
     run() {
       assert.equal(applyRegexReplacement("John", /(?<first>\w+)/, "Hello $<frist>!"), "Hello !");
@@ -1919,7 +2080,7 @@ const cases: RegressionCase[] = [
       assert.match(gameSetupWizardSource, /gamePresentation === "anime"\s*\? COMIC_PAGE_GAME_VIDEO_PROMPT_TEMPLATE_ID/);
       assert.doesNotMatch(gameSetupWizardSource, /gameStoryboardUseDirectScenePrompt:\s*gamePresentation === "anime"/);
       assert.match(gameSetupWizardSource, /trimmedGameSystemPrompt !== effectiveGameSystemPrompt\.trim\(\)/);
-      assert.match(gameSetupWizardSource, /Reset to selected/);
+      assert.match(gameSetupWizardSource, /localizeUi\("ui\.game\.gamesetupwizard\.resetToSelected"\)/);
     },
   },
   {
@@ -1990,7 +2151,7 @@ const cases: RegressionCase[] = [
         "utf8",
       );
 
-      assert.match(drawerSource, /label="Use Campaign Art Style"/);
+      assert.match(drawerSource, /label=\{localizeUi\("ui\.chat\.chatsettingsdrawer\.useCampaignArtStyle"\)\}/);
       assert.match(drawerSource, /generatedArtStylePrompt: generatedCampaignArtStyle \|\| campaignArtStyle/);
       assert.match(gameSurfaceSource, /reviewImagePromptsBeforeSend/);
       assert.match(gameSurfaceSource, /previewTurnStoryboardPrompts\.mutateAsync\(payload\)/);
@@ -2052,6 +2213,7 @@ const cases: RegressionCase[] = [
         narrativePurposeLine: "Narrative purpose: arrival.",
         charactersLine: "Characters: Mira.",
         referenceHandlingLine: "Reference handling: match the attached portrait.",
+        locationHandlingLine: "Location handling: use the attached gate image.",
         appearanceNotesBlock: "",
         artDirectionLine: "Art direction: painterly fantasy.",
         imagePromptInstructionsLine: "User image instructions: keep the silver cloak.",
@@ -2075,21 +2237,38 @@ const cases: RegressionCase[] = [
         ],
         ctx,
       });
+      const firstFramePrompt = await loadGameStoryboardImagePrompt({
+        promptOverridesStorage,
+        templateId: STORYBOARD_FIRST_FRAME_IMAGE_PROMPT_TEMPLATE_ID,
+        ctx,
+      });
 
       assert.equal(legacyPrompt, "GLOBAL SCENE Mira braces beneath a storm-lit archway.");
       assert.match(optimizedPrompt, /Storyboard keyframe: Mira braces beneath a storm-lit archway/);
       assert.match(optimizedPrompt, /Final visibility rule: Only depict these named visible characters: Mira/);
       assert.match(optimizedPrompt, /Reference handling: match the attached portrait/);
+      assert.match(optimizedPrompt, /Location handling: use the attached gate image/);
       assert.match(optimizedPrompt, /Art direction: painterly fantasy/);
       assert.doesNotMatch(optimizedPrompt, /GLOBAL SCENE/);
       assert.equal(customPrompt, "CUSTOM Mira braces beneath a storm-lit archway. Art direction: painterly fantasy.");
       assert.doesNotMatch(customPrompt, /Final visibility rule/);
-      assert.equal(GAME_STORYBOARD_IMAGE_BUILT_IN_PROMPT_TEMPLATES.length, 2);
+      assert.equal(
+        firstFramePrompt,
+        "Mira braces beneath a storm-lit archway. Location handling: use the attached gate image. User image instructions: keep the silver cloak.",
+      );
+      assert.doesNotMatch(firstFramePrompt, /Mira at the gate|Storyboard keyframe|Final visibility rule|Art direction/);
+      assert.equal(GAME_STORYBOARD_IMAGE_BUILT_IN_PROMPT_TEMPLATES.length, 3);
       assert.equal(
         GAME_STORYBOARD_IMAGE_BUILT_IN_PROMPT_TEMPLATES.find(
           (template) => template.id === STORYBOARD_OPTIMIZED_IMAGE_PROMPT_TEMPLATE_ID,
         )?.promptTemplate,
         STORYBOARD_OPTIMIZED_IMAGE_PROMPT_TEMPLATE,
+      );
+      assert.equal(
+        GAME_STORYBOARD_IMAGE_BUILT_IN_PROMPT_TEMPLATES.find(
+          (template) => template.id === STORYBOARD_FIRST_FRAME_IMAGE_PROMPT_TEMPLATE_ID,
+        )?.promptTemplate,
+        STORYBOARD_FIRST_FRAME_IMAGE_PROMPT_TEMPLATE,
       );
       assert.equal(GAME_STORYBOARD_IMAGE_PROMPT_TEMPLATE_ID, "game-scene-illustration");
     },
@@ -2113,6 +2292,14 @@ const cases: RegressionCase[] = [
         new URL("../../packages/client/src/components/game/StoryboardBackgroundControls.tsx", import.meta.url),
         "utf8",
       );
+      const settingsSource = readFileSync(
+        new URL("../../packages/client/src/components/panels/SettingsPanel.tsx", import.meta.url),
+        "utf8",
+      );
+      const gameAssetRegistrySource = readFileSync(
+        new URL("../../packages/server/src/services/prompt-overrides/registry/game-assets.ts", import.meta.url),
+        "utf8",
+      );
       const illustrationPreset = GAME_STORYBOARD_ILLUSTRATION_PROMPT_TEMPLATES.find(
         (template) => template.id === GAME_STORYBOARD_COMIC_PROMPT_TEMPLATE_ID,
       );
@@ -2126,7 +2313,7 @@ const cases: RegressionCase[] = [
       const animationIds = new Set(GAME_STORYBOARD_ANIMATION_PROMPT_TEMPLATES.map((template) => template.id));
 
       assert.equal(GAME_STORYBOARD_ILLUSTRATION_PROMPT_TEMPLATES.length, 5);
-      assert.equal(GAME_STORYBOARD_ANIMATION_PROMPT_TEMPLATES.length, 6);
+      assert.equal(GAME_STORYBOARD_ANIMATION_PROMPT_TEMPLATES.length, 8);
       assert.equal(GAME_STORYBOARD_ANIMATION_PROMPT_TEMPLATE_ID, GAME_STORYBOARD_COMIC_ANIMATION_PROMPT_TEMPLATE_ID);
       assert.notEqual(
         GAME_STORYBOARD_STILL_ANIMATION_PROMPT_TEMPLATE_ID,
@@ -2187,26 +2374,37 @@ const cases: RegressionCase[] = [
       assert.match(COMIC_PAGE_GAME_VIDEO_PROMPT_TEMPLATE, /reveal a later consequence before its cause/);
       assert.match(drawerSource, /options=\{gameStoryboardIllustrationPromptOptions\}/);
       assert.match(drawerSource, /options=\{gameStoryboardAnimationPromptOptions\}/);
-      assert.match(drawerSource, /label="Illustration Planner"/);
-      assert.match(drawerSource, /label="Animation Planner"/);
-      assert.match(drawerSource, /label="Storyboard Illustration Prompt"/);
+      assert.match(drawerSource, /label=\{localizeUi\("ui\.chat\.chatsettingsdrawer\.illustrationPlanner"\)\}/);
+      assert.match(drawerSource, /label=\{localizeUi\("ui\.chat\.chatsettingsdrawer\.animationPlanner"\)\}/);
+      assert.match(
+        drawerSource,
+        /label=\{localizeUi\("ui\.chat\.chatsettingsdrawer\.storyboardIllustrationPrompt"\)\}/,
+      );
       assert.match(drawerSource, /options=\{gameStoryboardImagePromptOptions\}/);
-      assert.match(drawerSource, /label="Storyboard Video Prompt"/);
-      assert.match(drawerSource, /kind="illustration"/);
-      assert.match(drawerSource, /kind="animation"/);
-      assert.match(drawerSource, /builtInTemplates\.map\(\(template\) =>/);
+      assert.match(drawerSource, /label=\{localizeUi\("ui\.chat\.chatsettingsdrawer\.storyboardVideoPrompt"\)\}/);
+      assert.doesNotMatch(drawerSource, /GameStoryboardPromptLibrary/u);
+      assert.doesNotMatch(drawerSource, /GameProviderPromptLibrary/u);
+      assert.match(settingsSource, /"game\.storyboardIllustrationDirector"/u);
+      assert.match(settingsSource, /"game\.storyboardAnimationDirector"/u);
+      assert.match(gameAssetRegistrySource, /key: "game\.storyboardIllustrationDirector"/u);
+      assert.match(gameAssetRegistrySource, /key: "game\.storyboardAnimationDirector"/u);
       assert.match(gameRouteSource, /getGameStoryboardPromptTemplateKind\(template, selectedAnimationTemplateId\)/);
       assert.match(gameRouteSource, /const builtInTemplates = args\.generateVideos/);
       assert.match(
         gameRouteSource,
         /storyboardImagePromptTemplateId: readTrimmedString\(meta\.gameStoryboardImagePromptTemplateId\)/,
       );
-      assert.match(drawerSource, /title="Edit Illustration Prompt Presets"/);
-      assert.match(drawerSource, /title="Edit Video Prompt Presets"/);
+      assert.match(
+        gameRouteSource,
+        /args\.generateVideos \? GAME_STORYBOARD_ANIMATION_DIRECTOR : GAME_STORYBOARD_ILLUSTRATION_DIRECTOR/u,
+      );
       const backgroundViewerStart = gameSurfaceSource.indexOf("const renderStoryboardBackgroundVisual");
       const backgroundViewerEnd = gameSurfaceSource.indexOf("const renderGameAssetsPanel", backgroundViewerStart);
       const backgroundViewerSource = gameSurfaceSource.slice(backgroundViewerStart, backgroundViewerEnd);
-      assert.match(backgroundControlsSource, /Replay background animation/);
+      assert.match(
+        backgroundControlsSource,
+        /localizeUi\("ui\.game\.storyboardbackgroundcontrols\.replayBackgroundAnimation"\)/,
+      );
       assert.match(gameSurfaceSource, /storyboardBackgroundAnimationPlaying/);
       assert.match(gameSurfaceSource, /storyboardViewerPlayingVideoId === activeStoryboardKeyframe\.video\.id/);
       assert.match(gameSurfaceSource, /video\.playbackRate = 1/);
@@ -2214,6 +2412,187 @@ const cases: RegressionCase[] = [
       assert.match(gameSurfaceSource, /setStoryboardViewerPlayingVideoId\(activeStoryboardKeyframe\.video\.id\)/);
       assert.match(backgroundViewerSource, /onEnded=\{\(\) =>/);
       assert.doesNotMatch(backgroundViewerSource, /\bloop\b/);
+    },
+  },
+  {
+    name: "LTX Storyboard sends one complete image-to-video prompt through the universal video contract",
+    run() {
+      const plannerPreset = GAME_STORYBOARD_ANIMATION_PROMPT_TEMPLATES.find(
+        (template) => template.id === GAME_STORYBOARD_LTX_DIRECTOR_PROMPT_TEMPLATE_ID,
+      );
+      const simplePlannerPreset = GAME_STORYBOARD_ANIMATION_PROMPT_TEMPLATES.find(
+        (template) => template.id === GAME_STORYBOARD_LTX_SIMPLE_PROMPT_TEMPLATE_ID,
+      );
+      const videoPreset = GAME_VIDEO_BUILT_IN_PROMPT_TEMPLATES.find(
+        (template) => template.id === LTX_DIRECTOR_GAME_VIDEO_PROMPT_TEMPLATE_ID,
+      );
+      const gameRouteSource = readFileSync(
+        new URL("../../packages/server/src/routes/game.routes.ts", import.meta.url),
+        "utf8",
+      );
+
+      assert.equal(plannerPreset?.name, "LTX Director Storyboard");
+      assert.equal(plannerPreset?.promptTemplate, GAME_STORYBOARD_LTX_DIRECTOR_PROMPT_TEMPLATE);
+      assert.match(plannerPreset?.promptTemplate ?? "", /LTX 2\.3 Image-to-Video Storyboard Planner/);
+      assert.match(plannerPreset?.promptTemplate ?? "", /strict screen-time budget/);
+      assert.match(plannerPreset?.promptTemplate ?? "", /For 1-6 seconds, use one primary action, one camera setup/);
+      assert.match(plannerPreset?.promptTemplate ?? "", /For 7-10 seconds, use up to two connected action phases/);
+      assert.match(plannerPreset?.promptTemplate ?? "", /For 11-15 seconds, use up to three connected action phases/);
+      assert.match(plannerPreset?.promptTemplate ?? "", /hard cuts, or anime music-video editing/);
+      assert.match(plannerPreset?.promptTemplate ?? "", /narrationBeat is the complete prompt sent to LTX 2\.3/);
+      assert.match(plannerPreset?.promptTemplate ?? "", /Put exact spoken dialogue in quotation marks/);
+      assert.match(plannerPreset?.promptTemplate ?? "", /Do not repeat static imagePrompt details in narrationBeat/);
+      assert.match(plannerPreset?.promptTemplate ?? "", /The supplied first-frame image defines static appearance/);
+      assert.match(plannerPreset?.promptTemplate ?? "", /Exact readable text, captions, subtitles, logos/);
+      assert.doesNotMatch(plannerPreset?.promptTemplate ?? "", /2-4 ordered local prompts|segment_lengths/);
+      assert.equal(simplePlannerPreset?.name, "LTX Simple Image-to-Video");
+      assert.equal(simplePlannerPreset?.promptTemplate, GAME_STORYBOARD_LTX_SIMPLE_PROMPT_TEMPLATE);
+      assert.match(simplePlannerPreset?.promptTemplate ?? "", /one focused, physically achievable primary action/);
+      assert.match(simplePlannerPreset?.promptTemplate ?? "", /4-8 short descriptive sentences/);
+      assert.match(simplePlannerPreset?.promptTemplate ?? "", /one camera behavior relative to the subject/);
+      assert.match(simplePlannerPreset?.promptTemplate ?? "", /Do not use labels, lists, timecodes/);
+      assert.match(simplePlannerPreset?.promptTemplate ?? "", /Do not pad the paragraph with extra actions/);
+      assert.doesNotMatch(simplePlannerPreset?.promptTemplate ?? "", /physics\.its/);
+      assert.equal(videoPreset?.name, "LTX Director Video");
+      assert.equal(videoPreset?.promptTemplate, LTX_DIRECTOR_GAME_VIDEO_PROMPT_TEMPLATE);
+      assert.equal(LTX_DIRECTOR_GAME_VIDEO_PROMPT_TEMPLATE, "${narrationSummary}");
+      assert.doesNotMatch(gameRouteSource, /buildLtxDirectorStoryboardPrompt|sanitizeLtxDirectorStoryboardSegments/);
+      assert.doesNotMatch(gameRouteSource, /ltxDirectorPrompt:\s*promptBuild|storyboardVideoTemplateId/);
+      assert.match(gameRouteSource, /generateStoryboardVideos && !usedFallbackStoryboardPlanner/);
+      assert.match(gameRouteSource, /if \(storyboardAbortSignal\.aborted\)/);
+      assert.match(gameRouteSource, /Storyboard Illustrator returned no usable keyframes/);
+      assert.match(gameRouteSource, /Storyboard keyframe is missing its planned animation prompt/);
+      assert.doesNotMatch(
+        gameRouteSource,
+        /plannedFrame\.narrationBeat[\s\S]{0,160}\|\|[\s\S]{0,80}latestNarrationSummary/,
+      );
+
+      const timelineData = JSON.stringify({
+        global_prompt: "",
+        normalStartFrame: 0,
+        normalDurationFrames: 0,
+        segments: [
+          {
+            id: "marinara-reference",
+            start: 0,
+            length: 16,
+            prompt: "",
+            type: "image",
+            imageFile: "%reference_image_name%",
+            isEndFrame: false,
+          },
+        ],
+        motionSegments: [],
+        audioSegments: [],
+      }).replace('"normalDurationFrames":0', '"normalDurationFrames":%length%');
+      const workflow = {
+        "3678": {
+          inputs: {
+            end_second: "%duration_seconds%",
+            duration_seconds: "%duration_seconds%",
+            end_frame: "%length%",
+            duration_frames: "%length%",
+            global_prompt: "%prompt%",
+            timeline_data: timelineData,
+            local_prompts: "",
+            segment_lengths: "",
+            guide_strength: "1.00",
+            frame_rate: 16,
+            custom_width: "%width%",
+            custom_height: "%height%",
+          },
+        },
+      };
+      const completePrompt =
+        'She opens the door and walks outside as the camera follows behind her. A light breeze moves her hair. She glances toward the street and says, "Stay close." Footsteps and distant traffic continue as the camera settles behind her.';
+      const resolved = resolveComfyUiVideoWorkflowPlaceholders(
+        workflow,
+        {
+          prompt: completePrompt,
+          durationSeconds: 6,
+          model: "ltx-2.3-distilled",
+        },
+        { seed: 123, width: 1280, height: 720, referenceImageName: "marinara-reference.png" },
+      ) as typeof workflow;
+      const inputs = resolved["3678"].inputs;
+      assert.equal(inputs.end_second, 6);
+      assert.equal(inputs.duration_seconds, 6);
+      assert.equal(inputs.end_frame, 96);
+      assert.equal(inputs.duration_frames, 96);
+      assert.equal(inputs.global_prompt, completePrompt);
+      assert.equal(inputs.local_prompts, "");
+      assert.equal(inputs.segment_lengths, "");
+      assert.equal(inputs.guide_strength, "1.00");
+      assert.equal(inputs.custom_width, 1280);
+      assert.equal(inputs.custom_height, 720);
+      const resolvedTimeline = JSON.parse(inputs.timeline_data) as {
+        global_prompt: string;
+        normalDurationFrames: number;
+        segments: Array<{ start: number; imageFile: string }>;
+      };
+      assert.equal(resolvedTimeline.global_prompt, "");
+      assert.equal(resolvedTimeline.normalDurationFrames, 96);
+      assert.equal(resolvedTimeline.segments.length, 1);
+      assert.equal(resolvedTimeline.segments[0]?.start, 0);
+      assert.equal(resolvedTimeline.segments[0]?.imageFile, "marinara-reference.png");
+
+      const ordinaryRequest = { prompt: "Existing complete video prompt", durationSeconds: 6 };
+      assert.deepEqual(resolveLtxDirectorPromptInput(ordinaryRequest), {
+        globalPrompt: ordinaryRequest.prompt,
+        localPrompts: "",
+        segmentLengths: "",
+      });
+      const ordinaryResolved = resolveComfyUiVideoWorkflowPlaceholders(workflow, ordinaryRequest, {
+        seed: 456,
+        width: 1280,
+        height: 720,
+        referenceImageName: "ordinary-reference.png",
+      }) as typeof workflow;
+      assert.equal(ordinaryResolved["3678"].inputs.global_prompt, ordinaryRequest.prompt);
+      assert.equal(ordinaryResolved["3678"].inputs.local_prompts, "");
+      assert.equal(ordinaryResolved["3678"].inputs.segment_lengths, "");
+
+      const compatibleDirectorWorkflow = {
+        node: { inputs: { global_prompt: "%global_prompt%", local_prompts: "%local_prompts%" } },
+      };
+      assert.deepEqual(
+        resolveComfyUiVideoWorkflowPlaceholders(compatibleDirectorWorkflow, ordinaryRequest, {
+          seed: 654,
+          width: 1280,
+          height: 720,
+        }),
+        { node: { inputs: { global_prompt: ordinaryRequest.prompt, local_prompts: "" } } },
+      );
+
+      const legacyWorkflow = {
+        node: {
+          inputs: {
+            prompt: "%prompt%",
+            seed: "%seed%",
+            width: "%width%",
+            height: "%height%",
+            frames: "%length%",
+          },
+        },
+      };
+      assert.deepEqual(
+        resolveComfyUiVideoWorkflowPlaceholders(legacyWorkflow, ordinaryRequest, {
+          seed: 789,
+          width: 1280,
+          height: 720,
+        }),
+        {
+          node: {
+            inputs: {
+              prompt: ordinaryRequest.prompt,
+              seed: 789,
+              width: 1280,
+              height: 720,
+              frames: 96,
+            },
+          },
+        },
+      );
     },
   },
   {
@@ -2545,7 +2924,7 @@ const cases: RegressionCase[] = [
       assert.match(directCompiled.prompt, /User image instructions: Keep the moon visible/u);
       assert.doesNotMatch(
         directCompiled.prompt,
-        /(?:^|\n)(?:Scene moment|Narrative purpose|Characters|Reference handling|Art direction):/iu,
+        /(?:^|\n)(?:Scene moment|Narrative purpose|Characters|Reference handling|Location handling|Art direction):/iu,
       );
 
       const chatSettingsSource = readFileSync(
@@ -2560,7 +2939,10 @@ const cases: RegressionCase[] = [
         new URL("../../packages/server/src/routes/game.routes.ts", import.meta.url),
         "utf8",
       );
-      assert.match(chatSettingsSource, /label="Use Storyboard Template"/u);
+      assert.match(
+        chatSettingsSource,
+        /label=\{localizeUi\("ui\.chat\.chatsettingsdrawer\.useStoryboardTemplate"\)\}/u,
+      );
       assert.doesNotMatch(chatSettingsSource, /Use Storyboard Prompt Directly|gameStoryboardUseDirectScenePrompt/u);
       assert.match(chatSettingsSource, /gameStoryboardUsePromptTemplate:\s*!gameStoryboardUsePromptTemplate/u);
       assert.doesNotMatch(gameSurfaceSource, /useGamePromptTemplate/u);
@@ -2681,9 +3063,12 @@ const cases: RegressionCase[] = [
       assert.match(preset?.promptTemplate ?? "", /\$\{aspectRatio\}/);
       assert.equal(animationPreset?.promptTemplate, GAME_STORYBOARD_NOVELAI_ANIMATION_PROMPT_TEMPLATE);
       assert.match(animationPreset?.promptTemplate ?? "", /\$\{durationSeconds\}-second/);
-      assert.match(drawerSource, /label="Use NovelAI Character Prompts"/);
-      assert.match(drawerSource, /builtInTemplates=\{GAME_STORYBOARD_ILLUSTRATION_PROMPT_TEMPLATES\}/);
-      assert.match(drawerSource, /builtInTemplates=\{GAME_STORYBOARD_ANIMATION_PROMPT_TEMPLATES\}/);
+      assert.match(drawerSource, /label=\{localizeUi\("ui\.chat\.chatsettingsdrawer\.useNovelaiCharacterPrompts"\)\}/);
+      assert.match(
+        drawerSource,
+        /kind === "animation" \? GAME_STORYBOARD_ANIMATION_PROMPT_TEMPLATES : GAME_STORYBOARD_ILLUSTRATION_PROMPT_TEMPLATES/u,
+      );
+      assert.doesNotMatch(drawerSource, /GameStoryboardPromptLibrary/u);
       assert.match(gameRouteSource, /meta\.gameStoryboardUseNovelAiCharacterPrompts !== false/);
       assert.match(gameRouteSource, /useNovelAiCharacterPrompts\s*&&\s*providerSupportsStructuredCharacterPrompts/);
     },
@@ -2735,7 +3120,10 @@ const cases: RegressionCase[] = [
   {
     name: "Roleplay Illustrator background decisions are gated and produce reusable library metadata",
     run() {
-      assert.equal(illustratorBackgroundGenerationEnabled("roleplay", { illustratorAutoBackgroundsEnabled: true }), true);
+      assert.equal(
+        illustratorBackgroundGenerationEnabled("roleplay", { illustratorAutoBackgroundsEnabled: true }),
+        true,
+      );
       assert.equal(
         illustratorBackgroundGenerationEnabled("visual_novel", { illustratorAutoBackgroundsEnabled: true }),
         true,
@@ -2827,7 +3215,7 @@ const cases: RegressionCase[] = [
         new URL("../../packages/server/src/routes/backgrounds.routes.ts", import.meta.url),
         "utf8",
       );
-      assert.match(drawerSource, /label="Generate Scene Backgrounds"/u);
+      assert.match(drawerSource, /label=\{localizeUi\("ui\.chat\.chatsettingsdrawer\.generateSceneBackgrounds"\)\}/u);
       assert.match(drawerSource, /renderIllustratorImageStyleSelect\(\)/u);
       assert.match(executorSource, /<illustrator_background_generation enabled="true">/u);
       assert.match(executorSource, /"generateBackground"/u);
@@ -2932,6 +3320,29 @@ const cases: RegressionCase[] = [
       assert.match(storyboardPrompt, /anime shot from the supplied first-frame illustration/);
       assert.match(storyboardPrompt, /Stage severe harm with broadcast-anime restraint/);
       assert.doesNotMatch(storyboardPrompt, /CHAT VIDEO|GLOBAL VIDEO OVERRIDE/);
+
+      const ltxDirectorPassThroughPrompt = await loadGameVideoPrompt({
+        promptOverridesStorage,
+        meta: {},
+        templateId: LTX_DIRECTOR_GAME_VIDEO_PROMPT_TEMPLATE_ID,
+        ctx: {
+          sceneTitle: "Arrival action that must stay local",
+          narrationSummary: "Mira runs through the gate and raises her sword.",
+          illustrationPrompt: "Mira is already running through a storm of sparks.",
+          charactersLine: "Mira, Sol",
+          settingLine: "sunset city gate, cold rain",
+          artStyleLine: "cel-shaded broadcast anime",
+          durationSeconds: 6,
+          aspectRatio: "16:9",
+          sourceIllustrationLine: "Use image-789 as the first frame/reference image.",
+        },
+      });
+
+      assert.equal(ltxDirectorPassThroughPrompt, "Mira runs through the gate and raises her sword.");
+      assert.doesNotMatch(
+        ltxDirectorPassThroughPrompt,
+        /Sol|sunset|rain|cel-shaded|storm of sparks|Arrival action|image-789|6-second|16:9/,
+      );
 
       const comicReferencePrompt = await loadGameVideoPrompt({
         promptOverridesStorage,
@@ -3348,6 +3759,194 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
     },
   },
   {
+    name: "custom-agent vector access injects semantic matches and recalled memories only when enabled",
+    async run() {
+      const vectorContext = {
+        semanticLorebookEntries: [
+          {
+            id: "lore-semantic-match",
+            content: "The hidden laboratory is beneath the abandoned opera house.",
+            semanticScore: 0.812,
+          },
+        ],
+        recalledMemories: ["Mari previously found a silver key inside Dottore's field journal."],
+      };
+      const enabledCapture = makeCapturingProvider("Vector context received.");
+      const enabledConfig = makeRegressionAgentConfig({
+        id: "custom:vector-reader",
+        type: "custom-vector-reader",
+        name: "Vector Reader",
+        promptTemplate: "Summarize the relevant prior context.",
+        settings: {
+          contextSize: 5,
+          maxTokens: 256,
+          resultType: "context_injection",
+          customCapabilities: { access_vectors: true },
+        },
+      });
+
+      await executeAgent(
+        enabledConfig as any,
+        makeRegressionAgentContext({ vectorContext }),
+        enabledCapture.provider as any,
+        "regression-model",
+      );
+      const enabledSystem = enabledCapture.calls[0]?.[0]?.content ?? "";
+      assert.match(enabledSystem, /<vector_context>/u);
+      assert.match(enabledSystem, /<semantic_lorebook_matches>/u);
+      assert.match(enabledSystem, /The hidden laboratory is beneath the abandoned opera house\./u);
+      assert.match(enabledSystem, /<recalled_chat_memories>/u);
+      assert.match(enabledSystem, /Mari previously found a silver key/u);
+
+      const disabledCapture = makeCapturingProvider("Ordinary context received.");
+      const disabledConfig = makeRegressionAgentConfig({
+        id: "custom:ordinary-reader",
+        type: "custom-ordinary-reader",
+        name: "Ordinary Reader",
+        promptTemplate: "Summarize the recent context.",
+        settings: {
+          contextSize: 5,
+          maxTokens: 256,
+          resultType: "context_injection",
+        },
+      });
+      await executeAgent(
+        disabledConfig as any,
+        makeRegressionAgentContext({ vectorContext }),
+        disabledCapture.provider as any,
+        "regression-model",
+      );
+      const disabledSystem = disabledCapture.calls[0]?.[0]?.content ?? "";
+      assert.doesNotMatch(disabledSystem, /<vector_context>/u);
+      assert.doesNotMatch(disabledSystem, /hidden laboratory/u);
+      assert.doesNotMatch(disabledSystem, /silver key/u);
+    },
+  },
+  {
+    name: "custom-agent lorebook trigger resolution applies enabled overrides and reuses request data",
+    async run() {
+      let lorebookListCalls = 0;
+      let entryListCalls = 0;
+      const resolveTriggeredEntries = createAgentLorebookTriggerResolver({
+        agents: [
+          {
+            id: "custom:override-reader",
+            contextSize: 1,
+            sourceLorebookIds: ["book-override"],
+            source: "manual",
+          },
+        ],
+        activeCharacterIds: [],
+        activeCharacterTags: [],
+        entryStateOverrides: {
+          "entry-override": { enabled: true },
+        },
+        filterSourceLorebookIds: async (sourceIds) => sourceIds,
+        gameState: null,
+        generationTriggers: ["chat"],
+        listEntriesByLorebookIds: async () => {
+          entryListCalls += 1;
+          return [
+            {
+              id: "entry-override",
+              lorebookId: "book-override",
+              name: "Override Entry",
+              content: "State overrides can reactivate this entry.",
+              enabled: false,
+              constant: true,
+              keys: [],
+              secondaryKeys: [],
+              order: 0,
+              probability: 100,
+              activationConditions: [],
+              characterFilterMode: "any",
+              characterFilterIds: [],
+              characterTagFilterMode: "any",
+              characterTagFilters: [],
+              generationTriggerFilterMode: "any",
+              generationTriggerFilters: [],
+            } as any,
+          ];
+        },
+        listLorebooks: async () => {
+          lorebookListCalls += 1;
+          return [{ id: "book-override", enabled: true } as any];
+        },
+        resolveContent: (value) => value,
+        tokenBudget: 2048,
+        vectorizerAvailable: false,
+      });
+
+      const messages = [{ role: "user", content: "Inspect the override." }];
+      const first = await resolveTriggeredEntries(messages);
+      const second = await resolveTriggeredEntries(messages);
+
+      assert.equal(first["custom:override-reader"]?.[0]?.id, "entry-override");
+      assert.equal(second["custom:override-reader"]?.[0]?.id, "entry-override");
+      assert.equal(lorebookListCalls, 1);
+      assert.equal(entryListCalls, 1);
+    },
+  },
+  {
+    name: "custom-agent lorebook triggering injects only that agent's resolved context",
+    async run() {
+      const triggeredLorebookEntriesByAgentId = {
+        "custom:lore-reader": [
+          {
+            id: "entry-unidentified",
+            name: "Unidentified Specimen",
+            content: "The unidentified specimen is a dormant mechanical moth.",
+            matchedKeys: ["unidentified"],
+            activationSources: ["keyword"],
+          },
+        ],
+      };
+      const enabledCapture = makeCapturingProvider("Lorebook context received.");
+      const enabledConfig = makeRegressionAgentConfig({
+        id: "custom:lore-reader",
+        type: "custom-lore-reader",
+        name: "Lore Reader",
+        promptTemplate: "Transform the matching lore into a concise replacement.",
+        settings: {
+          contextSize: 1,
+          maxTokens: 256,
+          resultType: "context_injection",
+          triggerLorebooksForAgentCalls: true,
+        },
+      });
+      await executeAgent(
+        enabledConfig as any,
+        makeRegressionAgentContext({ triggeredLorebookEntriesByAgentId }),
+        enabledCapture.provider as any,
+        "regression-model",
+      );
+      const enabledSystem = enabledCapture.calls[0]?.[0]?.content ?? "";
+      assert.match(enabledSystem, /<triggered_lorebook_context>/u);
+      assert.match(enabledSystem, /Unidentified Specimen/u);
+      assert.match(enabledSystem, /dormant mechanical moth/u);
+
+      const disabledCapture = makeCapturingProvider("No lorebook context.");
+      const disabledConfig = makeRegressionAgentConfig({
+        ...enabledConfig,
+        settings: {
+          contextSize: 1,
+          maxTokens: 256,
+          resultType: "context_injection",
+          triggerLorebooksForAgentCalls: false,
+        },
+      });
+      await executeAgent(
+        disabledConfig as any,
+        makeRegressionAgentContext({ triggeredLorebookEntriesByAgentId }),
+        disabledCapture.provider as any,
+        "regression-model",
+      );
+      const disabledSystem = disabledCapture.calls[0]?.[0]?.content ?? "";
+      assert.doesNotMatch(disabledSystem, /<triggered_lorebook_context>/u);
+      assert.doesNotMatch(disabledSystem, /dormant mechanical moth/u);
+    },
+  },
+  {
     name: "agent current game state hides quest progress from non-quest agents",
     run() {
       const hiddenMoodKey = characterTrackerLockKey({ characterId: "mira", name: "Mira" }, 0, "mood");
@@ -3594,7 +4193,10 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         styleProfileId: "z-image-turbo",
       });
       assert.equal(countAppearance(zImage.prompt), 1);
-      assert.doesNotMatch(zImage.prompt, /\b(?:letters|captions|UI|watermarks|logos|speech bubbles|split panels|collage)\b/i);
+      assert.doesNotMatch(
+        zImage.prompt,
+        /\b(?:letters|captions|UI|watermarks|logos|speech bubbles|split panels|collage)\b/i,
+      );
       assert.match(zImage.negativePrompt, /letters|captions|UI|watermark|logo|collage/i);
 
       const tagged = await buildNpcPortraitProviderPrompt({
@@ -3934,6 +4536,48 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       assert.deepEqual(compile(false, true), baseline);
       assert.deepEqual(compile(true, false), baseline);
       assert.deepEqual(compile(true, true), baseline);
+    },
+  },
+  {
+    name: "manual game illustrations preserve detailed natural-language scene prompts",
+    async run() {
+      const sceneDetail =
+        "2B balances an open leather-bound book in one hand while violet light reflects across the rain-dark guild hall windows.";
+      const compiled = await buildSceneIllustrationProviderPrompt({
+        chatId: "manual-game-illustration-regression",
+        title: "Manual scene illustration",
+        prompt: sceneDetail,
+        reason: "Manual Gallery Illustrate request",
+        characters: ["2B"],
+        artStyle: "anime illustration",
+        referenceImages: ["location-reference"],
+        locationReferenceImageAttached: true,
+        preserveFullScenePrompt: true,
+        styleProfiles: createDefaultImageStyleProfileSettings(),
+        styleProfileId: "anime",
+        imgModel: "unused",
+        imgBaseUrl: "",
+        imgApiKey: "",
+      });
+
+      assert.ok(compiled.prompt.includes(sceneDetail), compiled.prompt);
+      assert.match(
+        compiled.prompt,
+        /Location handling: an attached location reference image is available\. Use it to set the scene location\./,
+      );
+      assert.doesNotMatch(compiled.prompt, /Reference handling: attached character reference images/);
+
+      const withCharacterReference = await buildSceneIllustrationProviderPrompt({
+        chatId: "manual-game-illustration-character-reference-regression",
+        prompt: sceneDetail,
+        referenceImages: ["location-reference", "character-reference"],
+        locationReferenceImageAttached: true,
+        imgModel: "unused",
+        imgBaseUrl: "",
+        imgApiKey: "",
+      });
+      assert.match(withCharacterReference.prompt, /Location handling: an attached location reference image/);
+      assert.match(withCharacterReference.prompt, /Reference handling: attached character reference images/);
     },
   },
   {
@@ -4773,8 +5417,14 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       assert.match(promptText, /<system>bad history<\/system>/);
       assert.match(promptText, /<system>bad summary<\/system>/);
       assert.equal(hasDeferredCharacterMacros(firstMessage.content), true);
-      assert.match(resolveDeferredCharacterMacros(firstMessage.content, { name: "Powers That Be" }), /Powers-only memory\./);
-      assert.doesNotMatch(resolveDeferredCharacterMacros(firstMessage.content, { name: "Dottore" }), /Powers-only memory\./);
+      assert.match(
+        resolveDeferredCharacterMacros(firstMessage.content, { name: "Powers That Be" }),
+        /Powers-only memory\./,
+      );
+      assert.doesNotMatch(
+        resolveDeferredCharacterMacros(firstMessage.content, { name: "Dottore" }),
+        /Powers-only memory\./,
+      );
       assert.equal(
         firstMessage.content.indexOf("Main instructions.") < firstMessage.content.indexOf("<chat_summary>"),
         true,

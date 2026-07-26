@@ -21,7 +21,10 @@ export const noodleAccounts = fileTable(
     updatedAt: text("updated_at").notNull(),
   },
   {
-    uniqueBy: [{ keys: ["publicAccountId"], when: (row) => row.publicAccountId != null }],
+    uniqueBy: [
+      { keys: ["publicAccountId"], when: (row) => row.publicAccountId != null },
+      { keys: ["handle"], when: (row) => row.visibility === "public" },
+    ],
   },
 );
 

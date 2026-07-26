@@ -9,6 +9,7 @@ import {
   GAME_VIDEO_PROMPT_TEMPLATE,
   GAME_VIDEO_PROMPT_TEMPLATE_VARIABLES,
   GAME_STORYBOARD_PROMPT_TEMPLATE_VARIABLES,
+  GAME_STORYBOARD_STILL_ANIMATION_PROMPT_TEMPLATE,
   GAME_STORYBOARD_STILL_PROMPT_TEMPLATE,
 } from "@marinara-engine/shared";
 import { renderTemplate } from "../template.js";
@@ -125,6 +126,7 @@ export interface GameSceneIllustrationCtx extends Record<string, string | number
   narrativePurposeLine: string;
   charactersLine: string;
   referenceHandlingLine: string;
+  locationHandlingLine: string;
   appearanceNotesBlock: string;
   artDirectionLine: string;
   imagePromptInstructionsLine: string;
@@ -161,9 +163,15 @@ export const GAME_SCENE_ILLUSTRATION: PromptOverrideKeyDef<GameSceneIllustration
     },
     {
       name: "referenceHandlingLine",
-      description: "Pre-formatted reference-image instruction, or empty string when no references attached.",
+      description: "Pre-formatted character-reference instruction, or empty string when no character images are attached.",
       example:
         "Reference handling: attached character reference images are available. Use them to match faces, hair, build, colors, and distinctive features for the referenced characters.",
+    },
+    {
+      name: "locationHandlingLine",
+      description: "Pre-formatted location-reference instruction, or empty string when no location image is attached.",
+      example:
+        "Location handling: an attached location reference image is available. Use it to set the scene location.",
     },
     {
       name: "appearanceNotesBlock",
@@ -190,6 +198,7 @@ export const GAME_SCENE_ILLUSTRATION: PromptOverrideKeyDef<GameSceneIllustration
       ctx.narrativePurposeLine,
       ctx.charactersLine,
       ctx.referenceHandlingLine,
+      ctx.locationHandlingLine,
       ctx.appearanceNotesBlock,
       ctx.artDirectionLine,
       ctx.imagePromptInstructionsLine,
@@ -204,6 +213,8 @@ export const GAME_SCENE_ILLUSTRATION: PromptOverrideKeyDef<GameSceneIllustration
     charactersLine: "Characters: Lyra, Korr.",
     referenceHandlingLine:
       "Reference handling: attached character reference images are available. Use them to match faces, hair, build, colors, and distinctive features for the referenced characters.",
+    locationHandlingLine:
+      "Location handling: an attached location reference image is available. Use it to set the scene location.",
     appearanceNotesBlock: "Character appearance notes:\nLyra's Appearance: auburn hair, green eyes, leather jacket",
     artDirectionLine:
       "Art direction: Watercolor fantasy illustration, soft edges, warm palette, Ghibli-inspired, fantasy, medieval kingdom.",
@@ -377,6 +388,17 @@ export const GAME_STORYBOARD_ILLUSTRATION_DIRECTOR: PromptOverrideKeyDef<GameSto
     durationSeconds: 6,
     aspectRatio: "16:9",
   },
+};
+
+export const GAME_STORYBOARD_ANIMATION_DIRECTOR: PromptOverrideKeyDef<GameStoryboardIllustratorCtx> = {
+  key: "game.storyboardAnimationDirector",
+  label: "Game Mode Storyboard Animation Planner",
+  description:
+    "Game Mode storyboard animation planner instructions that split one GM turn into first frames and motion directions.",
+  variables: GAME_STORYBOARD_ILLUSTRATION_DIRECTOR.variables,
+  defaultBuilder: (ctx) =>
+    renderTemplate(GAME_STORYBOARD_STILL_ANIMATION_PROMPT_TEMPLATE, ctx, GAME_STORYBOARD_PROMPT_TEMPLATE_VARIABLES),
+  exampleContext: GAME_STORYBOARD_ILLUSTRATION_DIRECTOR.exampleContext,
 };
 
 // ── Game video prompt (scene illustration -> animated clip) ──

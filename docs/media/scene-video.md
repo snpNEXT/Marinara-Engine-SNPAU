@@ -180,5 +180,6 @@ Check that the connection has a valid API key and that your account has video ac
 
 - [Animated Expressions](animated-expressions.md)
 - [Game Mode Storyboards](../game/storyboard.md)
+- [LTX 2.3 Storyboards in Game Mode](../game/ltx-2-3-storyboards.md)
 - [Supported AI Providers](../connections/providers-reference.md)
 - [Server Configuration Reference](../CONFIGURATION.md)

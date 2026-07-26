@@ -55,6 +55,14 @@ const conversationInputSource = readFileSync(
   new URL("../../packages/client/src/components/chat/ConversationInput.tsx", import.meta.url),
   "utf8",
 );
+const useGenerateSource = readFileSync(
+  new URL("../../packages/client/src/hooks/use-generate.ts", import.meta.url),
+  "utf8",
+);
+const useChatsSource = readFileSync(
+  new URL("../../packages/client/src/hooks/use-chats.ts", import.meta.url),
+  "utf8",
+);
 const gameInputSource = readFileSync(
   new URL("../../packages/client/src/components/game/GameInput.tsx", import.meta.url),
   "utf8",
@@ -235,6 +243,26 @@ assert.equal(
   "an Illustrator-only tail should permit the next message to be sent",
 );
 assert.equal(
+  isGenerationSendBlocked({
+    streamActive: true,
+    agentsProcessing: true,
+    backgroundIllustration: false,
+    delayedResponse: true,
+  }),
+  false,
+  "a Conversation presence delay should allow additional user messages to be posted",
+);
+assert.match(
+  conversationInputSource,
+  /const createDurableMessageWithRollback = useCallback\([\s\S]*?createMessage\.mutateAsync\(\{[\s\S]*?role: "user"/u,
+  "the shared durable-message helper should persist user messages before attaching files",
+);
+assert.match(
+  conversationInputSource,
+  /if \(delayedCharacterInfo\) \{[\s\S]*?createDurableMessageWithRollback\(\{[\s\S]*?return;/u,
+  "additional messages sent during a Conversation presence delay should persist without starting another generator",
+);
+assert.equal(
   isGenerationStartBlocked({ setupLocked: false, activeController: true, backgroundIllustration: false }),
   true,
   "ordinary same-chat generations must remain exclusive",
@@ -384,6 +412,20 @@ assert.equal(
   }),
   false,
   "regeneration owns the existing row in place and must not hide it",
+);
+const messageSavedHandlerSource =
+  useGenerateSource.match(/case "message_saved": \{[\s\S]*?case "schedule_updated":/u)?.[0] ?? "";
+assert.match(
+  messageSavedHandlerSource,
+  /if \(!keepStreamLiveThroughPostProcessing\) \{[\s\S]*?rememberContinuedMessageContent\(savedMessage\);[\s\S]*?\}[\s\S]*?upsertPersistedMessages\(qc, params\.chatId, \[savedMessage\]\);/u,
+  "a saved Roleplay reply must remain cached while its live presentation is shadowing it",
+);
+const updateMessageHookSource =
+  useChatsSource.match(/export function useUpdateMessage[\s\S]*?export function useUpdateMessageExtra/u)?.[0] ?? "";
+assert.match(
+  updateMessageHookSource,
+  /const cancellation = qc\.cancelQueries[\s\S]*?qc\.setQueryData[\s\S]*?await cancellation/u,
+  "message edits should paint optimistically before query cancellation finishes",
 );
 
 const makeAgent = (type: string, resultType: string): ResolvedAgent =>

@@ -207,6 +207,10 @@ export interface AssemblerOutput {
   messages: ChatMLMessage[];
   /** Parsed generation parameters */
   parameters: GenerationParameters;
+  /** Final preset and choice-variable values available after section macro processing. */
+  macroVariables: Record<string, string>;
+  /** Agent outputs made available to {{agent::TYPE}} while assembling sections. */
+  macroAgentData: Record<string, string>;
   /** Any lorebook depth entries that were queued (already injected into messages) */
   lorebookDepthEntriesCount: number;
   /** Updated per-chat entry state overrides after ephemeral processing. Caller should persist to chat metadata. */
@@ -582,6 +586,8 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
   return {
     messages: finalMessages,
     parameters,
+    macroVariables: { ...macroCtx.variables },
+    macroAgentData: { ...(macroCtx.agentData ?? {}) },
     lorebookDepthEntriesCount,
     ...(markerCtx.updatedEntryStateOverrides
       ? { updatedEntryStateOverrides: markerCtx.updatedEntryStateOverrides }

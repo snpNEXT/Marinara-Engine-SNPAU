@@ -647,13 +647,16 @@ export async function connectionsRoutes(app: FastifyInstance) {
         return { models };
       }
 
+      const videoSource =
+        conn.provider === "video_generation" ? resolveVideoGenerationSource(conn as any, conn.baseUrl || "") : "";
       if (conn.provider === "video_generation") {
-        const source = resolveVideoGenerationSource(conn as any, conn.baseUrl || "");
-        if (source === "atlas") {
+        if (videoSource === "atlas") {
           return { models: ATLAS_CLOUD_VIDEO_MODELS.map((model) => ({ id: model.id, name: model.name })) };
         }
-        const models = MODEL_LISTS.video_generation.map((m) => ({ id: m.id, name: m.name }));
-        return { models };
+        if (videoSource !== "comfyui") {
+          const models = MODEL_LISTS.video_generation.map((m) => ({ id: m.id, name: m.name }));
+          return { models };
+        }
       }
 
       const { PROVIDERS } = await import("@marinara-engine/shared");
@@ -683,6 +686,7 @@ export async function connectionsRoutes(app: FastifyInstance) {
       // ── Special handling for local image gen services ──
       const imageSource =
         conn.provider === "image_generation" ? resolveImageGenerationSource(conn as any, baseUrl) : "";
+      const mediaSource = imageSource || videoSource;
       if (conn.provider === "image_generation" && imageSource === "atlas") {
         return { models: ATLAS_CLOUD_IMAGE_MODELS.map((model) => ({ id: model.id, name: model.name })) };
       }
@@ -759,10 +763,13 @@ export async function connectionsRoutes(app: FastifyInstance) {
       }
 
       // ComfyUI: fetch checkpoints and diffusion models from object_info
-      if (conn.provider === "image_generation" && imageSource === "comfyui") {
+      if (
+        (conn.provider === "image_generation" || conn.provider === "video_generation") &&
+        mediaSource === "comfyui"
+      ) {
         const fetchComfyLoaderModelNames = async (nodeName: string, inputName: string) => {
           const res = await safeFetch(`${baseUrl}/object_info/${nodeName}`, {
-            policy: localUrlPolicyForProvider(conn.provider, imageSource),
+            policy: localUrlPolicyForProvider(conn.provider, mediaSource),
             maxResponseBytes: 5 * 1024 * 1024,
             decodeCompressedResponse: true,
           });
@@ -789,8 +796,16 @@ export async function connectionsRoutes(app: FastifyInstance) {
           status: 0,
           names: null,
         }));
+        const loraModels = await fetchComfyLoaderModelNames("LoraLoader", "lora_name").catch(() => ({
+          status: 0,
+          names: null,
+        }));
         const names = [...new Set([...checkpoints.names, ...(diffusionModels.names ?? [])])];
-        return { models: names.map((name: string) => ({ id: name, name })) };
+        const loras = [...new Set(loraModels.names ?? [])];
+        return {
+          models: names.map((name: string) => ({ id: name, name })),
+          loras: loras.map((name: string) => ({ id: name, name })),
+        };
       }
 
       // AUTOMATIC1111 / SD Web UI: fetch models from /sdapi/v1/sd-models
@@ -927,13 +942,60 @@ export async function connectionsRoutes(app: FastifyInstance) {
         return { models };
       }
 
-      let modelsUrl =
+      // Google's ListModels endpoint is paginated (small default page size),
+      // so a single request silently drops most of the catalog. Follow
+      // nextPageToken until the list is complete.
+      if (conn.provider === "google") {
+        const collected: unknown[] = [];
+        let pageToken = "";
+        for (let page = 0; page < 20; page++) {
+          const pageUrl =
+            `${baseUrl}${provider?.modelsEndpoint ?? "/models"}?key=${encodeURIComponent(conn.apiKey)}&pageSize=1000` +
+            (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "");
+          const pageRes = await safeFetch(pageUrl, {
+            headers,
+            policy: {
+              allowLocal: isProviderLocalUrlsEnabled(),
+              allowLoopback: true,
+              allowMdns: true,
+              allowedProtocols: ["https:", "http:"],
+              flagName: "PROVIDER_LOCAL_URLS_ENABLED",
+            },
+            maxResponseBytes: 5 * 1024 * 1024,
+            decodeCompressedResponse: true,
+          });
+          if (!pageRes.ok) {
+            const body = await pageRes.text();
+            return reply.status(502).send({
+              error: `Provider returned ${pageRes.status}: ${sanitizeProviderBody(body)}`,
+            });
+          }
+          const pageText = await pageRes.text();
+          let pageJson: { models?: unknown[]; nextPageToken?: string };
+          try {
+            pageJson = JSON.parse(pageText) as { models?: unknown[]; nextPageToken?: string };
+          } catch {
+            return reply.status(502).send({
+              error: `Failed to fetch models: ${sanitizeProviderBody(pageText)}`,
+            });
+          }
+          if (Array.isArray(pageJson.models)) collected.push(...pageJson.models);
+          pageToken = typeof pageJson.nextPageToken === "string" ? pageJson.nextPageToken : "";
+          if (!pageToken) break;
+        }
+        if (pageToken) {
+          // Never report a silently truncated catalog as success.
+          return reply.status(502).send({
+            error: "Google returned more model pages than expected; refusing to show a truncated list.",
+          });
+        }
+        return { models: normalizeModelsResponse("google", { models: collected }) };
+      }
+
+      const modelsUrl =
         conn.provider === "google_vertex"
           ? buildGoogleVertexModelUrl(baseUrl, conn.model, "models")
           : `${baseUrl}${provider?.modelsEndpoint ?? "/models"}`;
-      if (conn.provider === "google") {
-        modelsUrl += `?key=${conn.apiKey}`;
-      }
 
       const res = await safeFetch(modelsUrl, {
         headers,
@@ -1125,6 +1187,7 @@ export async function connectionsRoutes(app: FastifyInstance) {
                     ? defaults.comfyui.resolution
                     : undefined,
         comfyWorkflow: conn.comfyuiWorkflow || undefined,
+        comfyLoras: isComfyUiVideo ? defaults.comfyui.loras : [],
       });
       return {
         success: true,
@@ -1377,7 +1440,14 @@ function normalizeModelsResponse(provider: string, json: Record<string, unknown>
         outputTokenLimit?: number;
       }>;
       return models
-        .filter((m) => m.supportedGenerationMethods?.includes("generateContent"))
+        .filter(
+          // Keep chat-capable models. Some catalog entries only advertise the
+          // streaming method, and a missing field should not hide a model.
+          (m) =>
+            !m.supportedGenerationMethods ||
+            m.supportedGenerationMethods.includes("generateContent") ||
+            m.supportedGenerationMethods.includes("streamGenerateContent"),
+        )
         .map((m) => ({
           id: (m.name ?? "").replace(/^models\//, ""),
           name: m.displayName ?? (m.name ?? "").replace(/^models\//, ""),

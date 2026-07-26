@@ -5,6 +5,7 @@ import { useState, useRef, useEffect, useCallback, useLayoutEffect } from "react
 import { createPortal } from "react-dom";
 import { cn } from "../../lib/utils";
 import { EMOJI_CATEGORIES, EMOJI_SEARCH_NAMES } from "../../lib/emoji-catalog.generated";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 /** Emoji → searchable keywords (lowercase). Only needs entries for emojis in CATEGORIES. */
 const EMOJI_ALIASES: Record<string, string> = {
@@ -1168,6 +1169,7 @@ export function EmojiPicker({
   customTab,
   embedded,
 }: EmojiPickerProps) {
+  const { t: localizeUi } = useUiTranslation();
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState<number | "custom">(0);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -1319,8 +1321,8 @@ export function EmojiPicker({
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search emojis..."
-          aria-label="Search emojis"
+          placeholder={localizeUi("ui.ui.emojipicker.searchEmojis")}
+          aria-label={localizeUi("ui.ui.emojipicker.searchEmojis_ecbfa28")}
           className="w-full rounded-md bg-foreground/5 px-2.5 py-1.5 text-xs outline-none ring-1 ring-foreground/10 transition-shadow placeholder:text-foreground/35 focus:ring-foreground/20"
           autoFocus={!embedded}
         />

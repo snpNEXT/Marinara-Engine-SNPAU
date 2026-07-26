@@ -9,6 +9,7 @@ import { useGenerate } from "../../hooks/use-generate";
 import { useChatStore } from "../../stores/chat.store";
 import { useUIStore } from "../../stores/ui.store";
 import type { Message } from "@marinara-engine/shared";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 type CyoaChoice = {
   label: string;
@@ -29,6 +30,7 @@ function normalizeChoices(choices: CyoaChoice[]) {
 }
 
 export function CyoaChoices({ messages }: Props) {
+  const { t: localizeUi } = useUiTranslation();
   const choices = useAgentStore((s) => s.cyoaChoices);
   const choicesChatId = useAgentStore((s) => s.cyoaChoicesChatId);
   const setCyoaChoices = useAgentStore((s) => s.setCyoaChoices);
@@ -220,22 +222,20 @@ export function CyoaChoices({ messages }: Props) {
       <div className="flex items-center gap-2 text-[0.625rem] text-[var(--muted-foreground)]/60">
         <div className="flex items-center gap-1.5">
           <Sparkles size="0.625rem" />
-          <span>What will you do?</span>
+          <span>{localizeUi("ui.chat.cyoachoices.whatWillYouDo")}</span>
         </div>
         {impersonateCyoaChoices && (
-          <span className="mari-chrome-accent-surface mari-accent-animated rounded-full px-1.5 py-0.5 text-[0.5625rem] font-semibold">
-            Impersonate
-          </span>
+          <span className="mari-chrome-accent-surface mari-accent-animated rounded-full px-1.5 py-0.5 text-[0.5625rem] font-semibold">{localizeUi("settings.quickReplies.impersonate.label")}</span>
         )}
         <button
           type="button"
           onClick={isEditing ? handleCancelEdit : handleStartEdit}
           disabled={isStreaming || isRerolling || updateMessageExtra.isPending}
           className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--muted)]/20 px-2 py-1 text-[0.5625rem] text-[var(--foreground)]/60 transition-all hover:border-[var(--border)] hover:bg-[var(--muted)]/40 hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:bg-black/35 dark:text-white/50 dark:hover:bg-white/10 dark:hover:text-white/80"
-          title={isEditing ? "Cancel editing choices" : "Edit CYOA choices"}
+          title={isEditing ?localizeUi("ui.chat.cyoachoices.cancelEditingChoices") :localizeUi("ui.chat.cyoachoices.editCyoaChoices")}
         >
           <Pencil size="0.625rem" />
-          <span>{isEditing ? "Cancel" : "Edit"}</span>
+          <span>{isEditing ?localizeUi("chat.delete.dialog.cancel") :localizeUi("ui.noodle.noodlepostcard.edit")}</span>
         </button>
         <button
           type="button"
@@ -244,10 +244,10 @@ export function CyoaChoices({ messages }: Props) {
           }}
           disabled={isStreaming || isEditing || isRerolling || updateMessageExtra.isPending}
           className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--muted)]/20 px-2 py-1 text-[0.5625rem] text-[var(--foreground)]/60 transition-all hover:border-[var(--border)] hover:bg-[var(--muted)]/40 hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:bg-black/35 dark:text-white/50 dark:hover:bg-white/10 dark:hover:text-white/80"
-          title="Re-roll CYOA choices using the latest chat context"
+          title={localizeUi("ui.chat.cyoachoices.reRollCyoaChoicesUsingTheLatestChatContext")}
         >
           {isRerolling ? <Loader2 size="0.625rem" className="animate-spin" /> : <Dices size="0.625rem" />}
-          <span>{isRerolling ? "Rolling" : "Re-roll"}</span>
+          <span>{isRerolling ?localizeUi("ui.chat.cyoachoices.rolling") :localizeUi("ui.chat.cyoachoices.reRoll")}</span>
         </button>
       </div>
       {isEditing ? (
@@ -261,14 +261,14 @@ export function CyoaChoices({ messages }: Props) {
                 type="text"
                 value={choice.label}
                 onChange={(e) => updateDraftChoice(index, "label", e.target.value)}
-                placeholder={`Choice ${index + 1}`}
+                placeholder={localizeUi("ui.chat.cyoachoices.choiceValue1", { value1: index + 1 })}
                 className="w-full rounded-lg border border-[var(--border)] bg-[var(--muted)]/20 px-3 py-2 text-[0.6875rem] font-semibold text-[var(--marinara-chat-chrome-panel-title)] outline-none transition-colors focus:border-[var(--marinara-chat-chrome-input-border-focus)] dark:border-white/10 dark:bg-black/35"
               />
               <textarea
                 value={choice.text}
                 onChange={(e) => updateDraftChoice(index, "text", e.target.value)}
                 rows={Math.min(Math.max(choice.text.split("\n").length, 2), 6)}
-                placeholder="Describe the action or dialogue sent when this choice is clicked."
+                placeholder={localizeUi("ui.chat.cyoachoices.describeTheActionOrDialogueSentWhenThisChoice")}
                 className="mt-2 w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--muted)]/20 px-3 py-2 text-[0.6875rem] leading-relaxed text-[var(--foreground)]/80 outline-none transition-colors focus:border-[var(--marinara-chat-chrome-input-border-focus)] dark:border-white/10 dark:bg-black/35 dark:text-white/75"
               />
             </div>
@@ -281,7 +281,7 @@ export function CyoaChoices({ messages }: Props) {
               className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--muted)]/20 px-3 py-1.5 text-[0.625rem] text-[var(--foreground)]/70 transition-colors hover:bg-[var(--muted)]/40 hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:bg-black/35 dark:text-white/60"
             >
               <X size="0.75rem" />
-              <span>Cancel</span>
+              <span>{localizeUi("chat.delete.dialog.cancel")}</span>
             </button>
             <button
               type="button"
@@ -296,7 +296,7 @@ export function CyoaChoices({ messages }: Props) {
               ) : (
                 <Check size="0.75rem" />
               )}
-              <span>{updateMessageExtra.isPending ? "Saving" : "Save Choices"}</span>
+              <span>{updateMessageExtra.isPending ?localizeUi("ui.noodle.noodlehome.saving") :localizeUi("ui.chat.cyoachoices.saveChoices")}</span>
             </button>
           </div>
         </div>

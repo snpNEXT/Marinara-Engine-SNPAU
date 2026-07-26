@@ -14,6 +14,7 @@ import {
   type ReactNode,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Translation } from "react-i18next";
 import { APP_VERSION } from "@marinara-engine/shared";
 import { CustomThemeInjector } from "./components/layout/CustomThemeInjector";
 import { PersonalExtensionInjector } from "./components/layout/PersonalExtensionInjector";
@@ -158,35 +159,42 @@ export class AppRecoveryBoundary extends Component<{ children: ReactNode }, { er
     const recoveryChromeStyle = getRecoveryChromeStyle();
 
     return (
-      <div
-        className="mari-chrome-token-scope flex min-h-screen items-center justify-center bg-[var(--background)] px-4 text-[var(--marinara-chat-chrome-panel-text)]"
-        style={recoveryChromeStyle}
-      >
-        <div className="w-full max-w-lg rounded-xl border border-[var(--marinara-chat-chrome-accent)] bg-[var(--marinara-chat-chrome-panel-bg)] p-5 shadow-2xl ring-1 ring-[var(--marinara-chat-chrome-focus-ring)]">
-          <h1 className="text-lg font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
-            Marinara hit a recoverable UI error.
-          </h1>
-          <p className="mt-2 text-sm text-[var(--marinara-chat-chrome-panel-muted)]">
-            The app shell crashed while rendering. Reload first; reset local UI state only if the same screen keeps
-            returning after restart.
-          </p>
-          <pre className="mt-3 max-h-32 overflow-auto rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-highlight-bg)] p-2 text-xs text-[var(--marinara-chat-chrome-accent)]">
-            {errorMessage}
-          </pre>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => window.location.reload()}
-              className="mari-chrome-control mari-chrome-control--selected px-3 py-2 text-sm"
-            >
-              Reload
-            </button>
-            <button type="button" onClick={this.resetLocalUiState} className="mari-chrome-control px-3 py-2 text-sm">
-              Reset local UI state
-            </button>
+      <Translation>
+        {(t) => (
+          <div
+            className="mari-chrome-token-scope flex min-h-screen items-center justify-center bg-[var(--background)] px-4 text-[var(--marinara-chat-chrome-panel-text)]"
+            style={recoveryChromeStyle}
+          >
+            <div className="w-full max-w-lg rounded-xl border border-[var(--marinara-chat-chrome-accent)] bg-[var(--marinara-chat-chrome-panel-bg)] p-5 shadow-2xl ring-1 ring-[var(--marinara-chat-chrome-focus-ring)]">
+              <h1 className="text-lg font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
+                {t("ui.app.recovery.title")}
+              </h1>
+              <p className="mt-2 text-sm text-[var(--marinara-chat-chrome-panel-muted)]">
+                {t("ui.app.recovery.description")}
+              </p>
+              <pre className="mt-3 max-h-32 overflow-auto rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-highlight-bg)] p-2 text-xs text-[var(--marinara-chat-chrome-accent)]">
+                {errorMessage}
+              </pre>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="mari-chrome-control mari-chrome-control--selected px-3 py-2 text-sm"
+                >
+                  {t("ui.app.recovery.reload")}
+                </button>
+                <button
+                  type="button"
+                  onClick={this.resetLocalUiState}
+                  className="mari-chrome-control px-3 py-2 text-sm"
+                >
+                  {t("ui.app.recovery.reset")}
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
+        )}
+      </Translation>
     );
   }
 }

@@ -22,6 +22,7 @@ interface GenerationSendBlockInput {
   streamActive: boolean;
   agentsProcessing: boolean;
   backgroundIllustration: boolean;
+  delayedResponse?: boolean;
 }
 
 interface GenerationStartBlockInput {
@@ -32,7 +33,7 @@ interface GenerationStartBlockInput {
 
 /** Keep send actions guarded while leaving the draft field itself editable. */
 export function isGenerationSendBlocked(input: GenerationSendBlockInput): boolean {
-  return !input.backgroundIllustration && (input.streamActive || input.agentsProcessing);
+  return !input.backgroundIllustration && !input.delayedResponse && (input.streamActive || input.agentsProcessing);
 }
 
 /** An Illustrator-only SSE tail may coexist with the chat's next text generation. */

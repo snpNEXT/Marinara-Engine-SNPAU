@@ -10,7 +10,7 @@ import {
   Users,
   Sparkles,
   FileText,
-  User,
+  VenetianMask,
   Bot,
   AtSign,
 } from "lucide-react";
@@ -42,6 +42,12 @@ type RightPanelButtonConfig = {
 
 const RIGHT_PANEL_BUTTONS: readonly RightPanelButtonConfig[] = [
   {
+    panel: "personas" as const,
+    icon: VenetianMask,
+    label: "Personas",
+    gradientClass: "mari-panel-gradient--personas",
+  },
+  {
     panel: "lorebooks" as const,
     icon: BookOpen,
     label: "Lorebooks",
@@ -65,12 +71,6 @@ const RIGHT_PANEL_BUTTONS: readonly RightPanelButtonConfig[] = [
     icon: Sparkles,
     label: "Agents",
     gradientClass: "mari-panel-gradient--agents",
-  },
-  {
-    panel: "personas" as const,
-    icon: User,
-    label: "Personas",
-    gradientClass: "mari-panel-gradient--personas",
   },
 ] as const;
 
@@ -378,7 +378,7 @@ export function TopBar() {
         aria-label={localize("Panel navigation")}
         className="mari-topbar-panel-nav mari-rgb-icon-scope flex shrink-0 items-center justify-end gap-0.5 rounded-xl p-1 max-sm:gap-0 max-sm:p-0.5"
       >
-        {/* Card Browser */}
+        {/* Browser */}
         <button
           onClick={() => handleRightPanelClick("bot-browser")}
           data-tour="panel-bot-browser"
@@ -392,7 +392,7 @@ export function TopBar() {
                   isTopbarHovered("browser") && cn(TOPBAR_FORCE_HOVER_CLASS, "text-lime-300"),
                 ),
           )}
-          title={localize("Card Browser")}
+          title={localize("Browser")}
         >
           <Bot size={15} className={TOPBAR_ACCENT_ICON_CLASS} />
           {isBotBrowserActive && (
@@ -453,9 +453,6 @@ export function TopBar() {
           );
         })}
 
-        <PersonalExtensionTopbarButtons />
-        <PersonalExtensionContributionsMenu />
-
         {/* Settings */}
         <button
           onClick={() => handleRightPanelClick("settings")}
@@ -477,6 +474,9 @@ export function TopBar() {
             <span className="absolute -bottom-0.5 left-1/2 h-0.5 w-3 -translate-x-1/2 rounded-full bg-gradient-to-r from-gray-400 to-gray-500" />
           )}
         </button>
+
+        <PersonalExtensionTopbarButtons />
+        <PersonalExtensionContributionsMenu />
       </nav>
     </header>
   );

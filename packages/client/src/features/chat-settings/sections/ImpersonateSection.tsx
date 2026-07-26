@@ -5,6 +5,7 @@ import { useUIStore } from "../../../stores/ui.store";
 import { HelpTooltip } from "../../../components/ui/HelpTooltip";
 import { SettingsSwitch } from "../../../components/panels/settings/SettingControls";
 import { ChatSettingsSection } from "../ChatSettingsSection";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 interface ImpersonateSectionProps {
   presets: Array<{ id: string; name: string }>;
@@ -12,6 +13,7 @@ interface ImpersonateSectionProps {
 }
 
 export function ImpersonateSection({ presets, connections }: ImpersonateSectionProps) {
+  const { t: localizeUi } = useUiTranslation();
   const promptTemplate = useUIStore((state) => state.impersonatePromptTemplate);
   const setPromptTemplate = useUIStore((state) => state.setImpersonatePromptTemplate);
   const cyoaChoices = useUIStore((state) => state.impersonateCyoaChoices);
@@ -28,16 +30,17 @@ export function ImpersonateSection({ presets, connections }: ImpersonateSectionP
 
   return (
     <ChatSettingsSection
-      label="Impersonate"
+      id="impersonate"
+      label={localizeUi("settings.quickReplies.impersonate.label")}
       icon={<Drama size="0.875rem" />}
-      help="Global settings applied to every /impersonate generation across all chats."
+      help={localizeUi("ui.chatSettings.impersonatesection.globalSettingsAppliedToEveryImpersonateGenerationAcrossAll")}
     >
       <div className="space-y-2.5">
         <div className="space-y-1">
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-1.5">
-              <span className="text-xs font-semibold">Prompt Template</span>
-              <HelpTooltip text="Optional global instruction sent to the model when you /impersonate. Leave empty to use the chat-specific prompt, or the built-in default if that chat has none. Macros like {{user}}, {{persona_description}} and {{impersonate_direction}} are replaced before sending." />
+              <span className="text-xs font-semibold">{localizeUi("ui.agents.agenteditor.promptTemplate")}</span>
+              <HelpTooltip text={localizeUi("ui.chatSettings.impersonatesection.optionalGlobalInstructionSentToTheModelWhenYou")} />
             </div>
             <span className="shrink-0 rounded-full bg-[var(--secondary)]/55 px-2 py-0.5 text-[0.625rem] text-[var(--muted-foreground)] ring-1 ring-[var(--border)]">
               {promptStatus}
@@ -46,7 +49,7 @@ export function ImpersonateSection({ presets, connections }: ImpersonateSectionP
           <textarea
             value={promptTemplate}
             onChange={(event) => setPromptTemplate(event.target.value)}
-            placeholder="Empty = use chat/built-in default"
+            placeholder={localizeUi("ui.chatSettings.impersonatesection.emptyUseChatBuiltInDefault")}
             rows={4}
             className="min-h-20 w-full resize-y rounded-lg bg-[var(--secondary)] px-3 py-1.5 font-mono text-xs leading-relaxed outline-none ring-1 ring-transparent transition-shadow focus:ring-[var(--primary)]/40"
           />
@@ -55,18 +58,14 @@ export function ImpersonateSection({ presets, connections }: ImpersonateSectionP
               onClick={() => setDefaultOpen((open) => !open)}
               className="flex items-center gap-1 rounded-md px-1 py-0.5 text-[0.625rem] font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--secondary)]/70 hover:text-[var(--foreground)]"
             >
-              {defaultOpen ? <ChevronDown size="0.6875rem" /> : <ChevronRight size="0.6875rem" />}
-              Built-in default
-            </button>
+              {defaultOpen ? <ChevronDown size="0.6875rem" /> : <ChevronRight size="0.6875rem" />}{localizeUi("ui.chat.summarypopover.builtInDefault")}</button>
             {hasPromptTemplate && (
               <button
                 onClick={() => setPromptTemplate("")}
                 className="flex items-center gap-1 rounded-md bg-[var(--secondary)] px-2 py-0.5 text-[0.625rem] text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
-                title="Reset to default"
+                title={localizeUi("ui.agents.agenteditor.resetToDefault")}
               >
-                <RotateCcw size="0.625rem" />
-                Reset
-              </button>
+                <RotateCcw size="0.625rem" />{localizeUi("ui.characters.charactercliptrimmodal.reset")}</button>
             )}
           </div>
           {defaultOpen && (
@@ -80,15 +79,15 @@ export function ImpersonateSection({ presets, connections }: ImpersonateSectionP
           <div className="grid gap-2 sm:grid-cols-2">
             <label className="min-w-0 space-y-1">
               <div className="flex items-center gap-1.5">
-                <span className="text-[0.6875rem] font-semibold">Preset</span>
-                <HelpTooltip text="Use a specific prompt preset for roleplay impersonate generations only. Conversation mode does not use prompt presets. Falls back to the chat's preset when set to 'Use chat default'." />
+                <span className="text-[0.6875rem] font-semibold">{localizeUi("chat.toolbar.preset")}</span>
+                <HelpTooltip text={localizeUi("ui.chatSettings.impersonatesection.useASpecificPromptPresetForRoleplayImpersonateGenerations")} />
               </div>
               <select
                 value={presetId ?? ""}
                 onChange={(event) => setPresetId(event.target.value || null)}
                 className="w-full rounded-lg bg-[var(--secondary)] px-2.5 py-1.5 text-xs outline-none ring-1 ring-transparent transition-shadow focus:ring-[var(--primary)]/40"
               >
-                <option value="">Use chat default</option>
+                <option value="">{localizeUi("ui.chatSettings.impersonatesection.useChatDefault")}</option>
                 {presets.map((preset) => (
                   <option key={preset.id} value={preset.id}>
                     {preset.name}
@@ -99,16 +98,16 @@ export function ImpersonateSection({ presets, connections }: ImpersonateSectionP
 
             <label className="min-w-0 space-y-1">
               <div className="flex items-center gap-1.5">
-                <span className="text-[0.6875rem] font-semibold">Connection</span>
-                <HelpTooltip text="Use a specific connection (model/provider) for impersonate generations only. Useful for routing impersonate to a cheaper or faster model." />
+                <span className="text-[0.6875rem] font-semibold">{localizeUi("ui.chatSettings.connectionsection.connection")}</span>
+                <HelpTooltip text={localizeUi("ui.chatSettings.impersonatesection.useASpecificConnectionModelProviderForImpersonateGenerations")} />
               </div>
               <select
                 value={connectionId ?? ""}
                 onChange={(event) => setConnectionId(event.target.value || null)}
                 className="w-full rounded-lg bg-[var(--secondary)] px-2.5 py-1.5 text-xs outline-none ring-1 ring-transparent transition-shadow focus:ring-[var(--primary)]/40"
               >
-                <option value="">Use chat default</option>
-                <option value="random">Random</option>
+                <option value="">{localizeUi("ui.chatSettings.impersonatesection.useChatDefault")}</option>
+                <option value="random">{localizeUi("ui.game.gamesurfacecomponent.random")}</option>
                 {connections.map((connection) => (
                   <option key={connection.id} value={connection.id}>
                     {connection.name}
@@ -120,9 +119,9 @@ export function ImpersonateSection({ presets, connections }: ImpersonateSectionP
 
           <div className="grid gap-1 border-t border-[var(--border)]/60 pt-1.5">
             <SettingsSwitch
-              label="Skip agents"
-              help="When enabled, the agent pipeline (trackers, lorebook routers, etc.) is suppressed during impersonate so generations stay fast and don't trigger world-state mutations."
-              description="Suppress trackers, routers, and other agent work."
+              label={localizeUi("ui.chatSettings.impersonatesection.skipAgents")}
+              help={localizeUi("ui.chatSettings.impersonatesection.whenEnabledTheAgentPipelineTrackersLorebookRoutersEtc")}
+              description={localizeUi("ui.chatSettings.impersonatesection.suppressTrackersRoutersAndOtherAgentWork")}
               checked={blockAgents}
               onChange={setBlockAgents}
               labelPosition="start"
@@ -131,9 +130,9 @@ export function ImpersonateSection({ presets, connections }: ImpersonateSectionP
             />
 
             <SettingsSwitch
-              label="Use CYOA as direction"
-              help="When enabled, clicking a CYOA option uses it as the direction for an impersonate generation instead of sending the option as a normal user message."
-              description="Treat choices as impersonate guidance."
+              label={localizeUi("ui.chatSettings.impersonatesection.useCyoaAsDirection")}
+              help={localizeUi("ui.chatSettings.impersonatesection.whenEnabledClickingACyoaOptionUsesItAs")}
+              description={localizeUi("ui.chatSettings.impersonatesection.treatChoicesAsImpersonateGuidance")}
               checked={cyoaChoices}
               onChange={setCyoaChoices}
               labelPosition="start"
@@ -142,9 +141,7 @@ export function ImpersonateSection({ presets, connections }: ImpersonateSectionP
             />
           </div>
 
-          <p className="border-t border-[var(--border)]/60 px-2 pt-1.5 text-[0.65rem] leading-snug text-[var(--muted-foreground)]">
-            Enable Quick Send in Settings &gt; General &gt; Input &amp; Editing &gt; Quick replies.
-          </p>
+          <p className="border-t border-[var(--border)]/60 px-2 pt-1.5 text-[0.65rem] leading-snug text-[var(--muted-foreground)]">{localizeUi("ui.chatSettings.impersonatesection.enableQuickSendInSettingsGeneralInputEditingQuick")}</p>
         </div>
       </div>
     </ChatSettingsSection>

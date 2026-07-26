@@ -1,5 +1,4 @@
 import type { TextDirection } from "@marinara-engine/shared";
-import englishLocale from "./locales/en.json";
 import {
   DEFAULT_APP_LANGUAGE,
   type AppLanguage,
@@ -8,12 +7,13 @@ import {
   type LocaleMetadata,
 } from "./locale-types";
 
-type LocaleModule = { default: unknown };
-type LocaleModuleLoader = () => Promise<LocaleModule>;
+type LocaleAssetLoader = () => Promise<string>;
 
-const localeModules = import.meta.glob<LocaleModule>(["./locales/*.json", "!./locales/en.json"]);
-const localeLoaders = new Map<string, LocaleModuleLoader>();
-localeLoaders.set(DEFAULT_APP_LANGUAGE, async () => ({ default: englishLocale }));
+const localeAssets = import.meta.glob<string>("./locales/*.json", {
+  import: "default",
+  query: "?url",
+});
+const localeLoaders = new Map<string, LocaleAssetLoader>();
 
 function canonicalizeLocale(value: string): string | null {
   try {
@@ -28,7 +28,7 @@ function localeFromModulePath(path: string): string | null {
   return match ? canonicalizeLocale(match[1]) : null;
 }
 
-for (const [path, loader] of Object.entries(localeModules)) {
+for (const [path, loader] of Object.entries(localeAssets)) {
   const locale = localeFromModulePath(path);
   if (!locale) {
     throw new Error(`Invalid localization filename: ${path}`);
@@ -108,6 +108,10 @@ export async function loadLocaleResource(value: unknown): Promise<LoadedLocale> 
   if (!loader) {
     throw new Error(`Localization file is unavailable for ${locale}`);
   }
-  const module = await loader();
-  return normalizeLocaleResource(locale, module.default);
+  const assetUrl = await loader();
+  const response = await fetch(assetUrl);
+  if (!response.ok) {
+    throw new Error(`Localization file ${locale}.json returned HTTP ${response.status}`);
+  }
+  return normalizeLocaleResource(locale, await response.json());
 }

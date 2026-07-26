@@ -4,12 +4,19 @@
 import type { FastifyInstance } from "fastify";
 import {
   CHAT_SUMMARY_PROMPT_SETTINGS_KEY,
+  CUSTOM_GENERATION_PARAMETERS_SETTINGS_KEY,
   VIDEO_GENERATION_SETTINGS_KEY,
   appSettingsUpdateSchema,
 } from "@marinara-engine/shared";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
 
-const ALLOWED_KEYS = new Set(["ui", "chub_api_key", CHAT_SUMMARY_PROMPT_SETTINGS_KEY, VIDEO_GENERATION_SETTINGS_KEY]);
+const ALLOWED_KEYS = new Set([
+  "ui",
+  "chub_api_key",
+  CHAT_SUMMARY_PROMPT_SETTINGS_KEY,
+  CUSTOM_GENERATION_PARAMETERS_SETTINGS_KEY,
+  VIDEO_GENERATION_SETTINGS_KEY,
+]);
 
 export async function appSettingsRoutes(app: FastifyInstance) {
   const storage = createAppSettingsStorage(app.db);

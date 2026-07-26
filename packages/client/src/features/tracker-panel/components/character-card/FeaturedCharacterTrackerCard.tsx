@@ -19,6 +19,7 @@ import type {
 } from "../../../../stores/ui.store";
 import { cn } from "../../../../lib/utils";
 import { trackerEditableText } from "../../lib/tracker-display";
+import { useTrackerWindow } from "../TrackerWindowContext";
 import {
   makeUniqueCharacterCustomFieldName,
   normalizeCharacterCustomFieldName,
@@ -56,6 +57,7 @@ import { FeaturedCharacterNameplate } from "./FeaturedCharacterNameplate";
 import { FeaturedCharacterPortrait } from "./FeaturedCharacterPortrait";
 import { ExternalThoughtBubble, InlineThoughtBubble } from "./CharacterThoughtBubbles";
 import { useTrackerLockContext } from "../TrackerLockContext";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 const FEATURED_CARD_CLASS = cn(
   TRACKER_PROFILE_CARD_FRAME_CLASS,
@@ -119,6 +121,9 @@ export function FeaturedCharacterTrackerCard({
   onToggleFeatured?: () => void;
   onUploadAvatar?: () => void;
 }) {
+  const { t: localizeUi } = useUiTranslation();
+  const trackerWindow = useTrackerWindow();
+  const trackerDocument = trackerWindow.document;
   const {
     fieldLocks,
     hiddenTrackerFields,
@@ -188,11 +193,12 @@ export function FeaturedCharacterTrackerCard({
   }, [hasThoughtsControl]);
 
   useEffect(() => {
-    if (!thoughtsOpen || useInlineThoughtBubble || typeof document === "undefined") return;
+    if (!thoughtsOpen || useInlineThoughtBubble) return;
 
     let queuedClose: number | undefined;
     const isInsideThoughtSurface = (target: EventTarget | null) => {
-      if (!(target instanceof Node)) return false;
+      const TrackerNode = trackerDocument.defaultView?.Node;
+      if (!TrackerNode || !(target instanceof TrackerNode)) return false;
       return !!(
         thoughtAnchorRef.current?.contains(target) ||
         thoughtBubbleRef.current?.contains(target) ||
@@ -200,8 +206,8 @@ export function FeaturedCharacterTrackerCard({
       );
     };
     const closeAfterCurrentBlur = () => {
-      if (queuedClose !== undefined) window.clearTimeout(queuedClose);
-      queuedClose = window.setTimeout(() => {
+      if (queuedClose !== undefined) trackerWindow.clearTimeout(queuedClose);
+      queuedClose = trackerWindow.setTimeout(() => {
         setThoughtsOpen(false);
       }, 0);
     };
@@ -215,16 +221,16 @@ export function FeaturedCharacterTrackerCard({
       if (event.key === "Escape") setThoughtsOpen(false);
     };
 
-    document.addEventListener("pointerdown", handlePointerDown, true);
-    document.addEventListener("focusin", handleFocusIn, true);
-    document.addEventListener("keydown", handleKeyDown, true);
+    trackerDocument.addEventListener("pointerdown", handlePointerDown, true);
+    trackerDocument.addEventListener("focusin", handleFocusIn, true);
+    trackerDocument.addEventListener("keydown", handleKeyDown, true);
     return () => {
-      if (queuedClose !== undefined) window.clearTimeout(queuedClose);
-      document.removeEventListener("pointerdown", handlePointerDown, true);
-      document.removeEventListener("focusin", handleFocusIn, true);
-      document.removeEventListener("keydown", handleKeyDown, true);
+      if (queuedClose !== undefined) trackerWindow.clearTimeout(queuedClose);
+      trackerDocument.removeEventListener("pointerdown", handlePointerDown, true);
+      trackerDocument.removeEventListener("focusin", handleFocusIn, true);
+      trackerDocument.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, [thoughtsOpen, useInlineThoughtBubble]);
+  }, [thoughtsOpen, trackerDocument, trackerWindow, useInlineThoughtBubble]);
 
   const addCharacterStat = () => {
     if (!onUpdate) return;
@@ -298,8 +304,8 @@ export function FeaturedCharacterTrackerCard({
             type="button"
             onClick={onRemove}
             className={FEATURED_REMOVE_BUTTON_CLASS}
-            title="Remove character"
-            aria-label={`Remove ${character.name.trim() || "character"}`}
+            title={localizeUi("ui.trackerPanel.charactertrackercard.removeCharacter")}
+            aria-label={localizeUi("ui.trackerPanel.charactertrackercard.removeValue1", { value1: character.name.trim() ||localizeUi("ui.noodle.noodlehome.character") })}
           >
             <X size="0.6875rem" />
           </button>
@@ -430,7 +436,7 @@ export function FeaturedCharacterTrackerCard({
                 <InlineEdit
                   value={name}
                   onSave={(nextName) => updateCustomField(name, nextName, rawValue)}
-                  placeholder="Field"
+                  placeholder={localizeUi("ui.trackerPanel.charactertrackercard.field")}
                   ariaLabel={`${name} field name`}
                   className="min-w-0 px-0.5 py-0 font-medium"
                   scrollOnHover
@@ -453,7 +459,7 @@ export function FeaturedCharacterTrackerCard({
                 <InlineEdit
                   value={displayValue}
                   onSave={(nextValue) => updateCustomField(name, name, nextValue)}
-                  placeholder="Value"
+                  placeholder={localizeUi("ui.trackerPanel.charactertrackercard.value")}
                   ariaLabel={`${name} value`}
                   className="min-w-0 px-0.5 py-0"
                   scrollOnHover
@@ -478,8 +484,8 @@ export function FeaturedCharacterTrackerCard({
                 <button
                   type="button"
                   onClick={() => removeCustomField(name)}
-                  title={`Remove ${name}`}
-                  aria-label={`Remove ${name}`}
+                  title={localizeUi("ui.trackerPanel.charactertrackercard.removeValue1", { value1: name })}
+                  aria-label={localizeUi("ui.trackerPanel.charactertrackercard.removeValue1", { value1: name })}
                   className="flex h-5 w-5 items-center justify-center justify-self-end rounded text-[var(--destructive)] transition-all hover:bg-[var(--destructive)]/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border)] active:scale-90 [@media(pointer:coarse)]:h-6 [@media(pointer:coarse)]:w-6"
                 >
                   <X size="0.625rem" />
@@ -488,7 +494,7 @@ export function FeaturedCharacterTrackerCard({
             </div>
           ))}
           {hasEditableCustomFieldAdd && (
-            <InlineAddRow title="Add custom field" onClick={addCustomField} className="col-span-full" />
+            <InlineAddRow title={localizeUi("ui.trackerPanel.charactertrackercard.addCustomField")} onClick={addCustomField} className="col-span-full" />
           )}
         </div>
       )}

@@ -13,6 +13,7 @@ import { getStatPercent, getTrackerStatDisplayScale } from "../../lib/tracker-st
 import { FittedText, InlineAddRow, InlineEdit, InlineNumber } from "./InlineControls";
 import { EmptySection } from "./SectionControls";
 import { useTrackerLockContext } from "../TrackerLockContext";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 type StatListVisualTone = "plain" | "instrument";
 
@@ -93,6 +94,7 @@ function StatBar({
   onToggleValueLock?: () => void;
   onToggleMaxLock?: () => void;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   const percent = getStatPercent(stat);
   const isCompact = density === "compact";
   const isTight = density === "tight";
@@ -196,7 +198,7 @@ function StatBar({
           <InlineEdit
             value={stat.name}
             onSave={onUpdateName}
-            placeholder="Stat"
+            placeholder={localizeUi("ui.trackerPanel.statbar.stat")}
             title={visibleText(stat.name, "Stat")}
             className={cn(
               nameInlineEditClass,
@@ -237,7 +239,7 @@ function StatBar({
             <InlineNumber
               value={stat.value}
               onChange={onUpdateValue}
-              title="Value"
+              title={localizeUi("ui.trackerPanel.charactertrackercard.value")}
               className={valueInputClass}
               locked={valueLocked}
               lockMode={lockMode}
@@ -250,7 +252,7 @@ function StatBar({
               value={stat.max}
               onChange={onUpdateMax}
               min={0}
-              title="Max"
+              title={localizeUi("ui.agents.regexscripteditor.max")}
               className={valueInputClass}
               locked={maxLocked}
               lockMode={lockMode}
@@ -258,7 +260,7 @@ function StatBar({
             />
           </div>
         ) : (
-          <div className={valueGroupClass} title={`${stat.value} / ${stat.max}`}>
+          <div className={valueGroupClass} title={localizeUi("ui.trackerPanel.statbar.value1Value2", { value1: stat.value, value2: stat.max })}>
             <span>{stat.value}</span>
             <span className="px-px text-[color:color-mix(in_srgb,var(--tracker-profile-number-text)_58%,transparent)]">
               /
@@ -272,8 +274,8 @@ function StatBar({
             onClick={onRemove}
             disabled={!onRemove}
             className="flex h-4 w-4 items-center justify-center rounded text-[var(--destructive)] transition-colors hover:bg-[var(--destructive)]/10 disabled:opacity-0"
-            title={`Remove ${visibleText(stat.name, "stat")}`}
-            aria-label={`Remove ${visibleText(stat.name, "stat")}`}
+            title={localizeUi("ui.trackerPanel.charactertrackercard.removeValue1", { value1: visibleText(stat.name, "stat") })}
+            aria-label={localizeUi("ui.trackerPanel.charactertrackercard.removeValue1", { value1: visibleText(stat.name, "stat") })}
           >
             <X size={isCondensed ? "0.6rem" : "0.65rem"} />
           </button>
@@ -322,12 +324,13 @@ export function StatList({
   visualTone?: StatListVisualTone;
   getLockKey?: (index: number, field: "name" | "value" | "max", stat: CharacterStat) => string;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   const { fieldLocks, lockMode, onToggleFieldLock, onUpdateFieldLocks } = useTrackerLockContext();
   if (stats.length === 0) {
     return onAdd && addMode ? (
-      <InlineAddRow onClick={onAdd} title="Add stat" className="border-t-0" />
+      <InlineAddRow onClick={onAdd} title={localizeUi("ui.trackerPanel.statlist.addStat")} className="border-t-0" />
     ) : (
-      <EmptySection>No stats tracked.</EmptySection>
+      <EmptySection>{localizeUi("ui.trackerPanel.statlist.noStatsTracked")}</EmptySection>
     );
   }
   const updateStat = (index: number, updated: CharacterStat) => {
@@ -423,7 +426,7 @@ export function StatList({
       {onAdd && addMode && (
         <InlineAddRow
           onClick={onAdd}
-          title="Add stat"
+          title={localizeUi("ui.trackerPanel.statlist.addStat")}
           className={cn(
             fillAvailable && "shrink-0",
             density === "tight"

@@ -25,6 +25,7 @@ import {
 import type { ImageGenerationSize } from "../image/image-generation-settings.js";
 import { compileImagePrompt } from "../image/image-prompt-compiler.js";
 import { loadGameStoryboardImagePrompt } from "../image/game-storyboard-image-prompt.js";
+import { SPATIAL_LOCATION_REFERENCE_PROMPT_LINE } from "../image/spatial-location-reference.js";
 
 const NPC_AVATAR_DIR = join(DATA_DIR, "avatars", "npc");
 const CHAT_BACKGROUND_DIR = join(DATA_DIR, "backgrounds");
@@ -866,6 +867,8 @@ export interface SceneIllustrationGenRequest {
   /** Use the Game-specific provider prompt wrapper. False keeps the scene prompt direct while preserving optional appearance notes. */
   useGamePromptTemplate?: boolean;
   referenceImages?: string[];
+  /** The first attached reference image depicts the current Maps location. */
+  locationReferenceImageAttached?: boolean;
   /** Structured named-character prompts for providers with native multi-character controls. */
   characterPrompts?: SceneIllustrationCharacterPrompt[];
   imgSource?: string | null;
@@ -1030,6 +1033,7 @@ async function buildSceneIllustrationRawPrompt(req: SceneIllustrationGenRequest)
   const narrativePurpose = cleanSceneIllustrationContext(req.reason);
   const meaningfulNarrativePurpose = isGenericSceneMomentLabel(narrativePurpose) ? "" : narrativePurpose;
   const referenceImages = sceneIllustrationReferenceImagesForProvider(req);
+  const characterReferenceImagesAttached = referenceImages.length > (req.locationReferenceImageAttached ? 1 : 0);
   const imagePromptInstructionsLine = req.imagePromptInstructions?.trim()
     ? `User image instructions: ${req.imagePromptInstructions.trim().replace(/\s+/g, " ").slice(0, 5000)}`
     : "";
@@ -1048,9 +1052,10 @@ async function buildSceneIllustrationRawPrompt(req: SceneIllustrationGenRequest)
     finalVisibilityRuleLine,
     narrativePurposeLine: meaningfulNarrativePurpose ? `Narrative purpose: ${meaningfulNarrativePurpose}.` : "",
     charactersLine: req.characters?.length ? `Characters: ${req.characters.join(", ")}.` : "",
-    referenceHandlingLine: referenceImages.length
+    referenceHandlingLine: characterReferenceImagesAttached
       ? "Reference handling: attached character reference images are available. Use them to match faces, hair, build, colors, and distinctive features for the referenced characters."
       : "",
+    locationHandlingLine: req.locationReferenceImageAttached ? SPATIAL_LOCATION_REFERENCE_PROMPT_LINE : "",
     appearanceNotesBlock: buildSceneIllustrationAppearanceNotes(req.characterDescriptions),
     artDirectionLine: styleHint ? `Art direction: ${styleHint}.` : "",
     imagePromptInstructionsLine,
@@ -1148,6 +1153,7 @@ export async function buildSceneIllustrationProviderPrompt(
           req.setting ? `Setting: ${req.setting}` : "",
           req.artStyle ? `Art style: ${req.artStyle}` : "",
           req.imagePromptInstructions ? `User image instructions: ${req.imagePromptInstructions}` : "",
+          req.locationReferenceImageAttached ? SPATIAL_LOCATION_REFERENCE_PROMPT_LINE : "",
           referenceImages.length ? `Reference images attached: ${referenceImages.length}` : "",
         ]
       : [],

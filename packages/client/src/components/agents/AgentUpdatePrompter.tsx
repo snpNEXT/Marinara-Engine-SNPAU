@@ -7,8 +7,10 @@ import {
 } from "../../hooks/use-capability-packages";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import { getPrivilegedActionErrorMessage } from "../../lib/api-client";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 export function AgentUpdatePrompter({ presentationAllowed }: { presentationAllowed: boolean }) {
+  const { t: localizeUi } = useUiTranslation();
   const pendingUpdates = usePendingCapabilityPackageUpdates();
   const install = useInstallCapabilityPackage();
   const decline = useDeclineCapabilityPackageUpdate();
@@ -24,9 +26,9 @@ export function AgentUpdatePrompter({ presentationAllowed }: { presentationAllow
     activeUpdate.current = updateKey;
     void (async () => {
       const confirmed = await showConfirmDialog({
-        title: `Agent ${update.name} has been updated`,
-        message: `Version ${update.version} is available. Apply the update now? If you choose No, you can update it later in Download Agents.`,
-        confirmLabel: "Yes",
+        title:localizeUi("ui.agents.agentupdateprompter.agentValue1HasBeenUpdated", { value1: update.name }),
+        message:localizeUi("ui.agents.agentupdateprompter.versionValue1IsAvailableApplyTheUpdateNowIf", { value1: update.version }),
+        confirmLabel:localizeUi("ui.game.gamesurfacecomponent.yes"),
         cancelLabel: "No",
       });
 
@@ -36,8 +38,8 @@ export function AgentUpdatePrompter({ presentationAllowed }: { presentationAllow
           const installed = await install.mutateAsync({ id: update.id, expectedVersion: update.version });
           toast.success(
             installed.status === "restart-required"
-              ? `${update.name} updated. Restart Marinara Engine to finish applying it.`
-              : `${update.name} updated and ready to use.`,
+              ?localizeUi("ui.agents.agentupdateprompter.value1UpdatedRestartMarinaraEngineToFinishApplyingIt", { value1: update.name })
+              :localizeUi("ui.agents.agentupdateprompter.value1UpdatedAndReadyToUse", { value1: update.name }),
           );
         } else {
           await decline.mutateAsync({ id: update.id, version: update.version });
@@ -47,15 +49,15 @@ export function AgentUpdatePrompter({ presentationAllowed }: { presentationAllow
           getPrivilegedActionErrorMessage(
             error,
             confirmed
-              ? `${update.name} could not be updated. You can try again in Download Agents.`
-              : `${update.name} could not be deferred.`,
+              ?localizeUi("ui.agents.agentupdateprompter.value1CouldNotBeUpdatedYouCanTryAgain", { value1: update.name })
+              :localizeUi("ui.agents.agentupdateprompter.value1CouldNotBeDeferred", { value1: update.name }),
           ),
         );
       } finally {
         activeUpdate.current = null;
       }
     })();
-  }, [decline, install, pendingUpdates.data, presentationAllowed]);
+  }, [decline, install, pendingUpdates.data, presentationAllowed, localizeUi]);
 
   return null;
 }

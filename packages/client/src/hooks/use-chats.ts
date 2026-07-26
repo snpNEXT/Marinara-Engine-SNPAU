@@ -1003,8 +1003,13 @@ export function useUpdateMessage(chatId: string | null) {
     onMutate: async ({ messageId, content }) => {
       if (!chatId) return;
       // Cancel in-flight refetches (e.g. from generation events) so they
-      // don't overwrite the optimistic value with stale server data.
-      await qc.cancelQueries({ queryKey: chatKeys.messages(chatId) });
+      // don't overwrite the optimistic value with stale server data. Do not
+      // await cancellation before painting the edit: leaving edit mode must
+      // never reveal the old message while the cancellation promise settles.
+      const cancellation = qc.cancelQueries(
+        { queryKey: chatKeys.messages(chatId) },
+        { revert: false },
+      );
       const previous = qc.getQueryData<InfiniteData<Message[]>>(chatKeys.messages(chatId));
       const previousMessage = findCachedMessage(previous, messageId);
       rememberRecentMessageContentEdit(chatId, messageId, content, previousMessage?.activeSwipeIndex);
@@ -1015,6 +1020,7 @@ export function useUpdateMessage(chatId: string | null) {
           pages: old.pages.map((page) => page.map((msg) => (msg.id === messageId ? { ...msg, content } : msg))),
         };
       });
+      await cancellation;
       return { previous };
     },
     onSuccess: (updated, { messageId, content }) => {

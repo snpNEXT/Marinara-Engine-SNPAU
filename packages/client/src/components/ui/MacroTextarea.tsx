@@ -14,6 +14,7 @@ import { SUPPORTED_MACROS } from "@marinara-engine/shared";
 
 import { cn } from "../../lib/utils";
 import { handleTextareaTab } from "../../lib/textarea-editing";
+import { Trans, useTranslation as useUiTranslation } from "react-i18next";
 
 type MacroDefinition = (typeof SUPPORTED_MACROS)[number];
 
@@ -75,6 +76,7 @@ function ExpandedMacroEditor({
   placeholder,
   formatOnChange,
 }: ExpandedMacroEditorProps) {
+  const { t: localizeUi } = useUiTranslation();
   const [localValue, setLocalValue] = useState(value);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -120,6 +122,7 @@ function ExpandedMacroEditor({
     <MacroModalPortal>
       <div
         data-component="ExpandedMacroEditor"
+        data-macro-modal="true"
         className={cn(
           "fixed inset-0 z-[140] flex items-center justify-center bg-black/70 p-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-[max(env(safe-area-inset-top),0.75rem)] backdrop-blur-sm sm:p-4",
           EDITOR_MODAL_SURFACE_VARIABLES,
@@ -129,7 +132,7 @@ function ExpandedMacroEditor({
           <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
             <div>
               <h3 className="text-sm font-semibold text-[var(--foreground)]">{title}</h3>
-              <p className="text-xs text-[var(--muted-foreground)]">Expanded editor</p>
+              <p className="text-xs text-[var(--muted-foreground)]">{localizeUi("ui.ui.expandedmacroeditor.expandedEditor")}</p>
             </div>
             <button
               type="button"
@@ -138,8 +141,8 @@ function ExpandedMacroEditor({
                 onClose();
               }}
               className="rounded-lg border border-[var(--border)] bg-[var(--secondary)] p-2 text-[var(--muted-foreground)] transition hover:border-[var(--primary)] hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-              aria-label="Close expanded editor"
-              title="Close"
+              aria-label={localizeUi("ui.ui.expandedmacroeditor.closeExpandedEditor")}
+              title={localizeUi("capabilities.actions.close")}
             >
               <X className="h-4 w-4" />
             </button>
@@ -165,6 +168,7 @@ interface MacrosReferenceModalProps {
 }
 
 function MacrosReferenceModal({ open, onClose }: MacrosReferenceModalProps) {
+  const { t: localizeUi } = useUiTranslation();
   useEffect(() => {
     if (!open) {
       return;
@@ -187,6 +191,8 @@ function MacrosReferenceModal({ open, onClose }: MacrosReferenceModalProps) {
   return (
     <MacroModalPortal>
       <div
+        data-component="MacroReference"
+        data-macro-modal="true"
         className={cn(
           "fixed inset-0 z-[145] flex items-center justify-center bg-black/70 p-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-[max(env(safe-area-inset-top),0.75rem)] backdrop-blur-sm sm:p-4",
           EDITOR_MODAL_SURFACE_VARIABLES,
@@ -195,15 +201,15 @@ function MacrosReferenceModal({ open, onClose }: MacrosReferenceModalProps) {
         <div className="max-h-[88vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--background)] shadow-2xl supports-[height:100dvh]:max-h-[88dvh]">
           <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
             <div>
-              <h3 className="text-sm font-semibold text-[var(--foreground)]">Macro reference</h3>
-              <p className="text-xs text-[var(--muted-foreground)]">Macros are replaced with live chat, character, and preset values during generation.</p>
+              <h3 className="text-sm font-semibold text-[var(--foreground)]">{localizeUi("ui.ui.macrosreferencemodal.macroReference")}</h3>
+              <p className="text-xs text-[var(--muted-foreground)]">{localizeUi("ui.ui.macrosreferencemodal.macrosAreReplacedWithLiveChatCharacterAndPreset")}</p>
             </div>
             <button
               type="button"
               onClick={onClose}
               className="rounded-lg border border-[var(--border)] bg-[var(--secondary)] p-2 text-[var(--muted-foreground)] transition hover:border-[var(--primary)] hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-              aria-label="Close macro reference"
-              title="Close"
+              aria-label={localizeUi("ui.ui.macrosreferencemodal.closeMacroReference")}
+              title={localizeUi("capabilities.actions.close")}
             >
               <X className="h-4 w-4" />
             </button>
@@ -211,15 +217,23 @@ function MacrosReferenceModal({ open, onClose }: MacrosReferenceModalProps) {
           <div className="max-h-[calc(88vh-4rem)] space-y-4 overflow-y-auto p-4 supports-[height:100dvh]:max-h-[calc(88dvh-4rem)]">
             <section className="rounded-xl border border-[var(--border)] bg-[var(--secondary)] p-3 text-xs text-[var(--muted-foreground)]">
               <p>
-                Use <code className="text-[var(--foreground)]">{"{{macro}}"}</code> anywhere in prompt fields. Conditional blocks can combine checks with <code className="text-[var(--foreground)]">||</code> (OR) and <code className="text-[var(--foreground)]">&&</code> (AND).
+                <Trans
+                  i18nKey="ui.ui.macrosreferencemodal.macroUsageGuidance"
+                  values={{ example: "{{macro}}" }}
+                  components={{
+                    macro: <code className="text-[var(--foreground)]" />,
+                    or: <code className="text-[var(--foreground)]" />,
+                    and: <code className="text-[var(--foreground)]" />,
+                  }}
+                />
               </p>
               <div className="mt-3 grid gap-2 md:grid-cols-2">
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--background)] p-2">
-                  <p className="font-semibold text-[var(--foreground)]">Conditional block</p>
+                  <p className="font-semibold text-[var(--foreground)]">{localizeUi("ui.ui.macrosreferencemodal.conditionalBlock")}</p>
                   <code className="mt-1 block whitespace-pre-wrap text-[var(--primary)]">{"{{#if character == \"Dottore\"}}\nWrite this for Dottore.\n{{else}}\nWrite this for anyone else.\n{{/if}}"}</code>
                 </div>
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--background)] p-2">
-                  <p className="font-semibold text-[var(--foreground)]">Comparisons and logic</p>
+                  <p className="font-semibold text-[var(--foreground)]">{localizeUi("ui.ui.macrosreferencemodal.comparisonsAndLogic")}</p>
                   <code className="mt-1 block whitespace-pre-wrap text-[var(--primary)]">{"{{#if character == \"Maukie\" || \"Pantalone\"}}\n...\n{{/if}}\n{{#if scenario && user contains \"Mari\"}}\n...\n{{/if}}"}</code>
                 </div>
               </div>
@@ -253,6 +267,7 @@ export interface MacroTextareaProps {
   onKeyDown?: (event: ReactKeyboardEvent<HTMLTextAreaElement>) => void;
   rows?: number;
   title?: string;
+  ariaLabel?: string;
   placeholder?: string;
   className?: string;
   wrapperClassName?: string;
@@ -277,6 +292,7 @@ export function MacroTextarea({
   onKeyDown,
   rows = 6,
   title = "Edit text",
+  ariaLabel,
   placeholder,
   className,
   wrapperClassName,
@@ -290,6 +306,7 @@ export function MacroTextarea({
   spellCheck = true,
   textareaRef,
 }: MacroTextareaProps) {
+  const { t: localizeUi } = useUiTranslation();
   const [expanded, setExpanded] = useState(false);
   const [showMacroRef, setShowMacroRef] = useState(false);
 
@@ -333,6 +350,7 @@ export function MacroTextarea({
           onFocus={onFocus}
           onKeyDown={handleKeyDown}
           rows={rows}
+          aria-label={ariaLabel}
           placeholder={placeholder}
           spellCheck={spellCheck}
           className={cn(
@@ -348,8 +366,8 @@ export function MacroTextarea({
                 type="button"
                 onClick={() => setExpanded(true)}
                 className={affordanceButtonClassName}
-                aria-label="Expand editor"
-                title="Expand editor"
+                aria-label={localizeUi("ui.ui.macrotextarea.expandEditor")}
+                title={localizeUi("ui.ui.macrotextarea.expandEditor")}
               >
                 <Maximize2 className="h-3 w-3" />
               </button>
@@ -359,8 +377,8 @@ export function MacroTextarea({
                 type="button"
                 onClick={() => setShowMacroRef(true)}
                 className={affordanceButtonClassName}
-                aria-label="Macro reference"
-                title="Macro reference"
+                aria-label={localizeUi("ui.ui.macrosreferencemodal.macroReference")}
+                title={localizeUi("ui.ui.macrosreferencemodal.macroReference")}
               >
                 <BookOpen className="h-3 w-3" />
               </button>

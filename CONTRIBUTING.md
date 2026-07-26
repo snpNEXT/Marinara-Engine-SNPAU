@@ -198,6 +198,14 @@ The overlay is not a substitute for this guide. When instructions conflict, foll
 - `docs/FAQ.md` is the user-facing FAQ for common questions like LAN access.
 - If a change makes any existing doc misleading, fix that doc in the same PR.
 
+### Translated documentation
+
+- Translations of `docs/` live on the [`docs-i18n`](https://github.com/Pasta-Devs/Marinara-Engine/tree/docs-i18n) branch as one folder per language (`es/`, …), mirroring the English folder and file names 1:1, each with a generated `manifest.json`. The app downloads the selected language pack into its data folder on demand (Settings → General → Documentation Language); guides without a translation fall back to English with an `EN` badge, so features are never blocked on translations.
+- When a PR adds, renames, deletes, or meaningfully edits a file under `docs/`, update every language folder on `docs-i18n` to match — or, if you cannot translate, open a follow-up issue titled `[docs-i18n] <affected paths>` so translators can catch up. Renames and deletions MUST be mirrored on `docs-i18n`: a translation left at an old path is silently ignored by the app.
+- This applies to AI-assisted PRs too. If an AI assistant writes or updates a feature, instruct it that the English docs change lands in the same PR and the translated packs (or the `[docs-i18n]` follow-up issue) must cover every language currently on `docs-i18n`.
+- Translate prose, headings, table text, and link text only. Code blocks, inline code, file paths, URLs, and link targets (including `#fragments`) stay byte-identical to English, and every file keeps its leading `# ` heading. For Spanish, use neutral international Spanish ("tú", no regionalisms) and keep in-app UI labels in English bold with a one-time Spanish gloss.
+- After editing a pack, run `node scripts/docs-i18n/build-manifest.mjs <pack-dir>` to refresh hashes, then `node scripts/docs-i18n/validate-pack.mjs <pack-dir>` from the Engine repo root, before committing to `docs-i18n`.
+
 ## Localization
 
 UI translations live in one JSON file per locale and fall back to the canonical English catalog. See

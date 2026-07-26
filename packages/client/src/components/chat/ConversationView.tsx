@@ -13,7 +13,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import { useTranslation } from "react-i18next";
+import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
 import {
   Loader2,
   ChevronUp,
@@ -60,6 +60,7 @@ import { CapabilitySurfacePanel } from "../capabilities/CapabilitySurfacePanel";
 import { TURN_GAME_BOT_REQUEST_EVENT } from "../../lib/capability-turn-game-events";
 import { useGenerate } from "../../hooks/use-generate";
 import { useActiveLorebookEntries } from "../../hooks/use-lorebooks";
+import { useKeepLatestChatMessageVisible } from "../../hooks/use-visual-viewport-chat-bottom";
 
 const ConversationAutonomousEffects = lazy(async () => {
   const module = await import("./ConversationAutonomousEffects");
@@ -315,6 +316,7 @@ export function ConversationView({
   onConcludeScene,
   onAbandonScene,
 }: ConversationViewProps) {
+  const { t: localizeUi } = useUiTranslation();
   const { t } = useTranslation();
   useRenderTimer("convo-messages"); // [#3104 diagnostic]
   const streamingChatId = useChatStore((s) => s.streamingChatId);
@@ -476,15 +478,29 @@ export function ConversationView({
         compact={compact}
       />
       <ActiveLorebookEntriesButton chatId={chatId} />
-      <ChatToolbarButton icon={<ImageIcon size="0.875rem" />} title="Gallery" onClick={onOpenGallery} />
+      <ChatToolbarButton
+        icon={<ImageIcon size="0.875rem" />}
+        title={t("chat.toolbar.gallery")}
+        panelAction="gallery"
+        onClick={onOpenGallery}
+      />
       {onSwitchChat && (
         <ChatToolbarButton
           icon={<ArrowRightLeft size="0.875rem" />}
-          title={connectedChatName ? `Switch to ${connectedChatName}` : "Switch to connected chat"}
+          title={
+            connectedChatName
+              ? t("chat.toolbar.switchTo", { name: connectedChatName })
+              : t("chat.toolbar.switchToConnected")
+          }
           onClick={onSwitchChat}
         />
       )}
-      <ChatToolbarButton icon={<Settings2 size="0.875rem" />} title="Chat Settings" onClick={onOpenSettings} />
+      <ChatToolbarButton
+        icon={<Settings2 size="0.875rem" />}
+        title={t("chat.toolbar.settings")}
+        panelAction="settings"
+        onClick={onOpenSettings}
+      />
     </>
   );
   const renderHeader = () => (
@@ -500,6 +516,7 @@ export function ConversationView({
         onOpenSettings={onOpenSettings}
         onOpenScheduleEditor={onOpenScheduleEditor}
       />
+
       <div className="ml-2 flex shrink-0 items-center gap-1.5">
         {conversationToolbarPackages.map((capability) => (
           <CapabilityElement
@@ -587,6 +604,7 @@ export function ConversationView({
     },
     [scrollToMessagesBottom],
   );
+  useKeepLatestChatMessageVisible(scrollRef, isNearBottomRef, scheduleScrollToMessagesBottom);
 
   useEffect(() => {
     if (shouldKeepMobileComposerOpen) setMobileHistoryComposerCollapsed(false);
@@ -1106,6 +1124,9 @@ export function ConversationView({
           if (!renderedMessageKeysRef.current.has(key)) {
             staggerTimersRef.current[key]?.forEach(clearTimeout);
             delete staggerTimersRef.current[key];
+            // Reveal fully so an interrupted stagger never leaves the message
+            // permanently truncated at a part boundary (#4039).
+            setVisiblePartCounts((prev) => ({ ...prev, [key]: count }));
             return;
           }
           setVisiblePartCounts((prev) => ({ ...prev, [key]: partIndex }));
@@ -1129,6 +1150,9 @@ export function ConversationView({
           if (!renderedMessageKeysRef.current.has(key)) {
             staggerTimersRef.current[key]?.forEach(clearTimeout);
             delete staggerTimersRef.current[key];
+            // Reveal fully so an interrupted stagger never leaves the message
+            // permanently truncated at a speaker-segment boundary (#4039).
+            setVisibleSegmentCounts((prev) => ({ ...prev, [key]: count }));
             return;
           }
           setVisibleSegmentCounts((prev) => ({ ...prev, [key]: segmentIndex }));
@@ -1166,12 +1190,11 @@ export function ConversationView({
   }, [scrollToMessagesBottom, visiblePartCounts, visibleSegmentCounts]);
 
   return (
-    <div className="flex min-w-0 flex-1 overflow-hidden">
-      <div
-        className="mari-chat-area mari-card-css relative flex min-w-0 flex-1 flex-col overflow-hidden"
-        data-chat-mode="conversation"
-        style={{ ...gradientStyle, isolation: "isolate" }}
-      >
+    <div
+      className="mari-chat-area mari-card-css relative flex flex-1 flex-col overflow-hidden"
+      data-chat-mode="conversation"
+      style={{ ...gradientStyle, isolation: "isolate" }}
+    >
       {/* ── Messages scroll area ── */}
       <div ref={scrollRef} className="mari-messages-scroll flex-1 overflow-y-auto overflow-x-hidden">
         {/* Floating header — character info + action buttons */}
@@ -1185,9 +1208,7 @@ export function ConversationView({
               disabled={isFetchingNextPage}
               className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-3 py-1.5 text-xs font-medium text-[var(--muted-foreground)] transition-all hover:bg-[var(--accent)] disabled:opacity-50"
             >
-              {isFetchingNextPage ? <Loader2 size="0.75rem" className="animate-spin" /> : <ChevronUp size="0.75rem" />}
-              Load More
-            </button>
+              {isFetchingNextPage ? <Loader2 size="0.75rem" className="animate-spin" /> : <ChevronUp size="0.75rem" />}{localizeUi("ui.chat.chatroleplaysurface.loadMore")}</button>
           </div>
         )}
 
@@ -1206,8 +1227,7 @@ export function ConversationView({
         {/* Welcome message at the start of a conversation */}
         {!isLoading && !hasNextPage && messages && messages.length === 0 && (
           <div className="px-4 pt-2">
-            <p className="text-xs text-[var(--marinara-chat-chrome-panel-muted)]">
-              This is the start of your conversation with{" "}
+            <p className="text-xs text-[var(--marinara-chat-chrome-panel-muted)]">{localizeUi("ui.chat.conversationview.thisIsTheStartOfYourConversationWith")}{" "}
               <span className="font-medium text-[var(--marinara-chat-chrome-panel-title)]">
                 {(() => {
                   const names = chatCharIds.map((id) => characterMap.get(id)?.name).filter(Boolean) as string[];
@@ -1215,9 +1235,7 @@ export function ConversationView({
                   if (names.length === 1) return names[0];
                   return names.slice(0, -1).join(", ") + " & " + names[names.length - 1];
                 })()}
-              </span>
-              . Say hi!
-            </p>
+              </span>{localizeUi("ui.chat.conversationview.sayHi")}</p>
           </div>
         )}
 
@@ -1383,8 +1401,8 @@ export function ConversationView({
           <div className="flex items-center gap-2 px-4 py-1.5 text-[0.8125rem] text-[var(--text-secondary)]">
             <span className="italic">
               {delayedCharacterInfo.status === "dnd"
-                ? `${delayedDisplayName} ${delayedDisplayVerb} busy — they'll respond when they're back`
-                : `${delayedDisplayName} ${delayedDisplayVerb} away — they'll respond in a moment`}
+                ?localizeUi("ui.chat.conversationview.value1Value2BusyTheyLlRespondWhenTheyRe", { value1: delayedDisplayName, value2: delayedDisplayVerb })
+                :localizeUi("ui.chat.conversationview.value1Value2AwayTheyLlRespondInAMoment", { value1: delayedDisplayName, value2: delayedDisplayVerb })}
             </span>
           </div>
         )}
@@ -1500,7 +1518,6 @@ export function ConversationView({
         onIllustrate={onIllustrate}
         onGenerateSelfie={onGenerateSelfie}
       />
-      </div>
       {conversationSurfacePackages.map(
         (capability) =>
           openCapabilitySurfaceId === capability.id && (

@@ -5,6 +5,7 @@ import { useDocsIndex } from "../../hooks/use-docs";
 import { useUIStore } from "../../stores/ui.store";
 import { Modal } from "../ui/Modal";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 interface HomeFaqItem {
   id: string;
@@ -593,6 +594,7 @@ export function HomeFaq({
   headerless = false,
   faqOnly = false,
 }: HomeFaqProps = {}) {
+  const { t: localizeUi } = useUiTranslation();
   const localize = useLocalizedUiText();
   const [expandedInternal, setExpandedInternal] = useState(defaultExpanded);
   const [openItemIdInternal, setOpenItemIdInternal] = useState<string | null>(null);
@@ -626,7 +628,7 @@ export function HomeFaq({
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
-            <p className="truncate text-xs font-semibold text-[var(--foreground)]">FAQ</p>
+            <p className="truncate text-xs font-semibold text-[var(--foreground)]">{localizeUi("ui.chat.homefaq.faq")}</p>
             <span className="rounded-full border border-[var(--border)]/60 bg-black/5 px-1.5 py-0.5 text-[0.5rem] uppercase tracking-[0.12em] text-[var(--muted-foreground)]/80 dark:bg-white/6">
               {HOME_FAQ_ITEMS.length}
             </span>
@@ -786,7 +788,7 @@ export function HomeFaq({
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5">
-                <p className="truncate text-xs font-semibold text-[var(--foreground)]">FAQ</p>
+                <p className="truncate text-xs font-semibold text-[var(--foreground)]">{localizeUi("ui.chat.homefaq.faq")}</p>
                 <span className="rounded-full border border-[var(--border)]/60 bg-black/5 px-1.5 py-0.5 text-[0.5rem] uppercase tracking-[0.12em] text-[var(--muted-foreground)]/80 dark:bg-white/6">
                   {HOME_FAQ_ITEMS.length}
                 </span>
@@ -864,22 +866,17 @@ export function HomeFaq({
                     <div className="mx-auto flex h-28 w-20 shrink-0 items-start justify-center overflow-hidden rounded-[1.25rem] border border-[var(--border)] bg-[var(--card)]/80 shadow-[0_10px_24px_rgba(0,0,0,0.22)] sm:mx-0 sm:h-32 sm:w-24">
                       <img
                         src="/sprites/mari/Mari_explaining.png"
-                        alt="Professor Mari"
+                        alt={localizeUi("ui.chat.homefaq.professorMari")}
                         className="h-full w-full object-cover object-[center_14%]"
                       />
                     </div>
                     <div className="min-w-0 text-center sm:text-left">
                       <div className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--muted)]/50 px-2.5 py-1 text-[0.5625rem] uppercase tracking-[0.18em] text-[var(--muted-foreground)]/85 dark:border-white/10 dark:bg-black/20">
-                        <Sparkles size="0.6875rem" />
-                        Professor Mari
-                      </div>
+                        <Sparkles size="0.6875rem" />{localizeUi("ui.chat.homefaq.professorMari")}</div>
                       <p className="mt-2 text-sm font-semibold tracking-tight text-[var(--foreground)]">
                         {localize("Start here before you go hunting through Discord logs.")}
                       </p>
-                      <p className="mt-1 text-[0.6875rem] leading-relaxed text-[var(--muted-foreground)]/85">
-                        The biggest repeat problems are Game Mode model choice, silent agent failures from low max
-                        output tokens, and confusion about the local sidecar using CPU instead of the GPU.
-                      </p>
+                      <p className="mt-1 text-[0.6875rem] leading-relaxed text-[var(--muted-foreground)]/85">{localizeUi("ui.chat.homefaq.theBiggestRepeatProblemsAreGameModeModelChoice")}</p>
                     </div>
                   </div>
                 </div>

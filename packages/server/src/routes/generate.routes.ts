@@ -31,12 +31,14 @@ import {
   trackerFieldLocksAreEmpty,
   customAgentHasCapability,
   CHAT_SUMMARY_PROMPT_SETTINGS_KEY,
+  CUSTOM_GENERATION_PARAMETERS_SETTINGS_KEY,
   DEFAULT_CONVERSATION_PROMPT,
   DEFAULT_GENERATION_PARAMS,
   unwrapConversationInstructions,
   findKnownModel,
   LOCAL_SIDECAR_CONNECTION_ID,
   normalizeTextForMatch,
+  parseManagedGenerationParameterDefinitions,
   normalizeGameStoryboardKeyframeCount,
   type APIProvider,
   type MacroContext,
@@ -62,7 +64,10 @@ import {
   resolveOwnerSpatialProjection,
 } from "../services/spatial-context/projection.js";
 import { isHierarchicalMapsEnabledForChat } from "../services/spatial-context/activation.js";
-import { materializeAssistantSpatialState } from "../services/spatial-context/state-resolution.js";
+import {
+  extractAssistantSpatialDirective,
+  materializeAssistantSpatialState,
+} from "../services/spatial-context/state-resolution.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { createPromptsStorage } from "../services/storage/prompts.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
@@ -99,6 +104,11 @@ import {
 } from "../services/image/image-generation-settings.js";
 import { textRewriteDropsProtectedMarkup } from "../services/generation/text-rewrite-safety.js";
 import { compileImagePrompt } from "../services/image/image-prompt-compiler.js";
+import {
+  mergeSpatialLocationReferenceImages,
+  resolveSpatialLocationReferenceImage,
+  SPATIAL_LOCATION_REFERENCE_PROMPT_LINE,
+} from "../services/image/spatial-location-reference.js";
 import { persistGeneratedImageToEntityGalleries } from "../services/image/generated-image-entity-gallery.js";
 import { resolveImageConnectionFallback } from "../services/generation/media-connection-fallback.js";
 import { extractLeadingThinkingBlocks } from "../services/llm/inline-thinking.js";
@@ -134,6 +144,7 @@ import {
   illustratorBackgroundGenerationEnabled,
   illustratorRequestedBackground,
   illustratorTrackerLocationChanged,
+  resolveIllustratorImageConnectionId,
 } from "../services/generation/illustrator-background-generation.js";
 import { npcAvatarSlug, sanitizeGameNpcAvatarUrls } from "../services/game/npc-avatar-utils.js";
 import {
@@ -385,7 +396,10 @@ import {
   stripSpacesBeforeLineBreaks,
   trimIncompleteModelEnding,
 } from "../services/generation/generation-text-utils.js";
-import { formatSmartGroupCandidates, parsePromptPresetChoices } from "../services/generation/conversation-context-utils.js";
+import {
+  formatSmartGroupCandidates,
+  parsePromptPresetChoices,
+} from "../services/generation/conversation-context-utils.js";
 import { recoverImplicitSelfieCommand } from "../services/generation/selfie-command-recovery.js";
 import {
   buildLorebookScanMessagesWithGenerationGuide,
@@ -394,12 +408,8 @@ import {
   resolveLorebookGenerationTriggers,
   resolveLorebookTokenBudget,
 } from "../services/generation/lorebook-generation-runtime.js";
-import {
-  addLocationEntry,
-  addInventoryEntry,
-  upsertQuest,
-  addNpcEntry,
-} from "../services/game/journal.service.js";
+import { createAgentLorebookTriggerResolver } from "../services/generation/agent-lorebook-triggers.js";
+import { addLocationEntry, addInventoryEntry, upsertQuest, addNpcEntry } from "../services/game/journal.service.js";
 import { updateJournal } from "../services/generation/game-journal-runtime.js";
 import { buildGmFormatReminder } from "../services/game/gm-prompts.js";
 import {
@@ -413,7 +423,6 @@ import { applyAllSegmentEdits } from "../services/game/segment-edits.js";
 import type { CharacterData, GameMap, GameNpc, Lorebook, LorebookEntry } from "@marinara-engine/shared";
 import {
   buildConversationProfileBlocks,
-  parsePersonaConvoBehavior,
   readCharacterConvoFields,
   type ConversationProfileParticipant,
 } from "../services/conversation/conversation-profiles.js";
@@ -458,6 +467,7 @@ import {
 } from "../services/generation/agent-event-dispatcher.js";
 import { findLastUserMessageIdBefore } from "../services/generation/message-history.js";
 import {
+  explicitlyRequestsTextRewrite,
   getTextRewritePendingState,
   isBuiltInTextRewriteAgentType,
   mergePairedBuiltInRewriteAgents,
@@ -711,6 +721,9 @@ export async function generateRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Chat not found" });
     }
     const requestChatMode = (chat.mode as ChatMode) ?? "roleplay";
+    const managedParameterDefinitions = parseManagedGenerationParameterDefinitions(
+      await appSettings.get(CUSTOM_GENERATION_PARAMETERS_SETTINGS_KEY),
+    );
     if (requestChatMode === "conversation" && input.impersonate) {
       return reply.status(400).send({ error: "Impersonate is not available in Conversation mode" });
     }
@@ -788,11 +801,7 @@ export async function generateRoutes(app: FastifyInstance) {
         if (
           !input.forCharacterId &&
           regenCandidate.characterId &&
-          shouldRestoreRegenerationCharacterTarget(
-            requestChatMode,
-            earlyMeta.groupChatMode,
-            regenerationCharacterIds,
-          )
+          shouldRestoreRegenerationCharacterTarget(requestChatMode, earlyMeta.groupChatMode, regenerationCharacterIds)
         ) {
           input.forCharacterId = regenCandidate.characterId;
         }
@@ -1786,10 +1795,8 @@ export async function generateRoutes(app: FastifyInstance) {
             resolvePromptMacrosWithoutVariableWrites,
           );
         const deferredLorebookEntryStateBaseline = deferConversationLorebookScanToResponder
-          ? ((chatMeta.entryStateOverrides as Record<
-              string,
-              { ephemeral?: number | null; enabled?: boolean }
-            >) ?? undefined)
+          ? ((chatMeta.entryStateOverrides as Record<string, { ephemeral?: number | null; enabled?: boolean }>) ??
+            undefined)
           : undefined;
         const deferredLorebookTimingStateBaseline = deferConversationLorebookScanToResponder
           ? ((chatMeta.entryTimingStates as Record<string, LorebookEntryTimingState>) ?? undefined)
@@ -1812,10 +1819,8 @@ export async function generateRoutes(app: FastifyInstance) {
             semanticSimilarityBaseline: lorebookSemanticSimilarityBaseline,
             entryStateOverrides: options.previewOnly
               ? deferredLorebookEntryStateBaseline
-              : ((chatMeta.entryStateOverrides as Record<
-                  string,
-                  { ephemeral?: number | null; enabled?: boolean }
-                >) ?? undefined),
+              : ((chatMeta.entryStateOverrides as Record<string, { ephemeral?: number | null; enabled?: boolean }>) ??
+                undefined),
             entryTimingStates: options.previewOnly
               ? deferredLorebookTimingStateBaseline
               : ((chatMeta.entryTimingStates as Record<string, LorebookEntryTimingState>) ?? undefined),
@@ -2023,6 +2028,11 @@ export async function generateRoutes(app: FastifyInstance) {
           };
 
           const assembled = await assemblePrompt(assemblerInput);
+          Object.assign(promptMacroContext.variables, assembled.macroVariables);
+          promptMacroContext.agentData = {
+            ...promptMacroContext.agentData,
+            ...assembled.macroAgentData,
+          };
           lorebookPromptScanResult = assembled.lorebookScanResult ?? null;
           if (assembled.lorebookActivatedEntries || assembled.lorebookBudgetSkippedEntries) {
             lorebookScanSnapshot = {
@@ -2223,7 +2233,9 @@ export async function generateRoutes(app: FastifyInstance) {
               displayName: personaConvoDisplay || persona.name,
               aboutMe: effectiveAbout(persona.id as string, personaAboutDefault),
               isPersona: true,
-              behavior: parsePersonaConvoBehavior(persona.convoBehavior),
+              // Personas represent the user. Preserve legacy card data for
+              // round-trips, but never use it to steer the user's behavior.
+              behavior: null,
               postHistoryInstructions: "",
             });
           }
@@ -2551,7 +2563,14 @@ export async function generateRoutes(app: FastifyInstance) {
         }
 
         // ── Author's Notes injection ──
-        const authorNotes = (chatMeta.authorNotes as string | undefined)?.trim();
+        const authorNotesRaw = (chatMeta.authorNotes as string | undefined)?.trim();
+        const authorNotes = authorNotesRaw
+          ? resolveMacros(
+              authorNotesRaw,
+              promptMacroContext,
+              deferCharacterMacros ? { deferCharacterMacros: "all" } : undefined,
+            ).trim()
+          : "";
         if (authorNotes) {
           const authorNotesDepth = (chatMeta.authorNotesDepth as number) ?? 4;
           finalMessages = injectAtDepth(finalMessages, [
@@ -2597,6 +2616,7 @@ export async function generateRoutes(app: FastifyInstance) {
           chatMode,
           isSceneChat,
           chatParameters: chatMeta.chatParameters,
+          managedParameterDefinitions,
           modelAccessPolicy,
           initial: {
             temperature,
@@ -3019,10 +3039,16 @@ export async function generateRoutes(app: FastifyInstance) {
         const memoryRecallDefault = chatMode === "conversation" || isSceneChat;
         const enableMemoryRecall =
           chatMeta.enableMemoryRecall !== undefined ? chatMeta.enableMemoryRecall === true : memoryRecallDefault;
+        const customAgentVectorAccessEnabled = resolvedAgents.some((agent) =>
+          customAgentHasCapability(agent.settings, "access_vectors"),
+        );
+        let recalledAgentVectorMemories: string[] = [];
+        let memoryRecallAttempted = false;
         if (chatMode === "conversation" && conversationContextMacroSlots.memories) {
           const memoryRecallMessages: GenerationPromptMessage[] = [];
           if (enableMemoryRecall && memoryRecallVectorizerAvailable) {
-            await injectMemoryRecallContext({
+            memoryRecallAttempted = true;
+            recalledAgentVectorMemories = await injectMemoryRecallContext({
               db: app.db,
               messages: memoryRecallMessages,
               currentInputMessages: currentInputMessages(),
@@ -3044,9 +3070,24 @@ export async function generateRoutes(app: FastifyInstance) {
             .join("\n\n");
           replaceConversationContextMacro(finalMessages, "memories", conversationMemoriesBlockValue);
         } else if (enableMemoryRecall && memoryRecallVectorizerAvailable) {
-          await injectMemoryRecallContext({
+          memoryRecallAttempted = true;
+          recalledAgentVectorMemories = await injectMemoryRecallContext({
             db: app.db,
             messages: finalMessages,
+            currentInputMessages: currentInputMessages(),
+            chatId: input.chatId,
+            embeddingSource: memoryRecallEmbeddingSource,
+            contextLimit: suppressModelParameters ? undefined : (effectiveMaxContext ?? connectionMaxContext),
+            sendProgress,
+            signal: abortController.signal,
+            resolveMacros: (value) => resolveMacros(value, promptMacroContext, { trimResult: false }),
+            wrapFormat,
+          });
+        }
+        if (customAgentVectorAccessEnabled && memoryRecallVectorizerAvailable && !memoryRecallAttempted) {
+          recalledAgentVectorMemories = await injectMemoryRecallContext({
+            db: app.db,
+            messages: [],
             currentInputMessages: currentInputMessages(),
             chatId: input.chatId,
             embeddingSource: memoryRecallEmbeddingSource,
@@ -3224,6 +3265,42 @@ export async function generateRoutes(app: FastifyInstance) {
           }
           return msg;
         });
+        const customAgentsWithLorebookTriggers = resolvedAgents.filter(
+          (agent) =>
+            !builtInAgentTypes.has(agent.type) && agent.settings.triggerLorebooksForAgentCalls === true,
+        );
+        const resolveTriggeredLorebookEntriesByAgentId = createAgentLorebookTriggerResolver({
+          agents: customAgentsWithLorebookTriggers.map((agent) => {
+            const { sourceLorebookIds, source } = resolveKnowledgeSourceLorebookIds({
+              settings: agent.settings,
+              chatActiveLorebookIds,
+            });
+            return {
+              id: agent.id,
+              contextSize: normalizeAgentContextSize(agent.settings.contextSize),
+              sourceLorebookIds,
+              source,
+            };
+          }),
+          activeCharacterIds: promptCharacterIds,
+          activeCharacterTags: Array.from(
+            new Set(charInfo.flatMap((character) => (Array.isArray(character.tags) ? character.tags : []))),
+          ),
+          embeddingSource: memoryRecallEmbeddingSource,
+          entryStateOverrides:
+            (chatMeta.entryStateOverrides as Record<string, { enabled?: boolean; ephemeral?: number | null }>) ?? {},
+          filterSourceLorebookIds: filterChatActiveLorebookSourceIdsForPrompt,
+          gameState: gameState as GameStateForScanning | null,
+          generationTriggers: lorebookGenerationTriggers,
+          listEntriesByLorebookIds: async (sourceIds) =>
+            (await lorebooksStore.listEntriesByLorebooks(sourceIds)) as LorebookEntry[],
+          listLorebooks: async () => (await lorebooksStore.list()) as unknown as Lorebook[],
+          resolveContent: (value) => resolvePromptMacrosForLorebook(value).content,
+          signal: abortController.signal,
+          tokenBudget: resolveLorebookTokenBudget(chatMeta),
+          vectorizerAvailable: memoryRecallVectorizerAvailable,
+        });
+        const triggeredLorebookEntriesByAgentId = await resolveTriggeredLorebookEntriesByAgentId(recentMsgs);
         const resolvePersonaPromptText = (value?: string): string | undefined => {
           if (!value) return value;
           return resolveHistoryMessageMacros([{ content: value, characterId: null }])[0]?.content ?? value;
@@ -3286,6 +3363,28 @@ export async function generateRoutes(app: FastifyInstance) {
           memory: {},
           writableLorebookIds: null,
           chatSummary: activeChatSummary,
+          ...(customAgentVectorAccessEnabled
+            ? {
+                vectorContext: {
+                  recalledMemories: recalledAgentVectorMemories,
+                  semanticLorebookEntries: lorebookScanSnapshot.activatedEntries
+                    .filter(
+                      (entry) =>
+                        entry.matchType === "semantic" ||
+                        entry.activationSources.includes("semantic") ||
+                        entry.matchedKeys.some((key) => key.startsWith("[semantic:")),
+                    )
+                    .map((entry) => ({
+                      id: entry.id,
+                      content: entry.content,
+                      ...(typeof entry.semanticScore === "number" ? { semanticScore: entry.semanticScore } : {}),
+                    })),
+                },
+              }
+            : {}),
+          ...(Object.keys(triggeredLorebookEntriesByAgentId).length > 0
+            ? { triggeredLorebookEntriesByAgentId }
+            : {}),
           streaming: input.streaming,
           ...(requestDebug
             ? {
@@ -4627,10 +4726,9 @@ export async function generateRoutes(app: FastifyInstance) {
 
           return availableGroupCharacters
             .filter((character) => {
-              const names = [
-                character.name,
-                conversationCharacterPresenceById.get(character.id)?.displayName,
-              ].filter((name): name is string => typeof name === "string" && name.trim().length > 0);
+              const names = [character.name, conversationCharacterPresenceById.get(character.id)?.displayName].filter(
+                (name): name is string => typeof name === "string" && name.trim().length > 0,
+              );
               if (names.some((name) => requestedNames.has(normalizeTextForMatch(name)))) return true;
               return names.some((name) => {
                 const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -5367,40 +5465,44 @@ export async function generateRoutes(app: FastifyInstance) {
                   loopMessages,
                   round === 0 ? "Prompt sent to model" : `Prompt sent to model (tool round ${round + 1})`,
                 );
-                result = await withLlmRequestTimeout(chatGenerationTimeoutMs, () => provider.chatComplete!(loopMessages, {
-                  model: conn.model,
-                  temperature,
-                  maxTokens: effectiveMaxTokensForSend,
-                  maxContext: effectiveMaxContext,
-                  topP,
-                  topK: providerTopK,
-                  frequencyPenalty: frequencyPenalty || undefined,
-                  presencePenalty: presencePenalty || undefined,
-                  minP: minP || undefined,
-                  stop: stopSequences.length ? stopSequences : undefined,
-                  tools: toolDefs,
-                  enableCaching: conn.enableCaching === "true",
-                  anthropicExtendedCacheTtl: conn.anthropicExtendedCacheTtl === "true",
-                  cachingAtDepth: conn.cachingAtDepth ?? 5,
-                  enableThinking,
-                  captureReasoning,
-                  reasoningEffort: resolvedEffort ?? undefined,
-                  excludePastReasoning,
-                  verbosity: verbosity ?? undefined,
-                  serviceTier,
-                  customParameters,
-                  enabledParameters,
-                  suppressModelParameters,
-                  onThinking,
-                  onToken: input.streaming ? onToken : undefined,
-                  openrouterProvider: conn.openrouterProvider ?? undefined,
-                  signal: abortController.signal,
-                  encryptedReasoningItems: excludePastReasoning ? undefined : encryptedReasoningCache.get(input.chatId),
-                  onEncryptedReasoning: excludePastReasoning
-                    ? undefined
-                    : (items) => encryptedReasoningCache.set(input.chatId, items),
-                  onChatCompletionsReasoning: rememberChatCompletionsReasoning,
-                }));
+                result = await withLlmRequestTimeout(chatGenerationTimeoutMs, () =>
+                  provider.chatComplete!(loopMessages, {
+                    model: conn.model,
+                    temperature,
+                    maxTokens: effectiveMaxTokensForSend,
+                    maxContext: effectiveMaxContext,
+                    topP,
+                    topK: providerTopK,
+                    frequencyPenalty: frequencyPenalty || undefined,
+                    presencePenalty: presencePenalty || undefined,
+                    minP: minP || undefined,
+                    stop: stopSequences.length ? stopSequences : undefined,
+                    tools: toolDefs,
+                    enableCaching: conn.enableCaching === "true",
+                    anthropicExtendedCacheTtl: conn.anthropicExtendedCacheTtl === "true",
+                    cachingAtDepth: conn.cachingAtDepth ?? 5,
+                    enableThinking,
+                    captureReasoning,
+                    reasoningEffort: resolvedEffort ?? undefined,
+                    excludePastReasoning,
+                    verbosity: verbosity ?? undefined,
+                    serviceTier,
+                    customParameters,
+                    enabledParameters,
+                    suppressModelParameters,
+                    onThinking,
+                    onToken: input.streaming ? onToken : undefined,
+                    openrouterProvider: conn.openrouterProvider ?? undefined,
+                    signal: abortController.signal,
+                    encryptedReasoningItems: excludePastReasoning
+                      ? undefined
+                      : encryptedReasoningCache.get(input.chatId),
+                    onEncryptedReasoning: excludePastReasoning
+                      ? undefined
+                      : (items) => encryptedReasoningCache.set(input.chatId, items),
+                    onChatCompletionsReasoning: rememberChatCompletionsReasoning,
+                  }),
+                );
               } catch (err: any) {
                 // If the error was caused by an abort, cancel silently and skip post-processing.
                 if (abortController.signal.aborted || (err && err.name === "AbortError")) {
@@ -5585,39 +5687,43 @@ export async function generateRoutes(app: FastifyInstance) {
                 loopMessages = fitPromptForSend(loopMessages);
                 rememberMainPromptPreviewForAgents(loopMessages);
                 logPromptSentToModel(loopMessages, "Prompt sent to model (final tool follow-up)");
-                const finalResult = await withLlmRequestTimeout(chatGenerationTimeoutMs, () => provider.chatComplete!(loopMessages, {
-                  model: conn.model,
-                  temperature,
-                  maxTokens: effectiveMaxTokensForSend,
-                  maxContext: effectiveMaxContext,
-                  topP,
-                  topK: providerTopK,
-                  frequencyPenalty: frequencyPenalty || undefined,
-                  presencePenalty: presencePenalty || undefined,
-                  minP: minP || undefined,
-                  stop: stopSequences.length ? stopSequences : undefined,
-                  enableCaching: conn.enableCaching === "true",
-                  anthropicExtendedCacheTtl: conn.anthropicExtendedCacheTtl === "true",
-                  cachingAtDepth: conn.cachingAtDepth ?? 5,
-                  enableThinking,
-                  captureReasoning,
-                  reasoningEffort: resolvedEffort ?? undefined,
-                  excludePastReasoning,
-                  verbosity: verbosity ?? undefined,
-                  serviceTier,
-                  customParameters,
-                  enabledParameters,
-                  suppressModelParameters,
-                  onThinking,
-                  onToken: input.streaming ? onToken : undefined,
-                  openrouterProvider: conn.openrouterProvider ?? undefined,
-                  signal: abortController.signal,
-                  encryptedReasoningItems: excludePastReasoning ? undefined : encryptedReasoningCache.get(input.chatId),
-                  onEncryptedReasoning: excludePastReasoning
-                    ? undefined
-                    : (items) => encryptedReasoningCache.set(input.chatId, items),
-                  onChatCompletionsReasoning: rememberChatCompletionsReasoning,
-                }));
+                const finalResult = await withLlmRequestTimeout(chatGenerationTimeoutMs, () =>
+                  provider.chatComplete!(loopMessages, {
+                    model: conn.model,
+                    temperature,
+                    maxTokens: effectiveMaxTokensForSend,
+                    maxContext: effectiveMaxContext,
+                    topP,
+                    topK: providerTopK,
+                    frequencyPenalty: frequencyPenalty || undefined,
+                    presencePenalty: presencePenalty || undefined,
+                    minP: minP || undefined,
+                    stop: stopSequences.length ? stopSequences : undefined,
+                    enableCaching: conn.enableCaching === "true",
+                    anthropicExtendedCacheTtl: conn.anthropicExtendedCacheTtl === "true",
+                    cachingAtDepth: conn.cachingAtDepth ?? 5,
+                    enableThinking,
+                    captureReasoning,
+                    reasoningEffort: resolvedEffort ?? undefined,
+                    excludePastReasoning,
+                    verbosity: verbosity ?? undefined,
+                    serviceTier,
+                    customParameters,
+                    enabledParameters,
+                    suppressModelParameters,
+                    onThinking,
+                    onToken: input.streaming ? onToken : undefined,
+                    openrouterProvider: conn.openrouterProvider ?? undefined,
+                    signal: abortController.signal,
+                    encryptedReasoningItems: excludePastReasoning
+                      ? undefined
+                      : encryptedReasoningCache.get(input.chatId),
+                    onEncryptedReasoning: excludePastReasoning
+                      ? undefined
+                      : (items) => encryptedReasoningCache.set(input.chatId, items),
+                    onChatCompletionsReasoning: rememberChatCompletionsReasoning,
+                  }),
+                );
                 if (finalResult.content && fullResponse.length === prevLen) {
                   await writeContentChunked(finalResult.content);
                 }
@@ -5783,6 +5889,7 @@ export async function generateRoutes(app: FastifyInstance) {
           // group conversations (null elsewhere — caller falls back to the message char).
           let parsedCommandCharacterIds: (string | null)[] | null = null;
           let parsedRawCommandCount = 0;
+          let assistantSpatialDirective: ReturnType<typeof extractAssistantSpatialDirective>["directive"] = null;
           let conversationCommandContent: string | null = null;
           let contentReplaced = false;
           if (tailMessages.assistantPrefillInjected && assistantPrefill && fullResponse.startsWith(assistantPrefill)) {
@@ -6084,6 +6191,26 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           }
 
+          if (
+            !input.impersonate &&
+            hierarchicalMapsEnabledForChat &&
+            (requestChatMode === "roleplay" || requestChatMode === "game")
+          ) {
+            const parsedSpatial = extractAssistantSpatialDirective(fullResponse);
+            assistantSpatialDirective = parsedSpatial.directive;
+            if (parsedSpatial.cleanContent !== fullResponse) {
+              fullResponse = parsedSpatial.cleanContent;
+              contentReplaced = true;
+            }
+            if (assistantSpatialDirective) {
+              logger.debug(
+                "[generate/spatial] Parsed assistant %s directive for chat %s",
+                assistantSpatialDirective.type,
+                input.chatId,
+              );
+            }
+          }
+
           if (contentReplaced) {
             if (!holdForTextRewrite) {
               // Strip [selfie] tags from the display signal — the tag is kept in fullResponse
@@ -6115,7 +6242,10 @@ export async function generateRoutes(app: FastifyInstance) {
               },
               "[generate] Empty response after post-processing",
             );
-            if (!input.impersonate && (parsedCommands.length > 0 || parsedRawCommandCount > 0)) {
+            if (
+              !input.impersonate &&
+              (parsedCommands.length > 0 || parsedRawCommandCount > 0 || assistantSpatialDirective !== null)
+            ) {
               logger.info(
                 "[generate] Model emitted %d enabled command(s) (%d parsed) with no visible prose for chat %s; saving hidden command anchor",
                 parsedCommands.length,
@@ -6142,16 +6272,28 @@ export async function generateRoutes(app: FastifyInstance) {
                 hierarchicalMapsEnabledForChat &&
                 (requestChatMode === "roleplay" || requestChatMode === "game")
               ) {
-                await materializeAssistantSpatialState(
+                const assistantSpatialSnapshot = await materializeAssistantSpatialState(
                   {
                     chatId: input.chatId,
                     messageId: anchoredMsg.id,
                     swipeIndex: anchoredMsg.activeSwipeIndex ?? 0,
                     regenerate: false,
                     continuation: false,
+                    directive: assistantSpatialDirective,
                   },
                   chatMeta,
                 );
+                if (assistantSpatialSnapshot?.transitionCommandId) {
+                  sendSseEvent(reply, {
+                    type: "spatial_transition_committed",
+                    data: {
+                      chatId: input.chatId,
+                      commandId: assistantSpatialSnapshot.transitionCommandId,
+                      currentLocationId: assistantSpatialSnapshot.currentLocationId,
+                      definitionRevision: assistantSpatialSnapshot.definitionRevision,
+                    },
+                  });
+                }
               }
               if (markGenerationCommitted && anchoredMsg?.id) {
                 generationComplete = true;
@@ -6228,16 +6370,28 @@ export async function generateRoutes(app: FastifyInstance) {
             hierarchicalMapsEnabledForChat &&
             (requestChatMode === "roleplay" || requestChatMode === "game")
           ) {
-            await materializeAssistantSpatialState(
+            const assistantSpatialSnapshot = await materializeAssistantSpatialState(
               {
                 chatId: input.chatId,
                 messageId: savedMsg.id,
                 swipeIndex: savedSwipeIndex,
                 regenerate: Boolean(input.regenerateMessageId),
                 continuation: Boolean(input.continueMessageId),
+                directive: assistantSpatialDirective,
               },
               chatMeta,
             );
+            if (assistantSpatialSnapshot?.transitionCommandId) {
+              sendSseEvent(reply, {
+                type: "spatial_transition_committed",
+                data: {
+                  chatId: input.chatId,
+                  commandId: assistantSpatialSnapshot.transitionCommandId,
+                  currentLocationId: assistantSpatialSnapshot.currentLocationId,
+                  definitionRevision: assistantSpatialSnapshot.definitionRevision,
+                },
+              });
+            }
           }
           if (markGenerationCommitted && savedMsg?.id) {
             generationComplete = true;
@@ -6900,6 +7054,16 @@ export async function generateRoutes(app: FastifyInstance) {
         };
 
         if (hasPostWork && combinedResponse && !abortController.signal.aborted) {
+          if (customAgentsWithLorebookTriggers.some((agent) => agent.phase === "post_processing")) {
+            agentContext.triggeredLorebookEntriesByAgentId = await resolveTriggeredLorebookEntriesByAgentId([
+              ...recentMsgs,
+              {
+                id: latestAssistantMessageId || undefined,
+                role: "assistant",
+                content: combinedResponse,
+              },
+            ]);
+          }
           if (personaId && getLatestUserExpressionSource() && Array.isArray(agentContext.memory._availableSprites)) {
             generatedExpressionTargetIds.add(personaId);
           }
@@ -7332,9 +7496,45 @@ export async function generateRoutes(app: FastifyInstance) {
                 // Build the new snapshot from agent output, falling back to previous snapshot.
                 let newDate = coerceGameStateTextValue(gs.date) ?? coerceGameStateTextValue(prevSnap?.date);
                 let newTime = coerceGameStateTextValue(gs.time) ?? coerceGameStateTextValue(prevSnap?.time);
+                const trackerLocationGuidance = coerceGameStateTextValue(gs.location);
+                let effectiveSpatialProjection = ownerSpatialProjection;
+                if (hierarchicalMapsEnabledForChat && messageId) {
+                  effectiveSpatialProjection = await resolveOwnerSpatialProjection(input.chatId, {}, chatMeta);
+                  if (trackerLocationGuidance && effectiveSpatialProjection?.ownerMode === "game") {
+                    const previousSpatialLocationId = effectiveSpatialProjection?.currentLocationId ?? null;
+                    const previousSpatialRevision = effectiveSpatialProjection?.definitionRevision ?? 0;
+                    const guidedSpatialSnapshot = await materializeAssistantSpatialState(
+                      {
+                        chatId: input.chatId,
+                        messageId,
+                        swipeIndex: targetSwipeIndex,
+                        regenerate: Boolean(input.regenerateMessageId),
+                        continuation: Boolean(input.continueMessageId),
+                        locationGuidance: trackerLocationGuidance,
+                      },
+                      chatMeta,
+                    );
+                    if (
+                      guidedSpatialSnapshot?.transitionCommandId &&
+                      (guidedSpatialSnapshot.currentLocationId !== previousSpatialLocationId ||
+                        guidedSpatialSnapshot.definitionRevision !== previousSpatialRevision)
+                    ) {
+                      sendSseEvent(reply, {
+                        type: "spatial_transition_committed",
+                        data: {
+                          chatId: input.chatId,
+                          commandId: guidedSpatialSnapshot.transitionCommandId,
+                          currentLocationId: guidedSpatialSnapshot.currentLocationId,
+                          definitionRevision: guidedSpatialSnapshot.definitionRevision,
+                        },
+                      });
+                      effectiveSpatialProjection = await resolveOwnerSpatialProjection(input.chatId, {}, chatMeta);
+                    }
+                  }
+                }
                 const authoritativeGameLocation =
-                  ownerSpatialProjection?.ownerMode === "game"
-                    ? formatOwnerSpatialBreadcrumb(ownerSpatialProjection)
+                  effectiveSpatialProjection?.ownerMode === "game"
+                    ? formatOwnerSpatialBreadcrumb(effectiveSpatialProjection)
                     : null;
                 let newLocation =
                   authoritativeGameLocation ??
@@ -8202,7 +8402,8 @@ export async function generateRoutes(app: FastifyInstance) {
                       db: app.db,
                       chatId: input.chatId,
                       chatName: chat.name,
-                      chatMode: chatMode === "visual_novel" ? "visual_novel" : "roleplay",
+                      chatMode:
+                        chatMode === "game" ? "game" : chatMode === "visual_novel" ? "visual_novel" : "roleplay",
                       chatMetadata: freshMeta,
                       currentBackground: backgroundBeforeGeneration ?? currentBackground,
                       illustratorAgent: illustratorBackgroundAgent,
@@ -8272,10 +8473,11 @@ export async function generateRoutes(app: FastifyInstance) {
                 // Resolve connections: text LLM = connectionId, image gen = settings.imageConnectionId
                 const imagePositivePrompt = ((illustratorAgent?.settings?.imagePositivePrompt as string) ?? "").trim();
                 const savedNegativePrompt = ((illustratorAgent?.settings?.imageNegativePrompt as string) ?? "").trim();
-                const chatGameImageConnectionId =
-                  typeof chatMeta.gameImageConnectionId === "string" ? chatMeta.gameImageConnectionId.trim() : "";
-                const agentImageConnectionId = ((illustratorAgent?.settings?.imageConnectionId as string) ?? "").trim();
-                const imageConnectionOverride = chatGameImageConnectionId || agentImageConnectionId;
+                const imageConnectionOverride = resolveIllustratorImageConnectionId(
+                  requestChatMode,
+                  chatMeta,
+                  illustratorAgent?.settings?.imageConnectionId,
+                );
                 let imgConnFull = imageConnectionOverride
                   ? await connections.getWithKey(imageConnectionOverride)
                   : null;
@@ -8326,7 +8528,7 @@ export async function generateRoutes(app: FastifyInstance) {
                         null;
 
                       const illustrationSize = resolveIllustratorImageSize(
-                        imageSettings.illustration,
+                        requestChatMode === "game" ? imageSettings.game : imageSettings.illustration,
                         illData.aspectRatio,
                       );
                       const imgWidth = illustrationSize.width;
@@ -8351,6 +8553,11 @@ export async function generateRoutes(app: FastifyInstance) {
                         typeof chatMeta.illustratorIncludeCharacterAppearance === "boolean"
                           ? chatMeta.illustratorIncludeCharacterAppearance
                           : illustratorAgent?.settings?.includeCharacterAppearance === true;
+                      const spatialLocationReferenceImage = await resolveSpatialLocationReferenceImage({
+                        db: app.db,
+                        chatId: input.chatId,
+                        projection: ownerSpatialProjection?.ownerMode === "roleplay" ? ownerSpatialProjection : null,
+                      });
                       let illustratorRefImages: string[] | undefined;
                       const referenceResolution = await resolveIllustratorCharacterReferences({
                         charactersStore: chars,
@@ -8377,6 +8584,7 @@ export async function generateRoutes(app: FastifyInstance) {
                         ].join("\n"),
                         fallbackToChatCharacters: false,
                         includeReferenceImages: useAvatarRefs,
+                        maxReferences: spatialLocationReferenceImage ? 5 : 6,
                       });
                       if (includeCharacterAppearance && referenceResolution.appearanceBlock) {
                         fullPrompt += `\n\n${referenceResolution.appearanceBlock}`;
@@ -8386,7 +8594,6 @@ export async function generateRoutes(app: FastifyInstance) {
                         );
                       }
                       if (useAvatarRefs && referenceResolution.referenceImages.length > 0) {
-                        illustratorRefImages = referenceResolution.referenceImages;
                         if (referenceResolution.referenceLine && !suppressReferencePromptLine)
                           fullPrompt += `\n\n${referenceResolution.referenceLine}`;
                         logger.debug(
@@ -8394,6 +8601,18 @@ export async function generateRoutes(app: FastifyInstance) {
                           referenceResolution.referenceImages.length,
                           referenceResolution.referenceNames.join(", "),
                         );
+                      }
+                      const mergedReferenceImages = mergeSpatialLocationReferenceImages(
+                        spatialLocationReferenceImage,
+                        useAvatarRefs ? referenceResolution.referenceImages : [],
+                        6,
+                      );
+                      if (mergedReferenceImages.length > 0) {
+                        illustratorRefImages = mergedReferenceImages;
+                      }
+                      if (spatialLocationReferenceImage) {
+                        fullPrompt += `\n\n${SPATIAL_LOCATION_REFERENCE_PROMPT_LINE}`;
+                        logger.debug("[illustrator] Sending the current Maps location reference image first");
                       }
 
                       const compiledPrompt = compileImagePrompt({
@@ -8614,7 +8833,11 @@ export async function generateRoutes(app: FastifyInstance) {
                   const editNeededValue = edData.editNeeded;
                   const strictEditNeeded = isBuiltInTextRewriteAgentType(editorResult.agentType);
                   const rewriteAllowed =
-                    editNeededValue === false ? false : strictEditNeeded ? editNeededValue === true : true;
+                    editNeededValue === false
+                      ? false
+                      : strictEditNeeded
+                        ? explicitlyRequestsTextRewrite(editNeededValue)
+                        : true;
                   const droppedProtectedMarkup =
                     strictEditNeeded && textRewriteDropsProtectedMarkup(currentResponseForRewrite, editedText);
                   if (droppedProtectedMarkup) {

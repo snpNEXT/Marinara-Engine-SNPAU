@@ -202,6 +202,8 @@ interface ChatState {
   shouldOpenWizardInShortcutMode: boolean;
   /** Pending new-chat mode for first-run connection setup gating. */
   pendingNewChatMode: Exclude<ChatMode, "visual_novel"> | null;
+  /** Where the pending first-run chat was launched, for post-create navigation. */
+  pendingNewChatOrigin: "home" | "sidebar" | null;
   /** Per-chat draft input text so typing isn't lost when navigating away. */
   inputDrafts: Map<string, string>;
   /** Per-chat structured movement staged for the next accepted owner turn. */
@@ -268,7 +270,10 @@ interface ChatState {
   setShouldOpenSettings: (v: boolean) => void;
   setShouldOpenWizard: (v: boolean) => void;
   setShouldOpenWizardInShortcutMode: (v: boolean) => void;
-  setPendingNewChatMode: (mode: Exclude<ChatMode, "visual_novel"> | null) => void;
+  setPendingNewChatMode: (
+    mode: Exclude<ChatMode, "visual_novel"> | null,
+    origin?: "home" | "sidebar" | null,
+  ) => void;
   setInputDraft: (chatId: string, text: string) => void;
   clearInputDraft: (chatId: string) => void;
   setPendingSpatialTransition: (chatId: string, draft: PendingSpatialTransitionDraft) => void;
@@ -348,6 +353,7 @@ export const useChatStore = create<ChatState>()(
     shouldOpenWizard: false,
     shouldOpenWizardInShortcutMode: false,
     pendingNewChatMode: null,
+    pendingNewChatOrigin: null,
     inputDrafts: loadDrafts(),
     pendingSpatialTransitions: loadPendingSpatialTransitions(),
     currentInput: "",
@@ -697,7 +703,11 @@ export const useChatStore = create<ChatState>()(
 
     setShouldOpenWizardInShortcutMode: (v) => set({ shouldOpenWizardInShortcutMode: v }),
 
-    setPendingNewChatMode: (mode) => set({ pendingNewChatMode: mode }),
+    setPendingNewChatMode: (mode, origin = null) =>
+      set({
+        pendingNewChatMode: mode,
+        pendingNewChatOrigin: mode ? origin : null,
+      }),
 
     setInputDraft: (chatId: string, text: string) =>
       set((state) => {
@@ -937,6 +947,7 @@ export const useChatStore = create<ChatState>()(
         perChatDelayed: new Map(),
         swipeIndex: new Map(),
         pendingNewChatMode: null,
+        pendingNewChatOrigin: null,
         inputDrafts: new Map(),
         pendingSpatialTransitions: new Map(),
         currentInput: "",

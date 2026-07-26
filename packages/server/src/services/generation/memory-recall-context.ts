@@ -50,23 +50,24 @@ export async function injectMemoryRecallContext({
   signal?: AbortSignal;
   resolveMacros?: (value: string) => string;
   wrapFormat: WrapFormat;
-}): Promise<void> {
+}): Promise<string[]> {
   sendProgress("memory_recall");
   const startedAt = Date.now();
   try {
     const lastUserMsg = [...currentInputMessages].reverse().find((message) => message.role === "user");
-    if (!lastUserMsg?.content?.trim()) return;
+    if (!lastUserMsg?.content?.trim()) return [];
 
     const recalled = await recallMemories(db, lastUserMsg.content, [chatId], { embeddingSource, signal });
-    if (recalled.length === 0) return;
+    if (recalled.length === 0) return [];
 
     const packedRecall = packRecalledMemories(recalled, contextLimit);
     if (packedRecall.lines.length === 0) {
       logger.debug("[memory-recall] Skipped recalled memories after budgeting (%d candidates)", recalled.length);
-      return;
+      return [];
     }
 
-    const memoriesBlock = buildMemoryRecallBlock(packedRecall.lines, wrapFormat, resolveMacros);
+    const resolvedLines = resolveMacros ? packedRecall.lines.map((line) => resolveMacros(line)) : packedRecall.lines;
+    const memoriesBlock = buildMemoryRecallBlock(resolvedLines, wrapFormat);
 
     logger.debug(
       "[memory-recall] Injecting %d/%d recalled memories (~%d/%d tokens)%s",
@@ -80,8 +81,10 @@ export async function injectMemoryRecallContext({
     const firstUserIdx = messages.findIndex((message) => message.role === "user" || message.role === "assistant");
     const insertAt = firstUserIdx >= 0 ? firstUserIdx : messages.length;
     messages.splice(insertAt, 0, { role: "system", content: memoriesBlock });
+    return resolvedLines;
   } catch (err) {
     logger.error(err, "[memory-recall] Recall failed, skipping");
+    return [];
   } finally {
     logger.debug(`[timing] Memory recall: ${Date.now() - startedAt}ms`);
   }

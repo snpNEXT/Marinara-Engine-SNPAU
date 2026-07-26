@@ -3,7 +3,7 @@
 // ──────────────────────────────────────────────
 import { useInfiniteQuery, useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api-client";
-import type { Lorebook, LorebookEntry, LorebookFolder } from "@marinara-engine/shared";
+import type { BulkUpdateLorebookEntriesInput, Lorebook, LorebookEntry, LorebookFolder } from "@marinara-engine/shared";
 import { characterKeys } from "./use-characters";
 import { achievementKeys, trackAchievementEvent } from "./use-achievements";
 import {
@@ -315,7 +315,7 @@ export function useBulkUpdateLorebookEntries() {
     }: {
       lorebookId: string;
       entryIds: string[];
-      changes: Record<string, boolean>;
+      changes: BulkUpdateLorebookEntriesInput["changes"];
     }) => api.patch<{ updated: number }>(`/lorebooks/${lorebookId}/entries/bulk`, { entryIds, changes }),
     onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) });

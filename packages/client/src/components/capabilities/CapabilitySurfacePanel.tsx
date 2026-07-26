@@ -1,5 +1,6 @@
 import { useEffect, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 const DEFAULT_WIDTH = 560;
 const MIN_WIDTH = 360;
@@ -28,6 +29,7 @@ function useMobileCapabilitySurface() {
 }
 
 export function CapabilitySurfacePanel({ children }: { children: ReactNode }) {
+  const { t: localizeUi } = useUiTranslation();
   const mobile = useMobileCapabilitySurface();
   const [width, setWidth] = useState(readStoredWidth);
 
@@ -66,7 +68,7 @@ export function CapabilitySurfacePanel({ children }: { children: ReactNode }) {
       {!mobile && (
         <div
           role="separator"
-          aria-label="Resize capability panel"
+          aria-label={localizeUi("ui.capabilities.capabilitysurfacepanel.resizeCapabilityPanel")}
           aria-orientation="vertical"
           className="absolute inset-y-0 left-0 z-20 w-2 -translate-x-1/2 cursor-col-resize touch-none"
           onPointerDown={startResize}

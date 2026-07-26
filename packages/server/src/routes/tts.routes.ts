@@ -3,6 +3,9 @@
 // ──────────────────────────────────────────────
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { createHash, randomUUID } from "crypto";
+import { access, mkdir, rename, unlink, writeFile } from "fs/promises";
+import { join } from "path";
 import {
   ttsConfigSchema,
   ttsSourceProfileFromConfig,
@@ -17,6 +20,8 @@ import { createAppSettingsStorage } from "../services/storage/app-settings.stora
 import { encryptApiKey, decryptApiKey } from "../utils/crypto.js";
 import { isTtsLocalUrlsEnabled } from "../config/runtime-config.js";
 import { safeFetch } from "../utils/security.js";
+import { logger } from "../lib/logger.js";
+import { buildAssetManifest, GAME_ASSETS_DIR } from "../services/game/asset-manifest.service.js";
 
 // OpenAI built-in voices used as fallback when the provider has no /audio/voices endpoint
 const OPENAI_FALLBACK_VOICES = ["alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"];
@@ -116,6 +121,9 @@ const NANOGPT_ELEVENLABS_VOICES = [
   "Will",
 ];
 const MAX_TTS_AUDIO_BYTES = 20 * 1024 * 1024;
+const MAX_GAME_AUDIO_BYTES = 60 * 1024 * 1024;
+const gameAudioGenerationLocks = new Map<string, Promise<{ tag: string; path: string; cached: boolean }>>();
+let gameAssetManifestRebuildTimer: ReturnType<typeof setTimeout> | null = null;
 
 const speakSchema = z.object({
   text: z.string().min(1).max(4096),
@@ -124,7 +132,88 @@ const speakSchema = z.object({
   voice: z.string().max(200).optional(),
 });
 
+const gameAudioSchema = z.object({
+  kind: z.enum(["sfx", "music"]),
+  prompt: z.string().trim().min(1).max(4_100),
+});
+
 type VoiceOption = NonNullable<TTSVoicesResponse["voiceOptions"]>[number];
+
+function normalizeGameAudioPrompt(prompt: string): string {
+  return prompt.trim().replace(/\s+/g, " ");
+}
+
+function scheduleGameAssetManifestRebuild(): void {
+  if (gameAssetManifestRebuildTimer) clearTimeout(gameAssetManifestRebuildTimer);
+  gameAssetManifestRebuildTimer = setTimeout(() => {
+    gameAssetManifestRebuildTimer = null;
+    try {
+      buildAssetManifest();
+    } catch (error) {
+      logger.error(error, "Failed to rebuild the game asset manifest after generating audio");
+    }
+  }, 500);
+  gameAssetManifestRebuildTimer.unref();
+}
+
+async function generateElevenLabsGameAudio(
+  cfg: TTSConfig,
+  kind: "sfx" | "music",
+  prompt: string,
+): Promise<{ tag: string; path: string; cached: boolean }> {
+  const normalizedPrompt = normalizeGameAudioPrompt(prompt);
+  const hash = createHash("sha256").update(`${kind}\0${normalizedPrompt.toLowerCase()}`).digest("hex");
+  const category = kind === "sfx" ? "sfx" : "music";
+  const relativePath = `${category}/generated/${hash}.mp3`;
+  const targetDirectory = join(GAME_ASSETS_DIR, category, "generated");
+  const targetPath = join(GAME_ASSETS_DIR, relativePath);
+  const tag = `${category}:generated:${hash}`;
+
+  try {
+    await access(targetPath);
+    return { tag, path: relativePath, cached: true };
+  } catch {
+    // Generate below.
+  }
+
+  const endpoint = kind === "sfx" ? "/v1/sound-generation" : "/v1/music";
+  const response = await safeFetch(`${elevenLabsApiRoot(configuredBaseUrl(cfg))}${endpoint}`, {
+    method: "POST",
+    headers: elevenLabsHeaders(cfg.apiKey),
+    body: JSON.stringify(
+      kind === "sfx"
+        ? { text: normalizedPrompt, prompt_influence: 0.3 }
+        : { prompt: normalizedPrompt, music_length_ms: 30_000, force_instrumental: true },
+    ),
+    signal: AbortSignal.timeout(180_000),
+    policy: {
+      allowLocal: false,
+      allowedProtocols: ["https:"],
+    },
+    maxResponseBytes: MAX_GAME_AUDIO_BYTES,
+  });
+  if (!response.ok) {
+    const detail = readProviderErrorDetail(await response.text().catch(() => ""));
+    throw new Error(detail || `ElevenLabs returned ${response.status}`);
+  }
+
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!resolveTTSAudioResponseContentType(response.headers.get("content-type"), bytes)) {
+    throw new Error("ElevenLabs returned a non-audio response");
+  }
+
+  await mkdir(targetDirectory, { recursive: true });
+  const temporaryPath = join(targetDirectory, `.${hash}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporaryPath, bytes);
+    await rename(temporaryPath, targetPath);
+  } catch (error) {
+    await unlink(temporaryPath).catch(() => {});
+    throw error;
+  }
+  scheduleGameAssetManifestRebuild();
+  return { tag, path: relativePath, cached: false };
+}
 
 // ── Helpers ─────────────────────────────────────
 
@@ -483,18 +572,58 @@ function readProviderErrorDetail(body: string): string {
   }
 }
 
+/** Returns true only for an explicit provider-declared audio media type. */
 export function isAllowedTTSAudioContentType(contentType: string | null): boolean {
   const normalized = contentType?.toLowerCase() ?? "";
-  return normalized.includes("audio/") || normalized.includes("application/octet-stream");
+  return normalized.startsWith("audio/");
 }
 
-function audioFormatMimeType(format: string): string {
-  switch (format) {
-    case "wav":
-      return "audio/wav";
-    default:
-      return "audio/mpeg";
+/** Detects the supported encoded audio container from its leading bytes. */
+export function detectTTSAudioMimeType(bytes: Uint8Array): string | null {
+  if (bytes.length >= 3 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) {
+    return "audio/mpeg";
   }
+  if (bytes.length >= 2 && bytes[0] === 0xff && (bytes[1]! & 0xe0) === 0xe0) {
+    return "audio/mpeg";
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x41 &&
+    bytes[10] === 0x56 &&
+    bytes[11] === 0x45
+  ) {
+    return "audio/wav";
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x4f && bytes[1] === 0x67 && bytes[2] === 0x67 && bytes[3] === 0x53) {
+    return "audio/ogg";
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x66 && bytes[1] === 0x4c && bytes[2] === 0x61 && bytes[3] === 0x43) {
+    return "audio/flac";
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) {
+    return "audio/webm";
+  }
+  if (bytes.length >= 12 && bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70) {
+    return "audio/mp4";
+  }
+  return null;
+}
+
+/**
+ * Resolves the safe response media type for provider audio.
+ *
+ * Generic or missing media types require a recognized encoded container so a
+ * JSON/text error body cannot be relabeled as audio.
+ */
+export function resolveTTSAudioResponseContentType(contentType: string | null, bytes: Uint8Array): string | null {
+  const declaredContentType = contentType?.trim() ?? "";
+  if (isAllowedTTSAudioContentType(declaredContentType)) return declaredContentType;
+  return detectTTSAudioMimeType(bytes);
 }
 
 function buildSpeechInstructions(input: { speaker?: string; tone?: string; includeSpeaker?: boolean }) {
@@ -681,6 +810,42 @@ export async function ttsRoutes(app: FastifyInstance) {
   });
 
   /**
+   * POST /api/tts/game-audio
+   * Generates and caches scene-specific Game Mode music or sound effects.
+   */
+  app.post("/game-audio", async (req, reply) => {
+    const { kind, prompt } = gameAudioSchema.parse(req.body);
+    const cfg = await loadConfig(storage);
+    const enabled =
+      kind === "sfx" ? cfg.elevenLabsGameSoundEffects === true : cfg.elevenLabsGameMusic === true;
+    if (cfg.source !== "elevenlabs" || !enabled) {
+      return reply.status(400).send({ error: `ElevenLabs game ${kind} generation is not enabled` });
+    }
+    if (!cfg.apiKey) {
+      return reply.status(400).send({ error: "ElevenLabs API key is not configured" });
+    }
+
+    const normalizedPrompt = normalizeGameAudioPrompt(prompt);
+    const lockKey = `${kind}\0${normalizedPrompt.toLowerCase()}`;
+    let generation = gameAudioGenerationLocks.get(lockKey);
+    if (!generation) {
+      generation = generateElevenLabsGameAudio(cfg, kind, normalizedPrompt).finally(() => {
+        gameAudioGenerationLocks.delete(lockKey);
+      });
+      gameAudioGenerationLocks.set(lockKey, generation);
+    }
+    try {
+      return await generation;
+    } catch (error) {
+      logger.error(error, "ElevenLabs game %s generation failed", kind);
+      return reply.status(502).send({
+        error: `ElevenLabs game ${kind} generation failed`,
+        detail: error instanceof Error ? error.message : "Unknown provider error",
+      });
+    }
+  });
+
+  /**
    * POST /api/tts/speak
    * Proxies a TTS request to the configured provider and streams the audio back.
    */
@@ -829,16 +994,24 @@ export async function ttsRoutes(app: FastifyInstance) {
     }
 
     const contentType = providerRes.headers.get("content-type");
-    if (!isAllowedTTSAudioContentType(contentType)) {
-      const body = await providerRes.text().catch(() => "");
+    let audioBuffer: ArrayBuffer;
+    try {
+      audioBuffer = await providerRes.arrayBuffer();
+    } catch (error: unknown) {
+      logger.error(error, "Failed to read TTS provider response body");
+      return reply.status(502).send({ error: "TTS provider response could not be read" });
+    }
+
+    const responseContentType = resolveTTSAudioResponseContentType(contentType, new Uint8Array(audioBuffer));
+    if (!responseContentType) {
+      const body = new TextDecoder().decode(audioBuffer);
       return reply.status(502).send({
         error: "TTS provider returned a non-audio response",
         detail: readProviderErrorDetail(body) || `Content-Type: ${contentType || "missing"}`,
       });
     }
 
-    const audioBuffer = await providerRes.arrayBuffer();
-    reply.header("Content-Type", contentType?.startsWith("audio/") ? contentType : audioFormatMimeType(audioFormat));
+    reply.header("Content-Type", responseContentType);
     reply.header("Content-Length", String(audioBuffer.byteLength));
     return reply.send(Buffer.from(audioBuffer));
   });

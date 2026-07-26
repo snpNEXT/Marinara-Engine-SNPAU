@@ -104,6 +104,12 @@ Select **Comic Page Animation** for the duration-aware comic source pages, then 
 
 New games created with the **Storyboard Optimized** presentation select the **Storyboard Game Prompt**, **Comic Page Animation** planner, **Storyboard Illustration**, and **Comic Page Video**. You can switch that chat to the single-shot combination at any time by selecting **Still Keyframe Animation** and **Anime Game Video**.
 
+### LTX 2.3 image-to-video
+
+For a local LTX 2.3 ComfyUI workflow, start with **LTX Simple Image-to-Video** as the Animation Planner, **Storyboard First Frame** as the Storyboard Illustration Prompt, and **LTX Director Video** as the Storyboard Video Prompt. The Animation Planner creates both the natural-language T=0 image prompt and the complete motion paragraph. Storyboard First Frame passes the T=0 scene to a natural-language image provider with minimal wrapping, while LTX Director Video sends the motion paragraph to the workflow's `%prompt%` input. **LTX Director Storyboard** is the more detailed, duration-aware alternative; it uses the same video prompt and workflow contract.
+
+See [LTX 2.3 Storyboards in Game Mode](ltx-2-3-storyboards.md) for model selection, ComfyUI placeholders, the complete Game settings profile, validation steps, and troubleshooting.
+
 ## Style presets
 
 The planner presets shape how each keyframe is selected and described. Two selectors pick them:
@@ -207,3 +213,4 @@ For deeper diagnosis, set your log level to debug and watch the server log. The 
 - [Scene Video Generation](../media/scene-video.md)
 - [Image Generation Providers](../media/image-providers.md)
 - [Game Mode: Getting Started](getting-started.md)
+- [LTX 2.3 Storyboards in Game Mode](ltx-2-3-storyboards.md)

@@ -48,6 +48,7 @@ import {
 } from "@marinara-engine/shared";
 import { HelpTooltip } from "../../ui/HelpTooltip";
 import { SettingsCheckbox, SettingsSwitch } from "./SettingControls";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 // ── Sub-components ───────────────────────────────
 
@@ -116,6 +117,8 @@ function defaultSourceProfile(source: TTSSource): TTSSourceProfile {
     speed: 1,
     elevenLabsStability: 0.5,
     elevenLabsLanguageCode: "",
+    elevenLabsGameSoundEffects: false,
+    elevenLabsGameMusic: false,
     voiceMode: "single",
     voiceAssignments: [],
     narratorVoiceEnabled: false,
@@ -368,6 +371,7 @@ function PocketTTSVoiceControl({
   inputLabel: string;
   onChange: (value: string) => void;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   const selectedServerVoice = options.some((option) => option.id === value) ? value : "";
 
   return (
@@ -382,7 +386,7 @@ function PocketTTSVoiceControl({
           disabled={fetching || options.length === 0}
           className={cn(INPUT_CLS, "cursor-pointer appearance-none pr-10")}
         >
-          <option value="">{fetching ? "Loading server voices…" : "Choose server voice"}</option>
+          <option value="">{fetching ?localizeUi("ui.panels.pocketttsvoicecontrol.loadingServerVoices") :localizeUi("ui.panels.pocketttsvoicecontrol.chooseServerVoice")}</option>
           {options.map((option) => (
             <option key={option.id} value={option.id}>
               {formatVoiceOptionLabel(option)}
@@ -396,7 +400,7 @@ function PocketTTSVoiceControl({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         className={INPUT_CLS}
-        placeholder="Voice ID, URL, or path"
+        placeholder={localizeUi("ui.panels.pocketttsvoicecontrol.voiceIdUrlOrPath")}
       />
     </div>
   );
@@ -415,11 +419,12 @@ function NpcDefaultVoicePool({
   onToggle: (voiceId: string, checked: boolean) => void;
   note?: string;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-2">
         <span className="text-[0.6875rem] font-medium text-[var(--foreground)]">{label}</span>
-        <span className="text-[0.625rem] text-[var(--muted-foreground)]">{selected.length} selected</span>
+        <span className="text-[0.625rem] text-[var(--muted-foreground)]">{selected.length} {localizeUi("ui.panels.npcdefaultvoicepool.selected")}</span>
       </div>
       {options.length > 0 ? (
         <div className="grid gap-1 sm:grid-cols-2">
@@ -439,9 +444,7 @@ function NpcDefaultVoicePool({
           ))}
         </div>
       ) : (
-        <p className="rounded-lg border border-dashed border-[var(--border)] px-2.5 py-2 text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
-          No provider voices loaded yet.
-        </p>
+        <p className="rounded-lg border border-dashed border-[var(--border)] px-2.5 py-2 text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">{localizeUi("ui.panels.npcdefaultvoicepool.noProviderVoicesLoadedYet")}</p>
       )}
       {note && <p className="text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">{note}</p>}
     </div>
@@ -451,6 +454,7 @@ function NpcDefaultVoicePool({
 // ── Main card ─────────────────────────────────────
 
 export function TTSConfigCard() {
+  const { t: localizeUi } = useUiTranslation();
   const { data: savedConfig, isLoading } = useTTSConfig();
   const updateConfig = useUpdateTTSConfig();
   const { data: characters } = useCharacters();
@@ -472,6 +476,8 @@ export function TTSConfigCard() {
   const [speed, setSpeed] = useState(1.0);
   const [elevenLabsStability, setElevenLabsStability] = useState(0.5);
   const [elevenLabsLanguageCode, setElevenLabsLanguageCode] = useState("");
+  const [elevenLabsGameSoundEffects, setElevenLabsGameSoundEffects] = useState(false);
+  const [elevenLabsGameMusic, setElevenLabsGameMusic] = useState(false);
   const [autoplayRP, setAutoplayRP] = useState(false);
   const [autoplayConvo, setAutoplayConvo] = useState(false);
   const [autoplayGame, setAutoplayGame] = useState(false);
@@ -528,6 +534,8 @@ export function TTSConfigCard() {
     setSpeed(savedConfig.speed);
     setElevenLabsStability(savedConfig.elevenLabsStability ?? 0.5);
     setElevenLabsLanguageCode(savedConfig.elevenLabsLanguageCode ?? "");
+    setElevenLabsGameSoundEffects(savedConfig.elevenLabsGameSoundEffects ?? false);
+    setElevenLabsGameMusic(savedConfig.elevenLabsGameMusic ?? false);
     setAutoplayRP(savedConfig.autoplayRP);
     setAutoplayConvo(savedConfig.autoplayConvo);
     setAutoplayGame(savedConfig.autoplayGame);
@@ -600,6 +608,8 @@ export function TTSConfigCard() {
     speed,
     elevenLabsStability,
     elevenLabsLanguageCode,
+    elevenLabsGameSoundEffects,
+    elevenLabsGameMusic,
     autoplayRP,
     autoplayConvo,
     autoplayGame,
@@ -646,7 +656,7 @@ export function TTSConfigCard() {
         await saveNow(payload);
       } catch {
         setSaveStatus("error");
-        toast.error("Failed to save TTS settings.");
+        toast.error(localizeUi("ui.panels.ttsconfigcard.failedToSaveTtsSettings"));
       }
     }, 600);
   };
@@ -676,6 +686,8 @@ export function TTSConfigCard() {
     setSpeed(nextProfile.speed);
     setElevenLabsStability(nextProfile.elevenLabsStability);
     setElevenLabsLanguageCode(nextProfile.elevenLabsLanguageCode);
+    setElevenLabsGameSoundEffects(nextProfile.elevenLabsGameSoundEffects);
+    setElevenLabsGameMusic(nextProfile.elevenLabsGameMusic);
     setAudioFormat(nextProfile.audioFormat);
     mark({
       source: nextSource,
@@ -697,7 +709,7 @@ export function TTSConfigCard() {
           ? (payload.voiceAssignments.find((assignment) => assignment.voice)?.voice ?? payload.voice)
           : payload.voice;
       if (payload.source === "elevenlabs" && !previewVoice) {
-        toast.error("Select an ElevenLabs voice before previewing.");
+        toast.error(localizeUi("ui.panels.ttsconfigcard.selectAnElevenlabsVoiceBeforePreviewing"));
         return;
       }
 
@@ -725,7 +737,7 @@ export function TTSConfigCard() {
     try {
       const entries = await listCachedTTSAudioEntries();
       if (entries.length === 0) {
-        toast.info("No cached TTS clips to export yet.");
+        toast.info(localizeUi("ui.panels.ttsconfigcard.noCachedTtsClipsToExportYet"));
         setTtsCacheSummary({ count: 0, bytes: 0 });
         return;
       }
@@ -735,9 +747,9 @@ export function TTSConfigCard() {
         count: entries.length,
         bytes: entries.reduce((total, entry) => total + Math.max(0, entry.size || entry.blob.size), 0),
       });
-      toast.success(`Exported ${entries.length} cached TTS clip${entries.length === 1 ? "" : "s"}.`);
+      toast.success(localizeUi("ui.panels.ttsconfigcard.exportedValue1CachedTtsClipValue2", { value1: entries.length, value2: entries.length === 1 ? "" :localizeUi("ui.noodle.stageprofileview.s") }));
     } catch {
-      toast.error("Failed to export cached TTS clips.");
+      toast.error(localizeUi("ui.panels.ttsconfigcard.failedToExportCachedTtsClips"));
     } finally {
       setExportingTtsCache(false);
     }
@@ -974,10 +986,10 @@ export function TTSConfigCard() {
         </div>
 
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium">Text to Speech</div>
+          <div className="text-sm font-medium">{localizeUi("ui.panels.ttsconfigcard.textToSpeech")}</div>
           <div className="truncate text-[0.6875rem] text-[var(--muted-foreground)]">
             {enabled
-              ? `${selectedSource.label} · ${model || selectedSource.model} · ${selectedVoiceLabel}${narratorVoiceEnabled ? ` · Narrator: ${narratorVoiceLabel}` : ""}${voicesFromProvider || source !== "openai" ? "" : " (built-in voices)"}`
+              ?localizeUi("ui.panels.ttsconfigcard.value1Value2Value3Value4Value5", { value1: selectedSource.label, value2: model || selectedSource.model, value3: selectedVoiceLabel, value4: narratorVoiceEnabled ?localizeUi("ui.panels.ttsconfigcard.narratorValue1", { value1: narratorVoiceLabel }) : "", value5: voicesFromProvider || source !== "openai" ? "" :localizeUi("ui.panels.ttsconfigcard.builtInVoices") })
               : selectedSource.idleText}
           </div>
         </div>
@@ -991,14 +1003,14 @@ export function TTSConfigCard() {
               mark({ enabled: checked });
             }}
             ariaLabel={enabled ? "Disable TTS" : "Enable TTS"}
-            title={enabled ? "Disable TTS" : "Enable TTS"}
+            title={enabled ?localizeUi("ui.panels.ttsconfigcard.disableTts") :localizeUi("ui.panels.ttsconfigcard.enableTts")}
             className="rounded-lg p-1 hover:bg-[var(--secondary)]"
           />
 
           <button
             onClick={() => setExpanded((v) => !v)}
             className="mari-chrome-control mari-chrome-control--small h-8 min-h-0 w-8 p-0"
-            title={expanded ? "Collapse" : "Expand"}
+            title={expanded ?localizeUi("ui.panels.ttsconfigcard.collapse") :localizeUi("ui.panels.ttsconfigcard.expand")}
           >
             {expanded ? <ChevronUp size="0.875rem" /> : <ChevronDown size="0.875rem" />}
           </button>
@@ -1009,7 +1021,7 @@ export function TTSConfigCard() {
       {expanded && (
         <div className="mt-3 space-y-4 border-t border-sky-400/10 pt-3">
           {/* Source */}
-          <FieldRow label="Source" help="Choose the provider used by the server-side TTS proxy.">
+          <FieldRow label={localizeUi("ui.panels.ttsconfigcard.source")} help={localizeUi("ui.panels.ttsconfigcard.chooseTheProviderUsedByTheServerSideTts")}>
             <select
               value={source}
               onChange={(e) => handleSourceChange(e.target.value as TTSSource)}
@@ -1025,15 +1037,15 @@ export function TTSConfigCard() {
 
           {/* Base URL */}
           <FieldRow
-            label="Base URL"
+            label={localizeUi("ui.panels.ttsconfigcard.baseUrl")}
             help={
               source === "elevenlabs"
-                ? "The ElevenLabs API root. Use the default unless you proxy ElevenLabs through another server."
+                ?localizeUi("ui.panels.ttsconfigcard.theElevenlabsApiRootUseTheDefaultUnlessYou")
                 : source === "pockettts"
-                  ? "The PocketTTS OpenAI-compatible server root. Its default is http://localhost:49112 unless you changed the port."
+                  ?localizeUi("ui.panels.ttsconfigcard.thePocketttsOpenaiCompatibleServerRootItsDefaultIs")
                   : source === "xai"
-                    ? "The xAI Voice API root. Use https://api.x.ai/v1 unless you proxy xAI through another server."
-                    : "The OpenAI-compatible TTS API endpoint. Use the default for OpenAI or point to a self-hosted server."
+                    ?localizeUi("ui.panels.ttsconfigcard.theXaiVoiceApiRootUseHttpsApiX")
+                    :localizeUi("ui.panels.ttsconfigcard.theOpenaiCompatibleTtsApiEndpointUseTheDefault")
             }
           >
             <div className="relative">
@@ -1052,8 +1064,8 @@ export function TTSConfigCard() {
 
           {/* API Key */}
           <FieldRow
-            label="API Key"
-            help="Your API key for the TTS provider. Encrypted at rest. Keep the masked value to preserve the current key, or clear the field to remove it."
+            label={localizeUi("ui.panels.ttsconfigcard.apiKey")}
+            help={localizeUi("ui.panels.ttsconfigcard.yourApiKeyForTheTtsProviderEncryptedAt")}
           >
             <div className="relative">
               <Key size="0.875rem" className="absolute left-3 top-1/2 -translate-y-1/2 text-sky-400" />
@@ -1065,25 +1077,23 @@ export function TTSConfigCard() {
                 }}
                 type="password"
                 className={cn(INPUT_CLS, "pl-8")}
-                placeholder="Enter API key or clear to remove"
+                placeholder={localizeUi("ui.panels.ttsconfigcard.enterApiKeyOrClearToRemove")}
               />
             </div>
-            <p className="text-[0.625rem] text-[var(--muted-foreground)]">
-              Encrypted at rest · Keep the masked value to preserve the current key, or clear it to remove the saved key
-            </p>
+            <p className="text-[0.625rem] text-[var(--muted-foreground)]">{localizeUi("ui.panels.ttsconfigcard.encryptedAtRestKeepTheMaskedValueToPreserve")}</p>
           </FieldRow>
 
           {/* Model */}
           <FieldRow
-            label="Model"
+            label={localizeUi("ui.panels.ttsconfigcard.model")}
             help={
               source === "elevenlabs"
-                ? "ElevenLabs model_id to use. Use eleven_v3 for Eleven v3 speech; eleven_ttv_v3 is a voice-design model and cannot generate TTS."
+                ?localizeUi("ui.panels.ttsconfigcard.elevenlabsModelIdToUseUseElevenV3For")
                 : source === "pockettts"
-                  ? "PocketTTS selects its language/model when you start the local server. This field is kept for clarity and future compatible servers."
+                  ?localizeUi("ui.panels.ttsconfigcard.pocketttsSelectsItsLanguageModelWhenYouStartThe")
                   : source === "xai"
-                    ? "xAI Voice currently uses the /tts endpoint; this is saved for compatibility with future model selection."
-                    : "TTS model to use. e.g. tts-1, tts-1-hd, gpt-4o-mini-tts, or any model your provider supports."
+                    ?localizeUi("ui.panels.ttsconfigcard.xaiVoiceCurrentlyUsesTheTtsEndpointThisIs")
+                    :localizeUi("ui.panels.ttsconfigcard.ttsModelToUseEGTts1Tts")
             }
           >
             <div className="relative">
@@ -1110,10 +1120,9 @@ export function TTSConfigCard() {
                     <option key={modelId} value={modelId} />
                   ))}
                 </datalist>
-                <p className="text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
-                  Eleven v3 speech uses <code className="font-mono">eleven_v3</code>. IDs containing{" "}
-                  <code className="font-mono">ttv</code> are Text to Voice / voice design models. NanoGPT proxies use{" "}
-                  <code className="font-mono">Elevenlabs-V3</code>.
+                <p className="text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">{localizeUi("ui.panels.ttsconfigcard.elevenV3SpeechUses")} <code className="font-mono">{"eleven_v3"}</code>{localizeUi("ui.panels.ttsconfigcard.idsContaining")}{" "}
+                  <code className="font-mono">{"ttv"}</code> {localizeUi("ui.panels.ttsconfigcard.areTextToVoiceVoiceDesignModelsNanogptProxies")}{" "}
+                  <code className="font-mono">{"Elevenlabs-V3"}</code>.
                 </p>
               </>
             )}
@@ -1121,8 +1130,8 @@ export function TTSConfigCard() {
 
           {/* Voice assignment mode */}
           <FieldRow
-            label="Voice Option"
-            help="Use one voice for every character, or assign specific voices to characters from your Characters tab."
+            label={localizeUi("ui.panels.ttsconfigcard.voiceOption")}
+            help={localizeUi("ui.panels.ttsconfigcard.useOneVoiceForEveryCharacterOrAssignSpecific")}
           >
             <select
               value={voiceMode}
@@ -1133,22 +1142,22 @@ export function TTSConfigCard() {
               }}
               className={cn(INPUT_CLS, "cursor-pointer appearance-none")}
             >
-              <option value="single">One voice for all characters</option>
-              <option value="per-character">Selected per character</option>
+              <option value="single">{localizeUi("ui.panels.ttsconfigcard.oneVoiceForAllCharacters")}</option>
+              <option value="per-character">{localizeUi("ui.panels.ttsconfigcard.selectedPerCharacter")}</option>
             </select>
           </FieldRow>
 
           {voiceMode === "single" && (
             <FieldRow
-              label="All Characters Voice"
+              label={localizeUi("ui.panels.ttsconfigcard.allCharactersVoice")}
               help={
                 source === "elevenlabs"
-                  ? "ElevenLabs voices are fetched by name and saved by voice ID."
+                  ?localizeUi("ui.panels.ttsconfigcard.elevenlabsVoicesAreFetchedByNameAndSavedBy")
                   : source === "pockettts"
-                    ? "PocketTTS built-in or custom voice from your server, or a voice URL/path accepted by PocketTTS."
+                    ?localizeUi("ui.panels.ttsconfigcard.pocketttsBuiltInOrCustomVoiceFromYourServer")
                     : source === "xai"
-                      ? "xAI Voice ID. Built-ins include eve, ara, rex, sal, and leo; custom xAI voice IDs can be typed after saving."
-                      : "Voice to use for synthesis. Fetched from your configured provider when available."
+                      ?localizeUi("ui.panels.ttsconfigcard.xaiVoiceIdBuiltInsIncludeEveAraRex")
+                      :localizeUi("ui.panels.ttsconfigcard.voiceToUseForSynthesisFetchedFromYourConfigured")
               }
             >
               <div className="flex gap-2">
@@ -1174,16 +1183,16 @@ export function TTSConfigCard() {
                     disabled={fetchingVoices || voiceOptions.length === 0}
                     className={cn(INPUT_CLS, "flex-1 cursor-pointer appearance-none")}
                   >
-                    {source === "elevenlabs" && <option value="">Select an ElevenLabs voice</option>}
-                    {fetchingVoices && <option value="">Loading voices…</option>}
+                    {source === "elevenlabs" && <option value="">{localizeUi("ui.panels.ttsconfigcard.selectAnElevenlabsVoice")}</option>}
+                    {fetchingVoices && <option value="">{localizeUi("ui.panels.ttsconfigcard.loadingVoices")}</option>}
                     {!fetchingVoices && voiceOptions.length === 0 && !voicesError && (
                       <option value="">
                         {source === "elevenlabs"
-                          ? "Enter API key, save, then refresh voices"
-                          : "Save config to load voices"}
+                          ?localizeUi("ui.panels.ttsconfigcard.enterApiKeySaveThenRefreshVoices")
+                          :localizeUi("ui.panels.ttsconfigcard.saveConfigToLoadVoices")}
                       </option>
                     )}
-                    {!fetchingVoices && voicesError && <option value="">Could not load voices</option>}
+                    {!fetchingVoices && voicesError && <option value="">{localizeUi("ui.panels.ttsconfigcard.couldNotLoadVoices")}</option>}
                     {voiceOptions.map((option) => (
                       <option key={option.id} value={option.id}>
                         {formatVoiceOptionLabel(option)}
@@ -1195,52 +1204,39 @@ export function TTSConfigCard() {
                   onClick={() => void refetchVoices()}
                   disabled={fetchingVoices || !savedConfig?.enabled}
                   className="mari-chrome-control mari-chrome-control--small shrink-0 text-xs"
-                  title="Refresh voices from provider"
+                  title={localizeUi("ui.panels.ttsconfigcard.refreshVoicesFromProvider")}
                 >
                   <RefreshCw size="0.75rem" className={cn(fetchingVoices && "animate-spin")} />
                 </button>
               </div>
               {!voicesFromProvider && source === "openai" && voices.length > 0 && (
-                <p className="text-[0.625rem] text-[var(--muted-foreground)]">
-                  Showing OpenAI built-in voices — save & enable to load from your provider
-                </p>
+                <p className="text-[0.625rem] text-[var(--muted-foreground)]">{localizeUi("ui.panels.ttsconfigcard.showingOpenaiBuiltInVoicesSaveEnableToLoad")}</p>
               )}
               {!voicesFromProvider && source === "elevenlabs" && !fetchingVoices && (
-                <p className="text-[0.625rem] text-[var(--muted-foreground)]">
-                  ElevenLabs voices load after the connection is saved with an API key
-                </p>
+                <p className="text-[0.625rem] text-[var(--muted-foreground)]">{localizeUi("ui.panels.ttsconfigcard.elevenlabsVoicesLoadAfterTheConnectionIsSavedWith")}</p>
               )}
               {!voicesFromProvider && source === "pockettts" && voices.length > 0 && (
-                <p className="text-[0.625rem] text-[var(--muted-foreground)]">
-                  Showing PocketTTS built-in fallbacks. Save and refresh to load built-in and custom voices from your
-                  server.
-                </p>
+                <p className="text-[0.625rem] text-[var(--muted-foreground)]">{localizeUi("ui.panels.ttsconfigcard.showingPocketttsBuiltInFallbacksSaveAndRefreshTo")}</p>
               )}
               {voicesFromProvider && source === "pockettts" && (
-                <p className="text-[0.625rem] text-[var(--muted-foreground)]">
-                  Loaded {voices.length} voice{voices.length === 1 ? "" : "s"} from PocketTTS server.
-                </p>
+                <p className="text-[0.625rem] text-[var(--muted-foreground)]">{localizeUi("ui.panels.ttsconfigcard.loaded")} {voices.length} {localizeUi("ui.panels.ttsconfigcard.voice")}{voices.length === 1 ? "" :localizeUi("ui.noodle.stageprofileview.s")} {localizeUi("ui.panels.ttsconfigcard.fromPocketttsServer")}</p>
               )}
               {!voicesFromProvider && source === "xai" && voices.length > 0 && (
-                <p className="text-[0.625rem] text-[var(--muted-foreground)]">
-                  Showing xAI built-in voices. Save with an API key, then refresh to load account/custom voices.
-                </p>
+                <p className="text-[0.625rem] text-[var(--muted-foreground)]">{localizeUi("ui.panels.ttsconfigcard.showingXaiBuiltInVoicesSaveWithAnApi")}</p>
               )}
             </FieldRow>
           )}
 
           {voiceMode === "per-character" && (
-            <FieldRow label="Character Voices" help="Assign voices to specific characters from your Characters tab.">
+            <FieldRow label={localizeUi("ui.panels.ttsconfigcard.characterVoices")} help={localizeUi("ui.panels.ttsconfigcard.assignVoicesToSpecificCharactersFromYourCharactersTab")}>
               <div className="space-y-2 rounded-xl border border-sky-400/15 bg-sky-400/5 p-2">
                 <div className="grid gap-2 text-[0.625rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)] sm:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)_auto]">
-                  <span>Character</span>
-                  <span>Voice</span>
+                  <span>{localizeUi("ui.panels.appearancesettings.character")}</span>
+                  <span>{localizeUi("ui.panels.ttsconfigcard.voice_3091c84")}</span>
                   <span className="hidden sm:block" />
                 </div>
                 {voiceAssignments.length === 0 && (
-                  <p className="rounded-lg border border-dashed border-[var(--border)] px-2.5 py-2 text-[0.6875rem] leading-relaxed text-[var(--muted-foreground)]">
-                    Add a character voice to route TTS by speaker.
-                  </p>
+                  <p className="rounded-lg border border-dashed border-[var(--border)] px-2.5 py-2 text-[0.6875rem] leading-relaxed text-[var(--muted-foreground)]">{localizeUi("ui.panels.ttsconfigcard.addACharacterVoiceToRouteTtsBySpeaker")}</p>
                 )}
                 {voiceAssignments.map((assignment, index) => (
                   <div
@@ -1252,7 +1248,7 @@ export function TTSConfigCard() {
                       onChange={(e) => handleVoiceAssignmentCharacterChange(index, e.target.value)}
                       className={cn(INPUT_CLS, "cursor-pointer appearance-none py-2 text-xs")}
                     >
-                      <option value="">Select character</option>
+                      <option value="">{localizeUi("ui.panels.ttsconfigcard.selectCharacter")}</option>
                       {characterOptions.map((option) => (
                         <option
                           key={option.id}
@@ -1269,7 +1265,7 @@ export function TTSConfigCard() {
                       disabled={fetchingVoices || voiceOptions.length === 0}
                       className={cn(INPUT_CLS, "cursor-pointer appearance-none py-2 text-xs")}
                     >
-                      {source === "elevenlabs" && <option value="">Select voice</option>}
+                      {source === "elevenlabs" && <option value="">{localizeUi("ui.panels.ttsconfigcard.selectVoice")}</option>}
                       {voiceOptions.map((option) => (
                         <option key={option.id} value={option.id}>
                           {formatVoiceOptionLabel(option)}
@@ -1280,7 +1276,7 @@ export function TTSConfigCard() {
                       type="button"
                       onClick={() => handleRemoveVoiceAssignment(index)}
                       className="mari-chrome-control mari-chrome-control--small h-9 min-h-0 px-2 sm:w-9"
-                      title="Remove character voice"
+                      title={localizeUi("ui.panels.ttsconfigcard.removeCharacterVoice")}
                     >
                       <X size="0.75rem" />
                     </button>
@@ -1292,25 +1288,21 @@ export function TTSConfigCard() {
                   disabled={characterOptions.length === 0 || allCharactersAssigned}
                   className="mari-chrome-control w-full text-xs"
                 >
-                  <Plus size="0.75rem" />
-                  Add character voice
-                </button>
+                  <Plus size="0.75rem" />{localizeUi("ui.panels.ttsconfigcard.addCharacterVoice")}</button>
                 {characterOptions.length === 0 && (
-                  <p className="text-[0.625rem] text-[var(--muted-foreground)]">
-                    Add characters in the Characters tab before assigning character voices.
-                  </p>
+                  <p className="text-[0.625rem] text-[var(--muted-foreground)]">{localizeUi("ui.panels.ttsconfigcard.addCharactersInTheCharactersTabBeforeAssigningCharacter")}</p>
                 )}
               </div>
             </FieldRow>
           )}
 
           <FieldRow
-            label="Narrator Voice"
-            help="Use a separate voice for narrator messages, game narration, and roleplay narration outside speaker-tagged dialogue."
+            label={localizeUi("ui.panels.ttsconfigcard.narratorVoice")}
+            help={localizeUi("ui.panels.ttsconfigcard.useASeparateVoiceForNarratorMessagesGameNarration")}
           >
             <div className="space-y-2 rounded-xl border border-sky-400/15 bg-sky-400/5 p-2">
               <ToggleRow
-                label="Use separate narrator voice"
+                label={localizeUi("ui.panels.ttsconfigcard.useSeparateNarratorVoice")}
                 checked={narratorVoiceEnabled}
                 onChange={toggleNarratorVoice}
               />
@@ -1332,16 +1324,16 @@ export function TTSConfigCard() {
                       disabled={fetchingVoices || voiceOptions.length === 0}
                       className={cn(INPUT_CLS, "min-w-0 flex-1 cursor-pointer appearance-none")}
                     >
-                      {source === "elevenlabs" && <option value="">Select narrator voice</option>}
-                      {fetchingVoices && <option value="">Loading voices…</option>}
+                      {source === "elevenlabs" && <option value="">{localizeUi("ui.panels.ttsconfigcard.selectNarratorVoice")}</option>}
+                      {fetchingVoices && <option value="">{localizeUi("ui.panels.ttsconfigcard.loadingVoices")}</option>}
                       {!fetchingVoices && voiceOptions.length === 0 && !voicesError && (
                         <option value="">
                           {source === "elevenlabs"
-                            ? "Enter API key, save, then refresh voices"
-                            : "Save config to load voices"}
+                            ?localizeUi("ui.panels.ttsconfigcard.enterApiKeySaveThenRefreshVoices")
+                            :localizeUi("ui.panels.ttsconfigcard.saveConfigToLoadVoices")}
                         </option>
                       )}
-                      {!fetchingVoices && voicesError && <option value="">Could not load voices</option>}
+                      {!fetchingVoices && voicesError && <option value="">{localizeUi("ui.panels.ttsconfigcard.couldNotLoadVoices")}</option>}
                       {voiceOptions.map((option) => (
                         <option key={option.id} value={option.id}>
                           {formatVoiceOptionLabel(option)}
@@ -1354,24 +1346,22 @@ export function TTSConfigCard() {
                     onClick={() => void refetchVoices()}
                     disabled={fetchingVoices || !savedConfig?.enabled}
                     className="mari-chrome-control mari-chrome-control--small shrink-0 text-xs"
-                    title="Refresh voices from provider"
+                    title={localizeUi("ui.panels.ttsconfigcard.refreshVoicesFromProvider")}
                   >
                     <RefreshCw size="0.75rem" className={cn(fetchingVoices && "animate-spin")} />
                   </button>
                 </div>
               )}
               {narratorVoiceEnabled && source === "elevenlabs" && !narratorVoice && (
-                <p className="text-[0.625rem] leading-relaxed text-amber-300/80">
-                  Select a narrator voice, or narration will fall back only when a global voice is available.
-                </p>
+                <p className="text-[0.625rem] leading-relaxed text-amber-300/80">{localizeUi("ui.panels.ttsconfigcard.selectANarratorVoiceOrNarrationWillFallBack")}</p>
               )}
             </div>
           </FieldRow>
 
           {source !== "elevenlabs" && (
             <FieldRow
-              label="Audio Format"
-              help="Output audio format. WAV are useful for local/self-hosted TTS servers that do not support MP3."
+              label={localizeUi("ui.panels.ttsconfigcard.audioFormat")}
+              help={localizeUi("ui.panels.ttsconfigcard.outputAudioFormatWavAreUsefulForLocalSelf")}
             >
               <select
                 value={audioFormat}
@@ -1382,45 +1372,41 @@ export function TTSConfigCard() {
                 }}
                 className={cn(INPUT_CLS, "cursor-pointer appearance-none")}
               >
-                <option value="mp3">MP3</option>
-                <option value="wav">WAV</option>
+                <option value="mp3">{localizeUi("ui.panels.ttsconfigcard.mp3")}</option>
+                <option value="wav">{localizeUi("ui.panels.ttsconfigcard.wav")}</option>
               </select>
             </FieldRow>
           )}
 
           <FieldRow
-            label="Random NPC Voices"
-            help="When enabled, tracked game NPCs without a character-specific voice use a stable random provider voice. If voice metadata is available, Marinara prefers matching male/female pools."
+            label={localizeUi("ui.panels.ttsconfigcard.randomNpcVoices")}
+            help={localizeUi("ui.panels.ttsconfigcard.whenEnabledTrackedGameNpcsWithoutACharacterSpecific")}
           >
             <div className="space-y-2 rounded-xl border border-sky-400/15 bg-sky-400/5 p-2">
               <ToggleRow
-                label="Use default voices for random NPCs"
+                label={localizeUi("ui.panels.ttsconfigcard.useDefaultVoicesForRandomNpcs")}
                 checked={npcDefaultVoicesEnabled}
                 onChange={toggleNpcDefaultVoices}
               />
               {npcDefaultVoicesEnabled && (
                 <div className="space-y-3 pt-1">
                   <NpcDefaultVoicePool
-                    label="Male NPC defaults"
+                    label={localizeUi("ui.panels.ttsconfigcard.maleNpcDefaults")}
                     options={elevenLabsNpcMaleVoiceOptions}
                     selected={npcDefaultMaleVoices}
                     onToggle={(voiceId, checked) => toggleNpcDefaultVoice("male", voiceId, checked)}
                     note={maleNpcVoiceFallbackNote}
                   />
                   <NpcDefaultVoicePool
-                    label="Female NPC defaults"
+                    label={localizeUi("ui.panels.ttsconfigcard.femaleNpcDefaults")}
                     options={elevenLabsNpcFemaleVoiceOptions}
                     selected={npcDefaultFemaleVoices}
                     onToggle={(voiceId, checked) => toggleNpcDefaultVoice("female", voiceId, checked)}
                     note={femaleNpcVoiceFallbackNote}
                   />
-                  <p className="text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
-                    NPCs with unclear gender use a stable pick from both pools. Assigned character voices still win.
-                  </p>
+                  <p className="text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">{localizeUi("ui.panels.ttsconfigcard.npcsWithUnclearGenderUseAStablePickFrom")}</p>
                   {!voicesFromProvider && (
-                    <p className="text-[0.625rem] leading-relaxed text-amber-300/80">
-                      Save and enable this TTS provider, then refresh voices to load provider voice options.
-                    </p>
+                    <p className="text-[0.625rem] leading-relaxed text-amber-300/80">{localizeUi("ui.panels.ttsconfigcard.saveAndEnableThisTtsProviderThenRefreshVoices")}</p>
                   )}
                 </div>
               )}
@@ -1450,8 +1436,8 @@ export function TTSConfigCard() {
 
           {source === "elevenlabs" && (
             <FieldRow
-              label="Language"
-              help="Optional ElevenLabs language_code. Auto lets ElevenLabs detect the language; choose a language to force pronunciation and text normalization. The selected model must support that language."
+              label={localizeUi("settings.application.language.label")}
+              help={localizeUi("ui.panels.ttsconfigcard.optionalElevenlabsLanguageCodeAutoLetsElevenlabsDetectThe")}
             >
               <select
                 value={elevenLabsLanguageCode}
@@ -1463,23 +1449,20 @@ export function TTSConfigCard() {
               >
                 {ELEVENLABS_TTS_LANGUAGE_OPTIONS.map((option) => (
                   <option key={option.code || "auto"} value={option.code}>
-                    {option.code ? `${option.label} (${option.code})` : option.label}
+                    {option.code ?localizeUi("ui.panels.ttsconfigcard.value1Value2", { value1: option.label, value2: option.code }) : option.label}
                   </option>
                 ))}
               </select>
               {elevenLabsLanguageCode && (
-                <p className="text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
-                  Forcing {selectedLanguage.label}; ElevenLabs may reject this if the selected model does not support
-                  it.
-                </p>
+                <p className="text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">{localizeUi("ui.panels.ttsconfigcard.forcing")} {selectedLanguage.label}{localizeUi("ui.panels.ttsconfigcard.elevenlabsMayRejectThisIfTheSelectedModelDoes")}</p>
               )}
             </FieldRow>
           )}
 
           {source === "elevenlabs" && (
             <FieldRow
-              label={`Stability — ${Math.round(elevenLabsStability * 100)}%`}
-              help="ElevenLabs voice stability. Lower values are more expressive and creative; higher values are more consistent and robust."
+              label={localizeUi("ui.panels.ttsconfigcard.stabilityValue1", { value1: Math.round(elevenLabsStability * 100) })}
+              help={localizeUi("ui.panels.ttsconfigcard.elevenlabsVoiceStabilityLowerValuesAreMoreExpressiveAnd")}
             >
               <input
                 type="range"
@@ -1495,18 +1478,45 @@ export function TTSConfigCard() {
                 className="w-full accent-[var(--primary)]"
               />
               <div className="flex justify-between text-[0.6rem] text-[var(--muted-foreground)]">
-                <span>Creative</span>
-                <span>Natural</span>
-                <span>Robust</span>
+                <span>{localizeUi("ui.panels.ttsconfigcard.creative")}</span>
+                <span>{localizeUi("ui.panels.ttsconfigcard.natural")}</span>
+                <span>{localizeUi("ui.panels.ttsconfigcard.robust")}</span>
               </div>
             </FieldRow>
           )}
 
+          {source === "elevenlabs" && (
+            <div className="space-y-1">
+              <span className="text-xs font-medium">
+                {localizeUi("ui.panels.ttsconfigcard.gameAudioGeneration")}
+              </span>
+              <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+                {localizeUi("ui.panels.ttsconfigcard.gameAudioGenerationHelp")}
+              </p>
+              <ToggleRow
+                label={localizeUi("ui.panels.ttsconfigcard.generateGameSoundEffects")}
+                checked={elevenLabsGameSoundEffects}
+                onChange={(value) => {
+                  setElevenLabsGameSoundEffects(value);
+                  mark({ elevenLabsGameSoundEffects: value });
+                }}
+              />
+              <ToggleRow
+                label={localizeUi("ui.panels.ttsconfigcard.generateGameMusic")}
+                checked={elevenLabsGameMusic}
+                onChange={(value) => {
+                  setElevenLabsGameMusic(value);
+                  mark({ elevenLabsGameMusic: value });
+                }}
+              />
+            </div>
+          )}
+
           {/* Auto-play */}
           <div className="space-y-1">
-            <span className="text-xs font-medium">Auto-play</span>
+            <span className="text-xs font-medium">{localizeUi("ui.panels.ttsconfigcard.autoPlay")}</span>
             <ToggleRow
-              label="Roleplay messages"
+              label={localizeUi("ui.panels.ttsconfigcard.roleplayMessages")}
               checked={autoplayRP}
               onChange={(v) => {
                 setAutoplayRP(v);
@@ -1514,7 +1524,7 @@ export function TTSConfigCard() {
               }}
             />
             <ToggleRow
-              label="Conversation messages"
+              label={localizeUi("ui.panels.ttsconfigcard.conversationMessages")}
               checked={autoplayConvo}
               onChange={(v) => {
                 setAutoplayConvo(v);
@@ -1522,7 +1532,7 @@ export function TTSConfigCard() {
               }}
             />
             <ToggleRow
-              label="Game narration"
+              label={localizeUi("ui.panels.ttsconfigcard.gameNarration")}
               checked={autoplayGame}
               onChange={(v) => {
                 setAutoplayGame(v);
@@ -1530,7 +1540,7 @@ export function TTSConfigCard() {
               }}
             />
             <ToggleRow
-              label="Progressive playback"
+              label={localizeUi("ui.panels.ttsconfigcard.progressivePlayback")}
               checked={progressivePlayback}
               onChange={(v) => {
                 setProgressivePlayback(v);
@@ -1538,7 +1548,7 @@ export function TTSConfigCard() {
               }}
             />
             <ToggleRow
-              label="Only read dialogues"
+              label={localizeUi("ui.panels.ttsconfigcard.onlyReadDialogues")}
               checked={dialogueOnly}
               onChange={(v) => {
                 setDialogueOnly(v);
@@ -1547,12 +1557,12 @@ export function TTSConfigCard() {
             />
             {dialogueOnly && (
               <FieldRow
-                label={`Pause between dialogues: ${dialoguePauseSeconds} ${dialoguePauseSeconds === 1 ? "second" : "seconds"}`}
-                help="Adds silence between separate dialogue lines in the same message. It does not pause between chunks of the same long dialogue."
+                label={localizeUi("ui.panels.ttsconfigcard.pauseBetweenDialoguesValue1Value2", { value1: dialoguePauseSeconds, value2: dialoguePauseSeconds === 1 ?localizeUi("ui.panels.ttsconfigcard.second") :localizeUi("ui.panels.ttsconfigcard.seconds") })}
+                help={localizeUi("ui.panels.ttsconfigcard.addsSilenceBetweenSeparateDialogueLinesInTheSame")}
               >
                 <input
                   type="range"
-                  aria-label="Pause between dialogues in seconds"
+                  aria-label={localizeUi("ui.panels.ttsconfigcard.pauseBetweenDialoguesInSeconds")}
                   min={TTS_DIALOGUE_PAUSE_MIN_SECONDS}
                   max={TTS_DIALOGUE_PAUSE_MAX_SECONDS}
                   step={1}
@@ -1565,8 +1575,8 @@ export function TTSConfigCard() {
                   className="w-full accent-[var(--primary)]"
                 />
                 <div className="flex justify-between text-[0.6rem] text-[var(--muted-foreground)]">
-                  <span>{TTS_DIALOGUE_PAUSE_MIN_SECONDS} s</span>
-                  <span>{TTS_DIALOGUE_PAUSE_MAX_SECONDS} s</span>
+                  <span>{TTS_DIALOGUE_PAUSE_MIN_SECONDS} {localizeUi("ui.noodle.stageprofileview.s")}</span>
+                  <span>{TTS_DIALOGUE_PAUSE_MAX_SECONDS} {localizeUi("ui.noodle.stageprofileview.s")}</span>
                 </div>
               </FieldRow>
             )}
@@ -1574,9 +1584,9 @@ export function TTSConfigCard() {
 
           <div className="flex items-center gap-2 rounded-xl border border-sky-400/15 bg-sky-400/5 px-2.5 py-2">
             <div className="min-w-0 flex-1">
-              <div className="text-xs font-medium">Cached clips</div>
+              <div className="text-xs font-medium">{localizeUi("ui.panels.ttsconfigcard.cachedClips")}</div>
               <div className="truncate text-[0.625rem] text-[var(--muted-foreground)]">
-                {ttsCacheSummary.count} clip{ttsCacheSummary.count === 1 ? "" : "s"} ·{" "}
+                {ttsCacheSummary.count} {localizeUi("ui.panels.ttsconfigcard.clip")}{ttsCacheSummary.count === 1 ? "" :localizeUi("ui.noodle.stageprofileview.s")} ·{" "}
                 {formatCacheBytes(ttsCacheSummary.bytes)}
               </div>
             </div>
@@ -1585,7 +1595,7 @@ export function TTSConfigCard() {
               onClick={() => void handleExportCachedClips()}
               disabled={exportingTtsCache || ttsCacheSummary.count === 0}
               className="mari-chrome-control mari-chrome-control--small shrink-0 text-xs"
-              title="Export cached TTS clips"
+              title={localizeUi("ui.panels.ttsconfigcard.exportCachedTtsClips")}
             >
               {exportingTtsCache ? <Loader2 size="0.75rem" className="animate-spin" /> : <Download size="0.75rem" />}
             </button>
@@ -1613,7 +1623,7 @@ export function TTSConfigCard() {
               ) : (
                 <Play size="0.75rem" />
               )}
-              {ttsState === "loading" ? "Loading…" : ttsState === "playing" ? "Stop" : "Preview"}
+              {ttsState === "loading" ?localizeUi("ui.panels.ttsconfigcard.loading") : ttsState === "playing" ?localizeUi("ui.chat.summarypopover.stop") :localizeUi("settings.notifications.customSound.actions.preview")}
             </button>
 
             <div className="flex-1" />
@@ -1621,17 +1631,13 @@ export function TTSConfigCard() {
             {/* Auto-save status */}
             {saveStatus === "saving" && (
               <span className="flex items-center gap-1 text-[0.6875rem] text-[var(--muted-foreground)]">
-                <Loader2 size="0.625rem" className="animate-spin" />
-                Saving…
-              </span>
+                <Loader2 size="0.625rem" className="animate-spin" />{localizeUi("chat.settings.inlineEditor.saving")}</span>
             )}
             {saveStatus === "saved" && (
               <span className="flex items-center gap-1 text-[0.6875rem] text-emerald-400">
-                <Check size="0.625rem" />
-                Saved
-              </span>
+                <Check size="0.625rem" />{localizeUi("chat.settings.inlineEditor.saved")}</span>
             )}
-            {saveStatus === "error" && <span className="text-[0.6875rem] text-[var(--destructive)]">Save failed</span>}
+            {saveStatus === "error" && <span className="text-[0.6875rem] text-[var(--destructive)]">{localizeUi("ui.panels.ttsconfigcard.saveFailed")}</span>}
           </div>
           {previewError && (
             <p className="rounded-lg border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-2.5 py-2 text-[0.6875rem] leading-relaxed text-[var(--destructive)]">

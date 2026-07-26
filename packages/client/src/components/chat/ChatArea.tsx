@@ -45,6 +45,7 @@ import {
 import { usePageActivity } from "../../hooks/use-page-activity";
 import { useRenderTimer, useWhyRender } from "../../lib/perf-diagnostics";
 import { usePresenceClock } from "../../hooks/use-presence-clock";
+import { useKeepLatestChatMessageVisible } from "../../hooks/use-visual-viewport-chat-bottom";
 import { api, ApiError } from "../../lib/api-client";
 import { getChatDisplayName, getConnectedChatDisplayName, parseChatMetadata } from "../../lib/chat-display";
 import { getChatCharacterIds } from "../../lib/chat-macros";
@@ -89,8 +90,12 @@ import {
   shouldAutoplayGeneratedTTS,
 } from "../../lib/tts-autoplay";
 import { CHAT_SCROLL_TO_BOTTOM_EVENT, type ChatScrollToBottomDetail } from "../../lib/chat-scroll-events";
-import { CHAT_FLOATING_UI_DISMISS_EVENT } from "../../lib/chat-floating-ui-events";
-import { CHAT_TOOLBAR_ACTION_EVENT, readChatToolbarFloatingPanelAnchor } from "./ChatToolbarControls";
+import { blurActiveChatFloatingUiControl, CHAT_FLOATING_UI_DISMISS_EVENT } from "../../lib/chat-floating-ui-events";
+import {
+  CHAT_TOOLBAR_ACTION_EVENT,
+  readAnnouncedChatToolbarPanelAction,
+  readChatToolbarFloatingPanelAnchor,
+} from "./ChatToolbarControls";
 import { mirrorSpritePlacements, normalizeSpritePlacements } from "./sprite-placement";
 import {
   loadLocalSpriteVisualSettings,
@@ -112,6 +117,7 @@ import type {
   PeekPromptData,
 } from "./chat-area.types";
 import { RecentChats } from "./RecentChats";
+import { HomeNewChatLauncher } from "./HomeNewChatLauncher";
 import { HomeCreditsModal } from "./HomeCreditsModal";
 import { HomeProfessorMariChat } from "./HomeProfessorMariChat";
 import { HomeAchievements } from "./HomeAchievements";
@@ -124,7 +130,7 @@ import {
   type ImagePromptOverride,
   type ImagePromptReviewItem,
 } from "../ui/ImagePromptReviewModal";
-import { useTranslation } from "react-i18next";
+import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
 
 export type { CharacterMap };
 
@@ -427,7 +433,7 @@ function preloadCharacterScheduleEditorModal() {
 
 const CharacterScheduleEditorModal = lazy(preloadCharacterScheduleEditorModal);
 
-type FloatingPanelAnchor = { right: number; top: number } | null;
+type FloatingPanelAnchor = ReturnType<typeof readChatToolbarFloatingPanelAnchor>;
 type OpenSettingsOptions = { initialSection?: ChatSettingsInitialSection };
 
 type HomeGlistenStar = {
@@ -497,6 +503,7 @@ function HomeStarfield() {
 }
 
 export function ChatArea() {
+  const { t: localizeUi } = useUiTranslation();
   const { t } = useTranslation();
   useRenderTimer("chat-area"); // [#3104 diagnostic]
   const activeChatId = useChatStore((s) => s.activeChatId);
@@ -638,30 +645,34 @@ export function ChatArea() {
   const handleOpenSettingsPanel = useCallback(
     (event?: ReactMouseEvent<HTMLElement>, options?: OpenSettingsOptions) => {
       void preloadChatSettingsDrawer();
+      const nextOpen = event ? !settingsOpen : true;
       setGalleryOpen(false);
       setGalleryAnchor(null);
-      setSettingsAnchor(readFloatingPanelAnchor(event));
-      setSettingsInitialSection(options?.initialSection ?? null);
-      setSettingsOpen(true);
+      setSettingsAnchor(nextOpen ? readFloatingPanelAnchor(event) : null);
+      setSettingsInitialSection(nextOpen ? (options?.initialSection ?? null) : null);
+      setSettingsOpen(nextOpen);
     },
-    [readFloatingPanelAnchor],
+    [readFloatingPanelAnchor, settingsOpen],
   );
   const handleOpenGalleryPanel = useCallback(
     (event?: ReactMouseEvent<HTMLElement>) => {
+      const nextOpen = event ? !galleryOpen : true;
       setSettingsOpen(false);
       setSettingsAnchor(null);
       setSettingsInitialSection(null);
-      setGalleryAnchor(readFloatingPanelAnchor(event));
-      setGalleryOpen(true);
+      setGalleryAnchor(nextOpen ? readFloatingPanelAnchor(event) : null);
+      setGalleryOpen(nextOpen);
     },
-    [readFloatingPanelAnchor],
+    [galleryOpen, readFloatingPanelAnchor],
   );
   const handleCloseSettingsPanel = useCallback(() => {
+    blurActiveChatFloatingUiControl();
     setSettingsOpen(false);
     setSettingsAnchor(null);
     setSettingsInitialSection(null);
   }, []);
   const handleCloseGalleryPanel = useCallback(() => {
+    blurActiveChatFloatingUiControl();
     setGalleryOpen(false);
     setGalleryAnchor(null);
   }, []);
@@ -671,12 +682,18 @@ export function ChatArea() {
     setHomeProfessorChatOpen(false);
     setHomeProfessorChatActive(false);
   }, [activeChatId]);
-  const closeFloatingChatDrawers = useCallback(() => {
-    setSettingsOpen(false);
-    setSettingsAnchor(null);
-    setSettingsInitialSection(null);
-    setGalleryOpen(false);
-    setGalleryAnchor(null);
+  const closeFloatingChatDrawers = useCallback((event?: Event) => {
+    const preservedPanel = event ? readAnnouncedChatToolbarPanelAction(event) : null;
+    blurActiveChatFloatingUiControl();
+    if (preservedPanel !== "settings") {
+      setSettingsOpen(false);
+      setSettingsAnchor(null);
+      setSettingsInitialSection(null);
+    }
+    if (preservedPanel !== "gallery") {
+      setGalleryOpen(false);
+      setGalleryAnchor(null);
+    }
     setPeekPromptData(null);
     setDeleteDialogMessageId(null);
   }, []);
@@ -1164,17 +1181,20 @@ export function ChatArea() {
   const roleplayVideoReviewResolveRef = useRef<((overrides: ImagePromptOverride[] | null) => void) | null>(null);
   const conversationSelfieReviewResolveRef = useRef<((overrides: ImagePromptOverride[] | null) => void) | null>(null);
 
-  const openRoleplayVideoPromptReview = useCallback((items: ImagePromptReviewItem[]) => {
-    if (roleplayVideoReviewResolveRef.current) {
-      toast.error("Finish or cancel the current video prompt review first.");
-      return Promise.resolve(null);
-    }
-    return new Promise<ImagePromptOverride[] | null>((resolve) => {
-      roleplayVideoReviewResolveRef.current = resolve;
-      setRoleplayVideoReviewSubmitting(false);
-      setRoleplayVideoReviewItems(items);
-    });
-  }, []);
+  const openRoleplayVideoPromptReview = useCallback(
+    (items: ImagePromptReviewItem[]) => {
+      if (roleplayVideoReviewResolveRef.current) {
+        toast.error(localizeUi("ui.chat.chatarea.finishOrCancelTheCurrentVideoPromptReviewFirst"));
+        return Promise.resolve(null);
+      }
+      return new Promise<ImagePromptOverride[] | null>((resolve) => {
+        roleplayVideoReviewResolveRef.current = resolve;
+        setRoleplayVideoReviewSubmitting(false);
+        setRoleplayVideoReviewItems(items);
+      });
+    },
+    [localizeUi],
+  );
 
   const closeRoleplayVideoPromptReview = useCallback((overrides: ImagePromptOverride[] | null) => {
     const resolve = roleplayVideoReviewResolveRef.current;
@@ -1192,17 +1212,20 @@ export function ChatArea() {
     resolve(overrides);
   }, []);
 
-  const openConversationSelfiePromptReview = useCallback((items: ImagePromptReviewItem[]) => {
-    if (conversationSelfieReviewResolveRef.current) {
-      toast.error("Finish or cancel the current selfie prompt review first.");
-      return Promise.resolve(null);
-    }
-    return new Promise<ImagePromptOverride[] | null>((resolve) => {
-      conversationSelfieReviewResolveRef.current = resolve;
-      setConversationSelfieReviewSubmitting(false);
-      setConversationSelfieReviewItems(items);
-    });
-  }, []);
+  const openConversationSelfiePromptReview = useCallback(
+    (items: ImagePromptReviewItem[]) => {
+      if (conversationSelfieReviewResolveRef.current) {
+        toast.error(localizeUi("ui.chat.chatarea.finishOrCancelTheCurrentSelfiePromptReviewFirst"));
+        return Promise.resolve(null);
+      }
+      return new Promise<ImagePromptOverride[] | null>((resolve) => {
+        conversationSelfieReviewResolveRef.current = resolve;
+        setConversationSelfieReviewSubmitting(false);
+        setConversationSelfieReviewItems(items);
+      });
+    },
+    [localizeUi],
+  );
 
   const closeConversationSelfiePromptReview = useCallback((overrides: ImagePromptOverride[] | null) => {
     const resolve = conversationSelfieReviewResolveRef.current;
@@ -1246,7 +1269,7 @@ export function ChatArea() {
       const sceneVideoConnectionId =
         typeof chatMeta.sceneVideoConnectionId === "string" ? chatMeta.sceneVideoConnectionId.trim() : "";
       if (!sceneVideoConnectionId) {
-        toast.error("Choose a Scene Video connection in Chat Settings first.");
+        toast.error(localizeUi("ui.chat.chatarea.chooseASceneVideoConnectionInChatSettingsFirst"));
         return;
       }
 
@@ -1269,7 +1292,7 @@ export function ChatArea() {
             );
           } catch (error) {
             if (!isMediaPromptPreviewTimeout(error)) throw error;
-            toast.error("Video prompt preview timed out. Continuing with the default prompt.");
+            toast.error(localizeUi("ui.chat.chatarea.videoPromptPreviewTimedOutContinuingWithTheDefault"));
           }
           if (preview) {
             const details = [`${preview.durationSeconds}s`, preview.aspectRatio, preview.resolution].filter(
@@ -1299,9 +1322,13 @@ export function ChatArea() {
         galleryStore.pinVideo(result.video);
         galleryStore.syncLatestViewer({ ...result.video, kind: "video" as const });
         void queryClient.invalidateQueries({ queryKey: ["gallery", "scene-videos", activeChatId] });
-        toast.success("Scene video generated.", { duration: 1800 });
+        toast.success(localizeUi("ui.chat.chatarea.sceneVideoGenerated"), { duration: 1800 });
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : "Scene video generation failed.");
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : localizeUi("ui.game.gamesurfacecomponent.sceneVideoGenerationFailed"),
+        );
       } finally {
         closeRoleplayVideoPromptReview(null);
         roleplaySceneVideoGeneratingRef.current = false;
@@ -1315,6 +1342,7 @@ export function ChatArea() {
       closeRoleplayVideoPromptReview,
       openRoleplayVideoPromptReview,
       queryClient,
+      localizeUi,
     ],
   );
 
@@ -1347,7 +1375,7 @@ export function ChatArea() {
             );
           } catch (error) {
             if (!isMediaPromptPreviewTimeout(error)) throw error;
-            toast.error("Selfie prompt preview timed out. Continuing with the default prompt.");
+            toast.error(localizeUi("ui.chat.chatarea.selfiePromptPreviewTimedOutContinuingWithTheDefault"));
           }
           if (preview?.items.length) {
             const overrides = await openConversationSelfiePromptReview(preview.items);
@@ -1371,6 +1399,7 @@ export function ChatArea() {
       closeConversationSelfiePromptReview,
       generateGallerySelfie,
       openConversationSelfiePromptReview,
+      localizeUi,
     ],
   );
 
@@ -1458,9 +1487,13 @@ export function ChatArea() {
       useTranslationStore.getState().clearAll();
       prevChatIdRef.current = chat?.id;
     }
-    useTranslationStore
-      .getState()
-      .seedFromMessages(messages as unknown as Array<{ id: string; extra?: string | Record<string, unknown> | null }>);
+    useTranslationStore.getState().seedFromMessages(
+      messages as unknown as Array<{
+        id: string;
+        content?: string;
+        extra?: string | Record<string, unknown> | null;
+      }>,
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat?.id, msgPageCount]);
 
@@ -1774,7 +1807,7 @@ export function ChatArea() {
             await flushPatch();
           } catch {
             if (swipeActionSeq.current === actionId) {
-              toast.error("Could not save tracker changes before deleting the swipe.");
+              toast.error(localizeUi("ui.chat.chatarea.couldNotSaveTrackerChangesBeforeDeletingTheSwipe"));
             }
             return;
           }
@@ -1785,7 +1818,7 @@ export function ChatArea() {
         await refreshVisibleGameState();
       } catch {
         if (swipeActionSeq.current !== actionId) return;
-        toast.error("Could not delete the swipe.");
+        toast.error(localizeUi("ui.chat.chatarea.couldNotDeleteTheSwipe"));
       } finally {
         if (swipeActionSeq.current === actionId) {
           useGameStateStore.getState().clearRefreshingChat(refreshChatId);
@@ -1800,6 +1833,7 @@ export function ChatArea() {
     deleteSwipe,
     refreshVisibleGameState,
     shouldRefreshGameStateOnSwipe,
+    localizeUi,
   ]);
 
   const handleDeleteMore = useCallback(() => {
@@ -1915,9 +1949,9 @@ export function ChatArea() {
         !options?.skipTouchConfirm &&
         window.matchMedia("(pointer: coarse)").matches &&
         !(await showConfirmDialog({
-          title: "Regenerate Message",
-          message: "Regenerate this message as a new swipe?",
-          confirmLabel: "Regenerate",
+          title: localizeUi("ui.chat.chatarea.regenerateMessage"),
+          message: localizeUi("ui.chat.chatarea.regenerateThisMessageAsANewSwipe"),
+          confirmLabel: localizeUi("ui.agents.secretplotpanel.regenerate"),
         }))
       ) {
         return;
@@ -1941,7 +1975,7 @@ export function ChatArea() {
         // Error toast is shown by the generate hook
       }
     },
-    [activeChatId, isStreaming, generate, guideGenerations],
+    [activeChatId, isStreaming, generate, guideGenerations, localizeUi],
   );
 
   const handleRetryAgents = useCallback(async () => {
@@ -1993,7 +2027,7 @@ export function ChatArea() {
               await flushPatch();
             } catch {
               if (swipeActionSeq.current === actionId) {
-                toast.error("Could not save tracker changes before switching swipes.");
+                toast.error(localizeUi("ui.chat.chatarea.couldNotSaveTrackerChangesBeforeSwitchingSwipes"));
               }
               return;
             }
@@ -2025,7 +2059,7 @@ export function ChatArea() {
           await refreshVisibleGameState();
         } catch {
           if (swipeActionSeq.current !== actionId) return;
-          toast.error("Could not switch swipes.");
+          toast.error(localizeUi("ui.chat.chatarea.couldNotSwitchSwipes"));
         } finally {
           if (swipeActionSeq.current === actionId) {
             useGameStateStore.getState().clearRefreshingChat(refreshChatId);
@@ -2033,7 +2067,7 @@ export function ChatArea() {
         }
       })();
     },
-    [activeChatId, setActiveSwipe, refreshVisibleGameState, shouldRefreshGameStateOnSwipe],
+    [activeChatId, setActiveSwipe, refreshVisibleGameState, shouldRefreshGameStateOnSwipe, localizeUi],
   );
 
   const handleEdit = useCallback(
@@ -2069,9 +2103,9 @@ export function ChatArea() {
       if (!chatId || branchChat.isPending || branchPendingRef.current) return;
       branchPendingRef.current = true;
       const confirmed = await showConfirmDialog({
-        title: "Create a new branch?",
-        message: "This will copy the chat through this message and open the new branch.",
-        confirmLabel: "Create branch",
+        title: localizeUi("ui.chat.chatarea.createANewBranch"),
+        message: localizeUi("ui.chat.chatarea.thisWillCopyTheChatThroughThisMessageAnd"),
+        confirmLabel: localizeUi("ui.chat.chatarea.createBranch"),
       });
       if (!confirmed || useChatStore.getState().activeChatId !== chatId) {
         branchPendingRef.current = false;
@@ -2083,10 +2117,14 @@ export function ChatArea() {
         {
           onSuccess: (newChat) => {
             if (newChat) useChatStore.getState().setActiveChatId(newChat.id);
-            toast.success("Branch created.");
+            toast.success(localizeUi("ui.chat.chatarea.branchCreated"));
           },
           onError: (error) => {
-            toast.error(error instanceof Error ? `Branch failed: ${error.message}` : "Branch failed.");
+            toast.error(
+              error instanceof Error
+                ? localizeUi("ui.chat.chatarea.branchFailedValue1", { value1: error.message })
+                : localizeUi("ui.chat.chatarea.branchFailed"),
+            );
           },
           onSettled: () => {
             branchPendingRef.current = false;
@@ -2095,7 +2133,7 @@ export function ChatArea() {
         },
       );
     },
-    [activeChatId, branchChat],
+    [activeChatId, branchChat, localizeUi],
   );
 
   const handleCloneSceneFromHere = useCallback(
@@ -2411,6 +2449,7 @@ export function ChatArea() {
     },
     [scrollToMessagesBottom],
   );
+  useKeepLatestChatMessageVisible(scrollRef, isNearBottomRef, scheduleScrollToMessagesBottom);
   useEffect(() => {
     const handleScrollRequest = (event: Event) => {
       const detail = (event as CustomEvent<ChatScrollToBottomDetail>).detail;
@@ -2668,7 +2707,12 @@ export function ChatArea() {
 
     const targetNumber = gotoRequest.messageNumber;
     if (totalMessageCount > 0 && targetNumber > totalMessageCount) {
-      toast.error(`Message #${targetNumber} doesn't exist — this chat has ${totalMessageCount} messages.`);
+      toast.error(
+        localizeUi("ui.chat.chatarea.messageValue1DoesnTExistThisChatHasValue2", {
+          value1: targetNumber,
+          value2: totalMessageCount,
+        }),
+      );
       useChatStore.getState().clearGotoRequest();
       return;
     }
@@ -2715,6 +2759,7 @@ export function ChatArea() {
     hasNextPage,
     isFetchingNextPage,
     fetchNextPage,
+    localizeUi,
   ]);
 
   // ═══════════════════════════════════════════════
@@ -2740,7 +2785,9 @@ export function ChatArea() {
           )}
           <div className="space-y-1">
             <p className="text-sm font-medium text-[var(--foreground)]">
-              {hasOpenError ? "Could not open this chat" : "Opening chat..."}
+              {hasOpenError
+                ? localizeUi("ui.chat.chatarea.couldNotOpenThisChat")
+                : localizeUi("ui.chat.chatarea.openingChat")}
             </p>
             {hasOpenError && <p className="max-w-sm text-xs text-[var(--muted-foreground)]">{errorMessage}</p>}
           </div>
@@ -2750,7 +2797,7 @@ export function ChatArea() {
               onClick={() => setActiveChatId(null)}
               className="mari-chrome-control mari-chrome-control--small text-xs"
             >
-              Back to chats
+              {localizeUi("ui.chat.chatarea.backToChats")}
             </button>
           )}
         </div>
@@ -2801,7 +2848,7 @@ export function ChatArea() {
                   >
                     <img
                       src={showEmptyStateEffects ? "/logo-splash.gif" : "/logo.png"}
-                      alt="Marinara Engine"
+                      alt={localizeUi("app.documentTitle")}
                       width={80}
                       height={80}
                       decoding="async"
@@ -2820,12 +2867,15 @@ export function ChatArea() {
                       isPageActive && "mari-logo-gradient-text--active",
                     )}
                   >
-                    Marinara Engine
+                    {localizeUi("app.documentTitle")}
                   </h3>
                   <p className="mari-chrome-text-muted mt-0.5 text-[0.625rem] tracking-wide opacity-65">
-                    v{APP_VERSION}
+                    {localizeUi("ui.characters.charactereditor.v")}
+                    {APP_VERSION}
                   </p>
                 </div>
+
+                <HomeNewChatLauncher />
 
                 {/* Recent Chats */}
                 <RecentChats />
@@ -2869,7 +2919,7 @@ export function ChatArea() {
                         rel="noopener noreferrer"
                         className="mari-chrome-text underline decoration-[var(--marinara-chat-chrome-panel-muted)]/30 transition-colors hover:text-[var(--marinara-chat-chrome-button-text-hover)] hover:decoration-[var(--marinara-chat-chrome-button-border-hover)]"
                       >
-                        Marinara
+                        {localizeUi("ui.chat.chatarea.marinara")}
                       </a>
                     </span>
                     <span>
@@ -2880,7 +2930,7 @@ export function ChatArea() {
                         rel="noopener noreferrer"
                         className="mari-chrome-text underline decoration-[var(--marinara-chat-chrome-panel-muted)]/30 transition-colors hover:text-[var(--marinara-chat-chrome-button-text-hover)] hover:decoration-[var(--marinara-chat-chrome-button-border-hover)]"
                       >
-                        LinkAPI
+                        {localizeUi("ui.panels.connectionspanel.linkapi")}
                       </a>
                     </span>
                     <span>
@@ -2891,7 +2941,7 @@ export function ChatArea() {
                         rel="noopener noreferrer"
                         className="mari-chrome-text underline decoration-[var(--marinara-chat-chrome-panel-muted)]/30 transition-colors hover:text-[var(--marinara-chat-chrome-button-text-hover)] hover:decoration-[var(--marinara-chat-chrome-button-border-hover)]"
                       >
-                        HunterCollieX
+                        {localizeUi("ui.chat.chatarea.huntercolliex")}
                       </a>
                     </span>
                   </div>
@@ -2906,7 +2956,7 @@ export function ChatArea() {
                       <svg width="0.875rem" height="0.875rem" viewBox="0 0 24 24" fill="currentColor">
                         <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.947 2.418-2.157 2.418z" />
                       </svg>
-                      Discord
+                      {localizeUi("ui.chat.chatarea.discord")}
                     </a>
                     <a
                       href="https://ko-fi.com/marinara_spaghetti"
@@ -3389,11 +3439,17 @@ function AgentInjectionReviewModal({
   onContinue: () => void;
   onClose: () => void;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   return (
-    <Modal open onClose={onClose} title="Writer Agent Review" width="max-w-3xl">
+    <Modal
+      open
+      onClose={onClose}
+      title={localizeUi("ui.chat.agentinjectionreviewmodal.writerAgentReview")}
+      width="max-w-3xl"
+    >
       <div className="flex flex-col gap-3">
         <p className="text-xs leading-relaxed text-[var(--muted-foreground)]">
-          Edit the writer guidance before the main reply starts.
+          {localizeUi("ui.chat.agentinjectionreviewmodal.editTheWriterGuidanceBeforeTheMainReplyStarts")}
         </p>
         <div className="flex max-h-[55dvh] flex-col gap-2 overflow-y-auto pr-1">
           {request.injections.map((injection) => (
@@ -3421,7 +3477,7 @@ function AgentInjectionReviewModal({
             className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 py-2 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--accent)]"
           >
             <X size="0.875rem" />
-            Close
+            {localizeUi("capabilities.actions.close")}
           </button>
           <button
             type="button"
@@ -3429,7 +3485,7 @@ function AgentInjectionReviewModal({
             className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--primary)] px-3 py-2 text-xs font-medium text-[var(--primary-foreground)] transition-opacity hover:opacity-90"
           >
             <Check size="0.875rem" />
-            Continue
+            {localizeUi("ui.noodle.wizardfooter.continue")}
           </button>
         </div>
       </div>

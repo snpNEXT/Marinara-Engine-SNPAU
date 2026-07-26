@@ -9,6 +9,7 @@ import { useTranslationStore } from "../stores/translation.store";
 // ── Hook ──
 export function useTranslate() {
   const translations = useTranslationStore((s) => s.translations);
+  const translationSources = useTranslationStore((s) => s.translationSources);
   const translating = useTranslationStore((s) => s.translating);
   const config = useTranslationStore((s) => s.config);
 
@@ -38,7 +39,7 @@ export function useTranslate() {
         deeplApiKey: store.config.deeplApiKey,
         deeplxUrl: store.config.deeplxUrl,
       });
-      store.setTranslation(messageId, result.translatedText);
+      store.setTranslation(messageId, result.translatedText, text);
       // Persist to message extra so translation survives refresh/chat switch
       if (chatId) {
         api
@@ -59,6 +60,7 @@ export function useTranslate() {
   return {
     translate,
     translations,
+    translationSources,
     translating,
     config,
   };

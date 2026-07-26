@@ -12,29 +12,28 @@ import { cn, getAvatarCropStyle, type AvatarCropValue } from "../../lib/utils";
 import type { Chat } from "@marinara-engine/shared";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 
-const MODE_BADGE: Record<string, { icon: React.ReactNode; label: string; logoModeClass: string }> =
-  {
-    conversation: {
-      icon: <MessageSquare size="0.375rem" />,
-      label: "Conversation",
-      logoModeClass: "mari-chat-logo-mode--conversation",
-    },
-    roleplay: {
-      icon: <BookOpen size="0.375rem" />,
-      label: "Roleplay",
-      logoModeClass: "mari-chat-logo-mode--roleplay",
-    },
-    visual_novel: {
-      icon: <BookOpen size="0.375rem" />,
-      label: "Roleplay",
-      logoModeClass: "mari-chat-logo-mode--roleplay",
-    },
-    game: {
-      icon: <Theater size="0.375rem" />,
-      label: "Game",
-      logoModeClass: "mari-chat-logo-mode--game",
-    },
-  };
+const MODE_BADGE: Record<string, { icon: React.ReactNode; label: string; logoModeClass: string }> = {
+  conversation: {
+    icon: <MessageSquare size="0.375rem" />,
+    label: "Conversation",
+    logoModeClass: "mari-chat-logo-mode--conversation",
+  },
+  roleplay: {
+    icon: <BookOpen size="0.375rem" />,
+    label: "Roleplay",
+    logoModeClass: "mari-chat-logo-mode--roleplay",
+  },
+  visual_novel: {
+    icon: <BookOpen size="0.375rem" />,
+    label: "Roleplay",
+    logoModeClass: "mari-chat-logo-mode--roleplay",
+  },
+  game: {
+    icon: <Theater size="0.375rem" />,
+    label: "Game",
+    logoModeClass: "mari-chat-logo-mode--game",
+  },
+};
 
 function parseRecentChatCharacterIds(value: Chat["characterIds"]): string[] {
   let rawIds: unknown = [];
@@ -86,17 +85,15 @@ export function RecentChats() {
           {localize("No chats yet")}
         </p>
       ) : (
-        <div className="w-full overflow-x-auto">
-          <div className="mx-auto flex w-max items-center justify-center gap-1.5 px-1">
-            {recentChats.map((chat) => (
-              <RecentChatChip
-                key={chat.id}
-                chat={chat}
-                charLookup={charLookup}
-                onClick={() => setActiveChatId(chat.id)}
-              />
-            ))}
-          </div>
+        <div className="mx-auto flex w-full flex-nowrap items-center justify-center gap-1.5 px-1">
+          {recentChats.map((chat) => (
+            <RecentChatChip
+              key={chat.id}
+              chat={chat}
+              charLookup={charLookup}
+              onClick={() => setActiveChatId(chat.id)}
+            />
+          ))}
         </div>
       )}
     </div>
@@ -129,9 +126,10 @@ function RecentChatChip({
     <button
       onClick={onClick}
       className={cn(
-        "mari-chrome-control mari-chrome-control--small group relative max-w-[8rem] shrink-0 px-2 py-1.5",
+        "mari-chrome-control mari-chrome-control--small group relative h-8 w-0 min-w-0 max-w-[8rem] flex-1 basis-0 border-[var(--marinara-chat-chrome-button-border-active)] px-2 py-0 text-[var(--marinara-chat-chrome-button-text-active)] hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]",
         "cursor-pointer",
       )}
+      title={chat.name}
     >
       {/* Small avatar with mode dot */}
       <div className="relative flex-shrink-0">
@@ -172,7 +170,7 @@ function RecentChatChip({
       </div>
 
       {/* Chat name only */}
-      <span className="mari-chrome-text truncate text-[0.625rem] font-medium">{chat.name}</span>
+      <span className="mari-chrome-text min-w-0 flex-1 truncate text-[0.625rem] font-medium">{chat.name}</span>
     </button>
   );
 }

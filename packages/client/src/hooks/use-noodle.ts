@@ -2,6 +2,8 @@
 // React Query: Noodle hooks
 // ──────────────────────────────────────────────
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { useTranslation as useUiTranslation } from "react-i18next";
 import { api } from "../lib/api-client";
 import { useUIStore } from "../stores/ui.store";
 import type {
@@ -13,12 +15,14 @@ import type {
   NoodleAutoPostingIntensity,
   NoodleAutoPostRescheduleInput,
   NoodleBootstrap,
+  NoodleBulkPrivateAccountCreateInput,
   NoodleCreateInteractionInput,
   NoodleCreatePostInput,
   NoodleInteraction,
   NoodleInteractionUpdateInput,
   NoodleNudgeInput,
   NoodlePost,
+  NoodlePostImageCrop,
   NoodlePostUpdateInput,
   NoodlePrivatePostCreateInput,
   NoodlePrivatePostUpdateInput,
@@ -31,6 +35,7 @@ import type {
   NoodlePrivateGenerationRequest,
   NoodleStageProfileDraftRequest,
   NoodlerManagedPost,
+  NoodlerRefreshNowOutcome,
   NoodlerStageProfile,
   NoodlerManagedStageProfile,
   NoodlerSubscriber,
@@ -122,7 +127,8 @@ export function useNoodlerPosts(accountId: string | null) {
 export function useNoodlerSubscribers(accountId: string | null) {
   return useQuery({
     queryKey: noodleKeys.privateSubscribers(accountId ?? "none"),
-    queryFn: () => api.get<NoodlerSubscriber[]>(`/noodle/noodler/accounts/${encodeURIComponent(accountId!)}/subscribers`),
+    queryFn: () =>
+      api.get<NoodlerSubscriber[]>(`/noodle/noodler/accounts/${encodeURIComponent(accountId!)}/subscribers`),
     enabled: Boolean(accountId),
     staleTime: 10_000,
   });
@@ -147,6 +153,32 @@ export function useCreateNoodlerStageProfile() {
         qc.invalidateQueries({ queryKey: noodleKeys.privateEligibleAccountsRoot() }),
         qc.invalidateQueries({ queryKey: noodleKeys.privateViewers() }),
       ]),
+  });
+}
+
+export function useBulkCreateNoodlerStageProfiles() {
+  const qc = useQueryClient();
+  const { t: localizeUi } = useUiTranslation();
+  return useMutation({
+    mutationFn: (input: NoodleBulkPrivateAccountCreateInput) =>
+      api.post<{ created: NoodlerManagedStageProfile[]; skipped: string[]; failed?: string[] }>(
+        "/noodle/noodler/accounts/bulk",
+        input,
+      ),
+    onSuccess: (result) => {
+      const failed = result.failed?.length ?? 0;
+      const counts = { value1: result.created.length, value2: result.skipped.length, value3: failed };
+      if (failed) {
+        toast.error(localizeUi("ui.noodle.noodlerbulkcreatepanel.createdValue1SkippedValue2FailedValue3", counts));
+      } else {
+        toast.success(localizeUi("ui.noodle.noodlerbulkcreatepanel.createdValue1SkippedValue2", counts));
+      }
+      return Promise.all([
+        qc.invalidateQueries({ queryKey: noodleKeys.privateAccounts() }),
+        qc.invalidateQueries({ queryKey: noodleKeys.privateEligibleAccountsRoot() }),
+        qc.invalidateQueries({ queryKey: noodleKeys.privateViewers() }),
+      ]);
+    },
   });
 }
 
@@ -194,15 +226,69 @@ export function useGenerateNoodlerStageProfileDraft() {
   });
 }
 
+export type GeneratedPrivateNoodlePost = NoodlerManagedPost & {
+  imagePromptReview?: ImagePromptReviewItem;
+};
+
+export type NoodlerPostDraftImage = {
+  source: File | string;
+  crop: NoodlePostImageCrop | null;
+};
+
+type NoodlerCreatePostRequest = Omit<NoodlePrivatePostCreateInput, "uploadedImageUrl" | "imageCrop"> & {
+  image?: NoodlerPostDraftImage | null;
+};
+
+type NoodlerGeneratePostRequest = Omit<NoodlePrivateGenerationRequest, "uploadedImageUrl" | "imageCrop"> & {
+  image?: NoodlerPostDraftImage | null;
+};
+
+function postNoodlerRequestWithImage<T>(
+  path: string,
+  input: Record<string, unknown>,
+  image?: NoodlerPostDraftImage | null,
+): Promise<T> {
+  if (!image) return api.post<T>(path, input);
+  const payload = { ...input, ...(image.crop ? { imageCrop: image.crop } : {}) };
+  if (image.source instanceof File) {
+    const form = new FormData();
+    form.append("payload", JSON.stringify(payload));
+    form.append("file", image.source);
+    return api.upload<T>(path, form);
+  }
+  return api.post<T>(path, { ...payload, uploadedImageUrl: image.source });
+}
+
 export function useGeneratePrivateNoodlePost() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: NoodlePrivateGenerationRequest) =>
-      api.post<NoodlerManagedPost>("/noodle/refresh", {
-        ...input,
-        debugMode: useUIStore.getState().debugMode,
-      } satisfies NoodlePrivateGenerationRequest),
+    mutationFn: ({ image, ...input }: NoodlerGeneratePostRequest) =>
+      postNoodlerRequestWithImage<GeneratedPrivateNoodlePost>(
+        "/noodle/refresh",
+        {
+          ...input,
+          debugMode: useUIStore.getState().debugMode,
+          reviewImagePromptsBeforeSend: useUIStore.getState().reviewImagePromptsBeforeSend,
+        },
+        image,
+      ),
     onSuccess: (_post, input) =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: noodleKeys.privatePosts(input.targetAccountId) }),
+        qc.invalidateQueries({ queryKey: noodleKeys.privateViewers() }),
+      ]),
+  });
+}
+
+export function useConfirmNoodlerImagePrompts() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { targetAccountId: string; prompts: ImagePromptOverride[] }) =>
+      api.post<{ finalized: number }>("/noodle/noodler/refresh/images", {
+        prompts: input.prompts,
+        debugMode: useUIStore.getState().debugMode,
+      }),
+    onSuccess: (_result, input) =>
       Promise.all([
         qc.invalidateQueries({ queryKey: noodleKeys.privatePosts(input.targetAccountId) }),
         qc.invalidateQueries({ queryKey: noodleKeys.privateViewers() }),
@@ -213,12 +299,37 @@ export function useGeneratePrivateNoodlePost() {
 export function useCreateNoodlerPost() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: NoodlePrivatePostCreateInput) => api.post<NoodlerManagedPost>("/noodle/noodler/posts", input),
+    mutationFn: ({ image, ...input }: NoodlerCreatePostRequest) =>
+      postNoodlerRequestWithImage<NoodlerManagedPost>("/noodle/noodler/posts", input, image),
     onSuccess: (_post, input) =>
       Promise.all([
         qc.invalidateQueries({ queryKey: noodleKeys.privatePosts(input.targetAccountId) }),
         qc.invalidateQueries({ queryKey: noodleKeys.privateViewers() }),
       ]),
+  });
+}
+
+function imageFileExtension(contentType: string): string {
+  if (contentType === "image/png") return "png";
+  if (contentType === "image/webp") return "webp";
+  if (contentType === "image/gif") return "gif";
+  if (contentType === "image/avif") return "avif";
+  return "jpg";
+}
+
+export function useLoadNoodlerPostImage() {
+  return useMutation({
+    mutationFn: async ({ imageUrl }: { imageUrl: string }) => {
+      const url = new URL(imageUrl, window.location.origin);
+      if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/")) {
+        throw new Error("This post image is not stored by Marinara.");
+      }
+      const response = await api.raw(`${url.pathname.slice(4)}${url.search}`);
+      if (!response.ok) throw new Error("Could not load this post image for editing.");
+      const blob = await response.blob();
+      const extension = imageFileExtension(blob.type);
+      return new File([blob], `noodler-post.${extension}`, { type: blob.type, lastModified: Date.now() });
+    },
   });
 }
 
@@ -247,15 +358,20 @@ export function useToggleNoodlerSubscription() {
       subscribed: boolean;
     }) =>
       subscribed
-        ? api.delete<{ ok: true }>(
+        ? api.delete<NoodlerViewerScope>(
             `/noodle/noodler/accounts/${encodeURIComponent(creatorAccountId)}/subscribe?personaId=${encodeURIComponent(personaId)}`,
           )
-        : api.post(`/noodle/noodler/accounts/${encodeURIComponent(creatorAccountId)}/subscribe`, { personaId }),
-    onSuccess: (_result, input) =>
-      Promise.all([
-        qc.invalidateQueries({ queryKey: noodleKeys.viewer(input.personaId) }),
-        qc.invalidateQueries({ queryKey: noodleKeys.privateSubscribers(input.creatorAccountId) }),
-      ]),
+        : api.post<NoodlerViewerScope>(`/noodle/noodler/accounts/${encodeURIComponent(creatorAccountId)}/subscribe`, {
+            personaId,
+          }),
+    // Patch the viewer cache with the returned scope instead of refetching the whole feed,
+    // so revealed/re-locked posts flip in place without a reload-and-jump.
+    onSuccess: async (scope, input) => {
+      // Cancel any in-flight viewer poll first, or it can land after us and restore the stale scope.
+      await qc.cancelQueries({ queryKey: noodleKeys.viewer(input.personaId) });
+      qc.setQueryData(noodleKeys.viewer(input.personaId), scope);
+      return qc.invalidateQueries({ queryKey: noodleKeys.privateSubscribers(input.creatorAccountId) });
+    },
   });
 }
 
@@ -263,8 +379,12 @@ export function useUnlockNoodlerPost() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ postId, personaId }: { postId: string; personaId: string }) =>
-      api.post(`/noodle/noodler/posts/${encodeURIComponent(postId)}/unlock`, { personaId }),
-    onSuccess: (_result, input) => qc.invalidateQueries({ queryKey: noodleKeys.viewer(input.personaId) }),
+      api.post<NoodlerViewerScope>(`/noodle/noodler/posts/${encodeURIComponent(postId)}/unlock`, { personaId }),
+    onSuccess: async (scope, input) => {
+      // Cancel any in-flight viewer poll first, or it can land after us and restore the locked scope.
+      await qc.cancelQueries({ queryKey: noodleKeys.viewer(input.personaId) });
+      qc.setQueryData(noodleKeys.viewer(input.personaId), scope);
+    },
   });
 }
 
@@ -294,7 +414,11 @@ export function useRemoveNoodlerInteraction() {
 export function useUpdateNoodlerPost() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, accountId: _accountId, ...input }: { id: string; accountId: string } & NoodlePrivatePostUpdateInput) =>
+    mutationFn: ({
+      id,
+      accountId: _accountId,
+      ...input
+    }: { id: string; accountId: string } & NoodlePrivatePostUpdateInput) =>
       api.patch<NoodlerManagedPost>(`/noodle/noodler/posts/${encodeURIComponent(id)}`, input),
     onSuccess: (_post, input) => {
       return Promise.all([
@@ -302,6 +426,34 @@ export function useUpdateNoodlerPost() {
         qc.invalidateQueries({ queryKey: noodleKeys.privateViewers() }),
       ]);
     },
+  });
+}
+
+export function useReplaceNoodlerPostImage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      accountId: _accountId,
+      file,
+      crop,
+      ...input
+    }: {
+      id: string;
+      accountId: string;
+      file: File;
+      crop: NoodlePostImageCrop;
+    } & Omit<NoodlePrivatePostUpdateInput, "imageCrop" | "removeImage">) => {
+      const form = new FormData();
+      form.append("payload", JSON.stringify({ ...input, imageCrop: crop }));
+      form.append("file", file);
+      return api.upload<NoodlerManagedPost>(`/noodle/noodler/posts/${encodeURIComponent(id)}/media`, form);
+    },
+    onSuccess: (_post, input) =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: noodleKeys.privatePosts(input.accountId) }),
+        qc.invalidateQueries({ queryKey: noodleKeys.privateViewers() }),
+      ]),
   });
 }
 
@@ -353,6 +505,7 @@ export function useUpdateNoodlerAutoPosting() {
       accountId: string;
       enabled?: boolean;
       intensity?: NoodleAutoPostingIntensity;
+      imagesEnabled?: boolean;
     }) =>
       api.patch<NoodleAccount>(`/noodle/accounts/${encodeURIComponent(accountId)}/settings`, {
         subtree: "scheduler",
@@ -369,6 +522,32 @@ export function useRescheduleNoodlerAutoPost() {
     mutationFn: ({ accountId, ...input }: { accountId: string } & NoodleAutoPostRescheduleInput) =>
       api.put<NoodleAccount>(`/noodle/noodler/accounts/${encodeURIComponent(accountId)}/auto-post/schedule`, input),
     onSuccess: () => qc.invalidateQueries({ queryKey: noodleKeys.privateAccounts() }),
+  });
+}
+
+export function useRunNoodlerAutoPostNow() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (accountId: string) =>
+      api.post<NoodlerManagedPost>(`/noodle/noodler/accounts/${encodeURIComponent(accountId)}/auto-post/run-now`),
+    onSuccess: (_post, accountId) =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: noodleKeys.privatePosts(accountId) }),
+        qc.invalidateQueries({ queryKey: noodleKeys.privateViewers() }),
+      ]),
+  });
+}
+
+export function useRefreshAllNoodlerCreatorsNow() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<{ outcomes: NoodlerRefreshNowOutcome[] }>("/noodle/noodler/auto-post/refresh-now"),
+    onSuccess: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: noodleKeys.privateAccounts() }),
+        qc.invalidateQueries({ queryKey: [...noodleKeys.privateRoot(), "posts"] }),
+        qc.invalidateQueries({ queryKey: noodleKeys.privateViewers() }),
+      ]),
   });
 }
 

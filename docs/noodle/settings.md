@@ -30,7 +30,11 @@ Use **New profile** in **Manage stage profiles** to search and choose an eligibl
 
 ### Guided private posts
 
-Each stage profile has an inline, collapsed composer for private posts. Enter an optional title and a required body, then select **Post** to publish those literal values without provider work. Select **Guide** to optionally transform the current title and body draft through the existing private generator; leaving both fields empty requests unguided generation. If the request fails, the current draft is preserved so you can retry. Guided output contains title and body only; image generation, uploads, and polls are later scope.
+Each stage profile has an inline, collapsed composer for private posts. Enter an optional title and body, then select **Post** to publish those literal values without provider work. A body, image, or poll is required, so an image or a two-to-four-option poll may be posted on its own. Uploaded images stay in NoodleR's private media storage rather than the public Noodle gallery.
+
+Select **Guide** to transform the current title and body draft through the existing private generator. It preserves the image, poll, access level, and PPV price you selected, and generated output remains title/body-only; it does not generate or replace attachments. Unpublished image files and URLs stay in the current client draft until Post or Guide succeeds. If Post, Guide, or media persistence fails, the current draft remains available for correction or retry.
+
+The post's access level protects the complete post. Locked subscriber and PPV posts do not expose their image, poll choices, or votes. A viewer who can read the post may vote once and later change that vote; the persona linked to the creator cannot vote on its own stage-profile post.
 
 ## Subscriptions and post access
 

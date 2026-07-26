@@ -155,6 +155,18 @@ canonical-English catalog values while older call sites are being migrated. This
 preferred API: new and substantially edited components must still use semantic `t("area.control.label")` keys
 directly. An English sentence that is not present in `en.json` is not translatable.
 
+The repository localization check also audits client TSX for untranslated interface copy:
+
+```bash
+pnpm localization:ui-check
+```
+
+It covers visible JSX, directly interpolated labels and notices, accessible names, placeholders, loading and empty
+states, toasts, and confirmations. Literal content inside `code`, `pre`, `script`, and `style` elements is
+intentionally excluded so commands, configuration, URLs, macros, and other machine-facing examples remain exact.
+Dynamic user-authored, generated, persisted, prompt, and protocol values must likewise remain outside the interface
+translator.
+
 ## Downloadable Agent interfaces
 
 Engine-owned Agent screens use the Engine locale files. Downloadable capability clients own their translated copy in

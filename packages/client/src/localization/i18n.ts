@@ -1,32 +1,19 @@
 import { createInstance, type TOptions } from "i18next";
 import { initReactI18next } from "react-i18next";
-import englishLocale from "./locales/en.json";
 import {
   APP_LANGUAGE_OPTIONS,
   loadLocaleResource,
-  normalizeLocaleResource,
   resolveSupportedLocale,
 } from "./locale-loader";
 import { DEFAULT_APP_LANGUAGE, type AppLanguage, type LocaleMetadata } from "./locale-types";
 
-const english = normalizeLocaleResource(DEFAULT_APP_LANGUAGE, englishLocale);
-const loadedMetadata = new Map<string, LocaleMetadata>([[DEFAULT_APP_LANGUAGE, english.metadata]]);
-const englishMessageKeys = new Map<string, string>();
-
-for (const [key, message] of Object.entries(english.messages)) {
-  if (!englishMessageKeys.has(message)) {
-    englishMessageKeys.set(message, key);
-  }
-}
+const loadedMetadata = new Map<string, LocaleMetadata>();
+const englishMessageKeys = new Map<string, string[]>();
 
 export const i18n = createInstance();
 
 const initialization = i18n.use(initReactI18next).init({
-  resources: {
-    [DEFAULT_APP_LANGUAGE]: {
-      translation: english.messages,
-    },
-  },
+  resources: {},
   lng: DEFAULT_APP_LANGUAGE,
   fallbackLng: DEFAULT_APP_LANGUAGE,
   supportedLngs: APP_LANGUAGE_OPTIONS.map((option) => option.id),
@@ -45,6 +32,23 @@ const initialization = i18n.use(initReactI18next).init({
 
 let activationRevision = 0;
 
+async function ensureLocaleResource(locale: AppLanguage) {
+  if (i18n.hasResourceBundle(locale, "translation")) return;
+
+  const resource = await loadLocaleResource(locale);
+  i18n.addResourceBundle(locale, "translation", resource.messages, true, true);
+  loadedMetadata.set(locale, resource.metadata);
+
+  if (locale === DEFAULT_APP_LANGUAGE) {
+    englishMessageKeys.clear();
+    for (const [key, message] of Object.entries(resource.messages)) {
+      const keys = englishMessageKeys.get(message) ?? [];
+      keys.push(key);
+      englishMessageKeys.set(message, keys);
+    }
+  }
+}
+
 function syncDocumentLocale(locale: string, metadata: LocaleMetadata) {
   if (typeof document === "undefined") return;
   document.documentElement.lang = locale;
@@ -59,14 +63,11 @@ function syncDocumentTitle() {
 export async function activateLocale(requestedLocale: unknown): Promise<AppLanguage> {
   const requestRevision = ++activationRevision;
   await initialization;
+  await ensureLocaleResource(DEFAULT_APP_LANGUAGE);
 
   let locale = resolveSupportedLocale(requestedLocale);
   try {
-    if (!i18n.hasResourceBundle(locale, "translation")) {
-      const resource = await loadLocaleResource(locale);
-      i18n.addResourceBundle(locale, "translation", resource.messages, true, true);
-      loadedMetadata.set(locale, resource.metadata);
-    }
+    await ensureLocaleResource(locale);
   } catch (error) {
     console.error(`[localization] Could not load ${locale}; falling back to English`, error);
     locale = DEFAULT_APP_LANGUAGE;
@@ -76,7 +77,10 @@ export async function activateLocale(requestedLocale: unknown): Promise<AppLangu
     return locale;
   }
 
-  const metadata = loadedMetadata.get(locale) ?? english.metadata;
+  const metadata = loadedMetadata.get(locale) ?? loadedMetadata.get(DEFAULT_APP_LANGUAGE);
+  if (!metadata) {
+    throw new Error(`Missing ${DEFAULT_APP_LANGUAGE} localization metadata`);
+  }
   syncDocumentLocale(locale, metadata);
   await i18n.changeLanguage(locale);
   syncDocumentTitle();
@@ -97,6 +101,13 @@ export function translate(key: string, options?: TOptions): string {
  * This is a migration bridge for shared primitives that still receive legacy
  * English labels as props. New UI should call t("semantic.key") directly.
  */
-export function findEnglishMessageKey(message: string): string | undefined {
-  return englishMessageKeys.get(message);
+export function findEnglishMessageKey(message: string, locale?: string): string | undefined {
+  const keys = englishMessageKeys.get(message);
+  if (!keys?.length) return undefined;
+  if (!locale || locale === DEFAULT_APP_LANGUAGE) return keys[0];
+
+  return (
+    keys.find((key) => typeof i18n.getResource(locale, "translation", key) === "string") ??
+    keys[0]
+  );
 }

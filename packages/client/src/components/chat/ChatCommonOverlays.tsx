@@ -1,6 +1,6 @@
 import { Suspense, lazy, type ComponentProps, type CSSProperties } from "react";
 import type { SpriteSide } from "@marinara-engine/shared";
-import { useTranslation } from "react-i18next";
+import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
 import { ChevronUp, ChevronDown, Layers, ListChecks, Loader2, Trash2, X } from "lucide-react";
 import type { PeekPromptData } from "./chat-area.types";
 import type { LocalSpriteVisualSettings } from "./local-sprite-visual-settings";
@@ -8,6 +8,10 @@ import type { ChatImage } from "../../hooks/use-gallery";
 import { cn } from "../../lib/utils";
 import { Modal } from "../ui/Modal";
 import { NEUTRAL_PANEL_SHELL } from "../ui/neutral-surface-styles";
+import {
+  getChatFloatingPanelDesktopRight,
+  type ChatToolbarFloatingPanelAnchor,
+} from "./ChatToolbarControls";
 
 const loadChatSettingsDrawer = async () => {
   const module = await import("./ChatSettingsDrawer");
@@ -39,7 +43,7 @@ const PeekPromptModal = lazy(async () => {
 });
 
 type ChatData = ComponentProps<typeof ChatSettingsDrawer>["chat"];
-export type ChatFloatingPanelAnchor = { right: number; top: number } | null;
+export type ChatFloatingPanelAnchor = ChatToolbarFloatingPanelAnchor;
 export type ChatSettingsInitialSection = ComponentProps<typeof ChatSettingsDrawer>["initialSection"];
 
 type SharedSceneSettingsProps = {
@@ -204,6 +208,7 @@ function MultiSelectBar({
 }
 
 function ChatSettingsLoadingFallback({ anchor }: { anchor: ChatFloatingPanelAnchor }) {
+  const { t: localizeUi } = useUiTranslation();
   const anchoredOnMobile = !!anchor && typeof window !== "undefined" && window.innerWidth < 768;
   const panelStyle: CSSProperties | undefined = anchor
     ? anchoredOnMobile
@@ -214,7 +219,7 @@ function ChatSettingsLoadingFallback({ anchor }: { anchor: ChatFloatingPanelAnch
           top: `${anchor.top}px`,
           width: `min(34rem, calc(100vw - ${anchor.right}px - 0.75rem))`,
         }
-      : { right: `${anchor.right}px`, top: `${anchor.top}px` }
+      : { right: getChatFloatingPanelDesktopRight(anchor), top: `${anchor.top}px` }
     : undefined;
 
   return (
@@ -224,12 +229,8 @@ function ChatSettingsLoadingFallback({ anchor }: { anchor: ChatFloatingPanelAnch
       style={panelStyle}
     >
       <div className="mari-chrome-text-strong flex shrink-0 items-center gap-2 border-b border-[var(--marinara-chat-chrome-panel-divider)] px-4 py-3 text-sm font-semibold">
-        <Loader2 size="0.875rem" className="mari-chrome-accent-icon animate-spin" />
-        Chat Settings
-      </div>
-      <div className="mari-chrome-text-muted flex min-h-32 items-center justify-center px-4 py-8 text-xs">
-        Loading settings...
-      </div>
+        <Loader2 size="0.875rem" className="mari-chrome-accent-icon animate-spin" />{localizeUi("chat.toolbar.settings")}</div>
+      <div className="mari-chrome-text-muted flex min-h-32 items-center justify-center px-4 py-8 text-xs">{localizeUi("ui.chat.chatsettingsloadingfallback.loadingSettings")}</div>
     </div>
   );
 }

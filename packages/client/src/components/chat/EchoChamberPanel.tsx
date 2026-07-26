@@ -29,6 +29,7 @@ import {
   resolveEchoChamberPersistedBaseline,
 } from "../../lib/echo-chamber-queue";
 import { resolveEchoChamberTopLayout } from "../../lib/echo-chamber-layout";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 const NAME_COLORS = [
   "text-red-400",
@@ -186,6 +187,7 @@ function CornerPicker({ current, onChange }: { current: EchoChamberSide; onChang
 }
 
 export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelProps) {
+  const { t: localizeUi } = useUiTranslation();
   const echoChamberSide = useUIStore((s) => s.echoChamberSide);
   const setEchoChamberSide = useUIStore((s) => s.setEchoChamberSide);
   const echoChamberOpen = useUIStore((s) => s.echoChamberOpen);
@@ -504,15 +506,13 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
           "text-[var(--marinara-chat-chrome-button-text)] transition-colors hover:text-[var(--marinara-chat-chrome-button-text-hover)]",
         )}
         style={collapsedStyle}
-        title="Open Echo Chamber"
+        title={localizeUi("ui.chat.echochamberpanel.openEchoChamber")}
       >
         <span className="relative flex h-1.5 w-1.5 shrink-0">
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-60" />
           <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-red-500" />
         </span>
-        <MessageCircle size="0.75rem" />
-        Echo
-        {visibleMessages.length > 0 && (
+        <MessageCircle size="0.75rem" />{localizeUi("ui.chat.echochamberpanel.echo")}{visibleMessages.length > 0 && (
           <span className="rounded-full bg-[var(--marinara-chat-chrome-highlight-bg)] px-1.5 py-0.5 text-[0.5625rem] font-normal text-[var(--marinara-chat-chrome-panel-muted)]">
             {visibleMessages.length}
           </span>
@@ -547,9 +547,7 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
           <span className="relative flex h-1.5 w-1.5">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-60" />
             <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-red-500" />
-          </span>
-          Echo
-          {visibleMessages.length > 0 && (
+          </span>{localizeUi("ui.chat.echochamberpanel.echo")}{visibleMessages.length > 0 && (
             <span className="ml-0.5 text-[0.5625rem] font-normal text-[var(--marinara-chat-chrome-panel-muted)]">
               {visibleMessages.length}
             </span>
@@ -559,7 +557,7 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
           <button
             onClick={toggleEchoChamber}
             className="rounded p-0.5 text-[var(--marinara-chat-chrome-button-text)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]"
-            title="Collapse Echo Chamber"
+            title={localizeUi("ui.chat.echochamberpanel.collapseEchoChamber")}
           >
             <ChevronDown size="0.5625rem" />
           </button>
@@ -569,7 +567,7 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
               void retryAgents(activeChatId, ["echo-chamber"]);
             }}
             disabled={echoRetryBusy}
-            title={echoRetryBusy ? "A reply or agent is already running" : "Re-run Echo Chamber"}
+            title={echoRetryBusy ?localizeUi("ui.chat.echochamberpanel.aReplyOrAgentIsAlreadyRunning") :localizeUi("ui.chat.echochamberpanel.reRunEchoChamber")}
             className="rounded p-0.5 text-[var(--marinara-chat-chrome-button-text)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <RefreshCw size="0.5625rem" className={echoRetryBusy ? "animate-spin" : ""} />
@@ -588,7 +586,7 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
                 }
               }}
               className="rounded p-0.5 text-[var(--marinara-chat-chrome-button-text)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]"
-              title="Clear messages"
+              title={localizeUi("ui.chat.echochamberpanel.clearMessages")}
             >
               <Trash2 size="0.5625rem" />
             </button>
@@ -603,9 +601,7 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
       {/* Scrollable message area */}
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-2 pb-1.5 scrollbar-thin">
         {visibleMessages.length === 0 ? (
-          <p className="py-1.5 text-center text-[0.625rem] text-[var(--marinara-chat-chrome-panel-muted)]">
-            Waiting for reactions…
-          </p>
+          <p className="py-1.5 text-center text-[0.625rem] text-[var(--marinara-chat-chrome-panel-muted)]">{localizeUi("ui.chat.echochamberpanel.waitingForReactions")}</p>
         ) : (
           <div className="flex flex-col gap-0.5">
             {visibleMessages.map((msg, i) => (
@@ -624,8 +620,8 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
       </div>
       <button
         type="button"
-        aria-label="Resize Echo Chamber"
-        title="Drag to resize Echo Chamber"
+        aria-label={localizeUi("ui.chat.echochamberpanel.resizeEchoChamber")}
+        title={localizeUi("ui.chat.echochamberpanel.dragToResizeEchoChamber")}
         className={cn(
           "absolute z-20 flex h-7 w-7 touch-none items-center justify-center rounded-md border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-[var(--marinara-chat-chrome-button-text)] shadow-md transition-colors hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)] md:h-6 md:w-6",
           resizeFromLeft ? "-left-2 cursor-nesw-resize" : "-right-2 cursor-nwse-resize",

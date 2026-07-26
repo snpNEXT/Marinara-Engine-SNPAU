@@ -16,11 +16,17 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { toast } from "sonner";
 import { useGameModeStore } from "../../stores/game-mode.store";
 import { useGameAssetStore } from "../../stores/game-asset.store";
-import { gameAssetKeys, useGameAssetManifest, type GameAssetManifest } from "../../hooks/use-game-assets";
+import {
+  gameAssetKeys,
+  useGameAssetManifest,
+  type GameAssetEntry,
+  type GameAssetManifest,
+} from "../../hooks/use-game-assets";
 import { cleanNpcAvatarDisplayName, isSameNpcAvatarResource, normalizeNpcAvatarName } from "../../lib/game-npc-avatar";
 import { useChatStore } from "../../stores/chat.store";
 import { useUIStore } from "../../stores/ui.store";
@@ -46,6 +52,7 @@ import {
   useUpdateReputation,
   useTransitionGameState,
   useRecruitPartyMember,
+  useRegenerateCharacterSheet,
   useRemovePartyMember,
   gameKeys,
   patchChatMetadata,
@@ -69,6 +76,7 @@ import {
 } from "../../hooks/use-chats";
 import { useConnections } from "../../hooks/use-connections";
 import { useGenerate } from "../../hooks/use-generate";
+import { useBackdropDismiss } from "../../hooks/use-backdrop-dismiss";
 import { useGenerateSpatialMapDraft, useSpatialContext } from "../../hooks/use-spatial-context";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { spriteKeys, type SpriteInfo } from "../../hooks/use-characters";
@@ -105,6 +113,7 @@ import { characterNamesMatch, findNamedEntry } from "../../lib/game-character-na
 import { normalizeGameSegmentEdit, serializeGameSegmentEdit, type GameSegmentEdit } from "../../lib/game-segment-edits";
 import { findReplayStoryboardKeyframe } from "../../lib/game-storyboard-keyframes";
 import { useSceneAnalysis } from "../../hooks/use-scene-analysis";
+import { useTTSConfig } from "../../hooks/use-tts";
 import { useSidecarStore } from "../../stores/sidecar.store";
 import { parsePartyDialogue } from "../../lib/party-dialogue-parser";
 import { dispatchSpotifySceneTrackChange } from "../../lib/spotify-playback-events";
@@ -131,6 +140,7 @@ import type {
   HudWidget,
   SceneSpotifyTrackCandidate,
   SceneSpotifyTrackSelection,
+  SceneAnalysis,
   SpatialMapGroundingMode,
   SpatialMapDraftSize,
   PendingSpatialTransition,
@@ -235,6 +245,14 @@ type GameAssetGenerationPayload = {
     selfie?: { width: number; height: number };
   };
   promptOverrides?: GameImagePromptOverride[];
+};
+
+type GameAssetGenerationPreview = {
+  items: GameImagePromptReviewItem[];
+  resolvedIllustration?: {
+    prompt: string;
+    characters?: string[];
+  };
 };
 
 type GameSceneVideoPayload = {
@@ -494,6 +512,7 @@ function getConfiguredGameAssetImageSizes(): NonNullable<GameAssetGenerationPayl
 const GAME_ASSET_GENERATION_TIMEOUT_MS = 240_000;
 const GAME_ASSET_PREVIEW_TIMEOUT_MS = 180_000;
 const GAME_ASSET_PROMPT_REVIEW_TIMEOUT_MS = 180_000;
+const GAME_AUDIO_GENERATION_TIMEOUT_MS = 190_000;
 const SCENE_VIDEO_GENERATION_TIMEOUT_MS = 1_800_000;
 const IMAGE_PROMPT_REVIEW_TIMED_OUT = Symbol("IMAGE_PROMPT_REVIEW_TIMED_OUT");
 
@@ -2046,6 +2065,7 @@ function GameVolumeMixer({
   className,
   style,
 }: GameVolumeMixerProps) {
+  const { t: localizeUi } = useUiTranslation();
   const rows = [
     { id: "master", label: "Master", value: masterVolume, onChange: onMasterVolumeChange },
     { id: "music", label: "Music", value: musicVolume, onChange: onMusicVolumeChange },
@@ -2061,9 +2081,7 @@ function GameVolumeMixer({
       style={style}
     >
       <div className="mb-2 flex items-center justify-between gap-3 border-b border-[var(--marinara-chat-chrome-panel-divider)] pb-2">
-        <span className="text-[0.6875rem] font-semibold uppercase text-[var(--marinara-chat-chrome-panel-muted)]">
-          Volume
-        </span>
+        <span className="text-[0.6875rem] font-semibold uppercase text-[var(--marinara-chat-chrome-panel-muted)]">{localizeUi("game.toolbar.volume")}</span>
         <div className="flex items-center gap-1">
           <button
             type="button"
@@ -2074,12 +2092,12 @@ function GameVolumeMixer({
                 ? "bg-red-500/30 text-red-300 hover:bg-red-500/50"
                 : "bg-[var(--marinara-chat-chrome-button-bg)] text-[var(--marinara-chat-chrome-button-text)] ring-1 ring-[var(--marinara-chat-chrome-button-border)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]",
             )}
-            title={audioMuted ? "Unmute" : "Mute"}
-            aria-label={audioMuted ? "Unmute" : "Mute"}
+            title={audioMuted ?localizeUi("ui.game.gamevolumemixer.unmute") :localizeUi("ui.game.gamevolumemixer.mute")}
+            aria-label={audioMuted ?localizeUi("ui.game.gamevolumemixer.unmute") :localizeUi("ui.game.gamevolumemixer.mute")}
           >
             {audioMuted ? <VolumeX size={12} /> : <Volume2 size={12} />}
           </button>
-          <button type="button" onClick={onClose} className={ROLEPLAY_POPOVER_CLOSE_BUTTON} aria-label="Close volume">
+          <button type="button" onClick={onClose} className={ROLEPLAY_POPOVER_CLOSE_BUTTON} aria-label={localizeUi("ui.game.gamevolumemixer.closeVolume")}>
             <X size={ROLEPLAY_POPOVER_CLOSE_ICON_SIZE} />
           </button>
         </div>
@@ -2334,6 +2352,8 @@ function GameSurfaceComponent({
   selectedMessageIds,
   isMessagesLoading,
 }: GameSurfaceProps) {
+  const { t: localizeUi } = useUiTranslation();
+  const { t } = useTranslation();
   useRenderTimer("game-surface"); // [#3104 diagnostic]
   const backgroundIllustration = useChatStore((state) =>
     state.backgroundIllustrationChatIds.has(activeChatId),
@@ -2415,6 +2435,11 @@ function GameSurfaceComponent({
   const useCustomGameMusic = gameMusicDjEnabled && musicPlayerSource === "custom";
   const useJsonMusicDjGameMusic = useYoutubeGameMusic || useCustomGameMusic;
   const useMusicDjPlayerMusic = useSpotifyGameMusic || useJsonMusicDjGameMusic;
+  const { data: ttsConfig } = useTTSConfig();
+  const generateGameSoundEffects =
+    ttsConfig?.source === "elevenlabs" && ttsConfig.elevenLabsGameSoundEffects === true;
+  const generateGameMusic =
+    ttsConfig?.source === "elevenlabs" && ttsConfig.elevenLabsGameMusic === true && !useMusicDjPlayerMusic;
   const activeGameMetaId = typeof chatMeta.gameId === "string" ? chatMeta.gameId : "";
   const sceneRuntimeScopeKey = `${activeChatId}:${activeGameMetaId}`;
   const { data: connectionsList } = useConnections();
@@ -2573,19 +2598,85 @@ function GameSurfaceComponent({
     [activeChatId, queryClient],
   );
   const { data: assetManifest, refetch: fetchManifest } = useGameAssetManifest();
+  const generatedAudioAssetsRef = useRef<Record<string, GameAssetEntry>>({});
   const currentBackground = useGameAssetStore((s) => s.currentBackground);
   const gameAssetExcludedFolders = useMemo(
     () => parseGameAssetExcludedFolders(chatMeta.gameAssetSelection),
     [chatMeta.gameAssetSelection],
   );
   const scopedAssetMap = useMemo(
-    () => filterGameAssetMap(assetManifest?.assets ?? null, gameAssetExcludedFolders),
+    () => ({
+      ...(filterGameAssetMap(assetManifest?.assets ?? null, gameAssetExcludedFolders) ?? {}),
+      ...generatedAudioAssetsRef.current,
+    }),
     [assetManifest?.assets, gameAssetExcludedFolders],
   );
   const getScopedAssetMap = useCallback(() => {
     const manifest = queryClient.getQueryData<GameAssetManifest>(gameAssetKeys.manifest());
-    return filterGameAssetMap(manifest?.assets ?? null, gameAssetExcludedFolders);
+    return {
+      ...(filterGameAssetMap(manifest?.assets ?? null, gameAssetExcludedFolders) ?? {}),
+      ...generatedAudioAssetsRef.current,
+    };
   }, [gameAssetExcludedFolders, queryClient]);
+  const generateGameAudioAsset = useCallback(
+    async (kind: "sfx" | "music", prompt: string): Promise<string | null> => {
+      const category = kind === "sfx" ? "sfx" : "music";
+      if (prompt.startsWith(`${category}:generated:`)) return prompt;
+      try {
+        const generated = await withTimeout(
+          (signal) => api.post<{ tag: string; path: string }>("/tts/game-audio", { kind, prompt }, { signal }),
+          GAME_AUDIO_GENERATION_TIMEOUT_MS,
+        );
+        generatedAudioAssetsRef.current[generated.tag] = {
+          tag: generated.tag,
+          category,
+          subcategory: "generated",
+          name: generated.tag.split(":").at(-1) ?? generated.tag,
+          path: generated.path,
+          ext: ".mp3",
+        };
+        return generated.tag;
+      } catch (error) {
+        console.warn(`[game-audio] Failed to generate ${kind}:`, error);
+        return null;
+      }
+    },
+    [],
+  );
+  const materializeGeneratedGameAudio = useCallback(
+    async (input: SceneAnalysis): Promise<SceneAnalysis> => {
+      if (!generateGameSoundEffects && !generateGameMusic) return input;
+      const result: SceneAnalysis = {
+        ...input,
+        segmentEffects: input.segmentEffects?.map((effect) => ({
+          ...effect,
+          sfx: effect.sfx ? [...effect.sfx] : undefined,
+        })),
+      };
+      if (generateGameMusic && result.music) {
+        result.music = await generateGameAudioAsset("music", result.music);
+      }
+      if (result.segmentEffects?.length) {
+        result.segmentEffects = await Promise.all(
+          result.segmentEffects.map(async (effect) => {
+            const next = { ...effect };
+            if (generateGameMusic && next.music) {
+              next.music = (await generateGameAudioAsset("music", next.music)) ?? undefined;
+            }
+            if (generateGameSoundEffects && next.sfx?.length) {
+              const generated = await Promise.all(
+                next.sfx.map((prompt) => generateGameAudioAsset("sfx", prompt)),
+              );
+              next.sfx = generated.filter((tag): tag is string => !!tag);
+            }
+            return next;
+          }),
+        );
+      }
+      return result;
+    },
+    [generateGameAudioAsset, generateGameMusic, generateGameSoundEffects],
+  );
   const audioMuted = useGameAssetStore((s) => s.audioMuted);
 
   useEffect(() => {
@@ -2597,12 +2688,14 @@ function GameSurfaceComponent({
   const [sessionPanelOpen, setSessionPanelOpen] = useState(false);
   const [sessionPanelTab, setSessionPanelTab] = useState<"history" | "journal">("history");
   const [galleryOpen, setGalleryOpen] = useState(false);
-  const [galleryAnchor, setGalleryAnchor] = useState<{ right: number; top: number } | null>(null);
+  const [galleryAnchor, setGalleryAnchor] = useState<ChatToolbarFloatingPanelAnchor>(null);
   const [mobileRetryMenuAnchor, setMobileRetryMenuAnchor] = useState<ChatToolbarFloatingPanelAnchor>(null);
   const [mobileSessionPanelAnchor, setMobileSessionPanelAnchor] = useState<ChatToolbarFloatingPanelAnchor>(null);
   const [mobileVolumePopoverAnchor, setMobileVolumePopoverAnchor] = useState<ChatToolbarFloatingPanelAnchor>(null);
   const [mobileGameAssetsPanelAnchor, setMobileGameAssetsPanelAnchor] = useState<ChatToolbarFloatingPanelAnchor>(null);
   const [combatLogsOpen, setCombatLogsOpen] = useState(false);
+  const closeCombatLogs = useCallback(() => setCombatLogsOpen(false), []);
+  const combatLogsBackdropDismiss = useBackdropDismiss(closeCombatLogs);
   const [spotifyRetryPending, setSpotifyRetryPending] = useState(false);
   const [youtubeRetryPending, setYoutubeRetryPending] = useState(false);
   const combatLogScrolledRef = useRef(false);
@@ -2637,12 +2730,13 @@ function GameSurfaceComponent({
   }, [closeLocalFloatingWindows, onCloseSettings]);
   const handleOpenGalleryPanel = useCallback(
     (event?: ReactMouseEvent<HTMLElement>) => {
+      const nextOpen = !galleryOpen;
       closeLocalFloatingWindows();
       onCloseSettings();
-      setGalleryAnchor(readFloatingPanelAnchor(event));
-      setGalleryOpen(true);
+      setGalleryAnchor(nextOpen ? readFloatingPanelAnchor(event) : null);
+      setGalleryOpen(nextOpen);
     },
-    [closeLocalFloatingWindows, onCloseSettings, readFloatingPanelAnchor],
+    [closeLocalFloatingWindows, galleryOpen, onCloseSettings, readFloatingPanelAnchor],
   );
   const handleOpenSettingsPanel = useCallback(
     (event?: ReactMouseEvent<HTMLElement>) => {
@@ -2765,6 +2859,7 @@ function GameSurfaceComponent({
   const appliedCombatElementMessageIdsRef = useRef<Set<string>>(new Set());
   const interruptedInteractiveCommandKeysRef = useRef<Set<string>>(new Set());
   const recruitPartyMember = useRecruitPartyMember();
+  const regenerateCharacterSheet = useRegenerateCharacterSheet();
   const removePartyMember = useRemovePartyMember();
   const availableMaps = useMemo(() => (maps.length > 0 ? maps : currentMap ? [currentMap] : []), [currentMap, maps]);
   const viewedMap = useMemo(() => {
@@ -3219,7 +3314,7 @@ function GameSurfaceComponent({
         .map((entry) => entry.update);
       if (effects.length === 0 && inventoryUpdates.length === 0) return;
 
-      const assetMap = scopedAssetMap;
+      const assetMap = getScopedAssetMap();
       if (effects.length > 0) {
         appliedSegmentsRef.current.add(segmentIndex);
         for (const fx of effects) {
@@ -3258,7 +3353,7 @@ function GameSurfaceComponent({
     [
       pendingSegmentEffects,
       pendingInventorySegmentUpdates,
-      scopedAssetMap,
+      getScopedAssetMap,
       applyInventoryUpdates,
       playDirections,
       useMusicDjPlayerMusic,
@@ -3869,8 +3964,11 @@ function GameSurfaceComponent({
     chatMeta.enableSpriteGeneration === true &&
     typeof chatMeta.gameImageConnectionId === "string" &&
     chatMeta.gameImageConnectionId.trim().length > 0;
+  const gameSceneVideosEnabled = chatMeta.gameSceneVideosEnabled !== false;
   const gameVideoGenerationEnabled =
-    typeof chatMeta.gameVideoConnectionId === "string" && chatMeta.gameVideoConnectionId.trim().length > 0;
+    gameSceneVideosEnabled &&
+    typeof chatMeta.gameVideoConnectionId === "string" &&
+    chatMeta.gameVideoConnectionId.trim().length > 0;
   const gameImageAutoGenerationEnabled =
     gameImageGenerationEnabled && chatMeta.gameImageAutoGenerationEnabled !== false;
   const gameStoryboardBackgroundVisualEnabled = gameStoryboardViewerDisplayMode === "background";
@@ -3878,6 +3976,10 @@ function GameSurfaceComponent({
   const gameBackgroundAutoGenerationEnabled = gameImageAutoGenerationEnabled && !gameStoryboardBackgroundVisualEnabled;
   const gameStoryboardAutoIllustrationsEnabled = chatMeta.gameStoryboardAutoIllustrationsEnabled === true;
   const gameStoryboardAutoAnimationsEnabled = chatMeta.gameStoryboardAutoGenerationEnabled === true;
+  const gameStoryboardsEnabled =
+    chatMeta.gameStoryboardsEnabled === true ||
+    (chatMeta.gameStoryboardsEnabled !== false &&
+      (gameStoryboardAutoIllustrationsEnabled || gameStoryboardAutoAnimationsEnabled));
   const gameStoryboardAutoGenerationEnabled =
     gameStoryboardAutoIllustrationsEnabled || gameStoryboardAutoAnimationsEnabled;
   const gameStoryboardKeyframeCount = normalizeGameStoryboardKeyframeCount(chatMeta.gameStoryboardKeyframeCount);
@@ -4038,12 +4140,12 @@ function GameSurfaceComponent({
         await queryClient.invalidateQueries({ queryKey: ["spotify", "player"] });
       } catch (error) {
         console.warn("[spotify/game] Failed to play scene track:", error);
-        toast.error(error instanceof Error ? error.message : "Spotify scene music failed.");
+        toast.error(error instanceof Error ? error.message :localizeUi("ui.game.gamesurfacecomponent.spotifySceneMusicFailed"));
       } finally {
         setSpotifyRetryPending(false);
       }
     },
-    [activeChatId, queryClient, useSpotifyGameMusic],
+    [activeChatId, queryClient, useSpotifyGameMusic, localizeUi],
   );
 
   const hasCombatResultAfterMessage = useCallback(
@@ -4789,7 +4891,9 @@ function GameSurfaceComponent({
       currentState: sceneAnalysisState,
       turnNumber: Math.max(1, assistantTurnCount),
       availableBackgrounds: bgTags,
-      availableSfx: sfxTags,
+      availableSfx: generateGameSoundEffects ? [] : sfxTags,
+      generateSoundEffects: generateGameSoundEffects,
+      generateMusic: generateGameMusic,
       activeWidgets: hudWidgets,
       trackedNpcs: npcs,
       characterNames: sceneWrapCharacterNames,
@@ -5024,7 +5128,7 @@ function GameSurfaceComponent({
   const openImagePromptReview = useCallback(
     (items: GameImagePromptReviewItem[], mediaType: "image" | "video" = "image") => {
       if (imagePromptReviewResolveRef.current) {
-        toast.error("Finish or cancel the current media prompt review first.");
+        toast.error(localizeUi("ui.game.gamesurfacecomponent.finishOrCancelTheCurrentMediaPromptReviewFirst"));
         return Promise.resolve(null);
       }
       return new Promise<GameImagePromptOverride[] | null>((resolve) => {
@@ -5034,7 +5138,7 @@ function GameSurfaceComponent({
         setImagePromptReviewItems(items);
       });
     },
-    [],
+    [localizeUi],
   );
 
   const closeImagePromptReview = useCallback((overrides: GameImagePromptOverride[] | null) => {
@@ -5100,14 +5204,14 @@ function GameSurfaceComponent({
       };
 
       if (options?.allowPromptReview !== false && useUIStore.getState().reviewImagePromptsBeforeSend) {
-        let preview: { items: GameImagePromptReviewItem[] } | undefined;
+        let preview: GameAssetGenerationPreview | undefined;
         try {
           preview = await withTimeout(
             (signal) =>
-              api.post<{ items: GameImagePromptReviewItem[] }>("/game/generate-assets/preview", payload, { signal }),
+              api.post<GameAssetGenerationPreview>("/game/generate-assets/preview", payload, { signal }),
             GAME_ASSET_PREVIEW_TIMEOUT_MS,
             () => {
-              toast.error("Image prompt preview timed out. Continuing with the default prompts.");
+              toast.error(localizeUi("ui.game.gamesurfacecomponent.imagePromptPreviewTimedOutContinuingWithTheDefault"));
             },
           );
         } catch (error) {
@@ -5118,6 +5222,15 @@ function GameSurfaceComponent({
           }
         }
 
+        if (preview.resolvedIllustration && payload.illustration) {
+          payload.illustration = {
+            ...payload.illustration,
+            prompt: preview.resolvedIllustration.prompt,
+            characters: preview.resolvedIllustration.characters,
+          };
+          payload.illustrationNarration = undefined;
+        }
+
         if (preview.items.length > 0) {
           let overrides: GameImagePromptOverride[] | null | typeof IMAGE_PROMPT_REVIEW_TIMED_OUT | undefined;
           try {
@@ -5126,7 +5239,7 @@ function GameSurfaceComponent({
               GAME_ASSET_PROMPT_REVIEW_TIMEOUT_MS,
               () => {
                 closeImagePromptReview(null);
-                toast.error("Image prompt review timed out. Continuing with the default prompts.");
+                toast.error(localizeUi("ui.game.gamesurfacecomponent.imagePromptReviewTimedOutContinuingWithTheDefault"));
               },
             );
           } catch (error) {
@@ -5149,7 +5262,7 @@ function GameSurfaceComponent({
         (signal) => api.post<GameAssetGenerationResult>("/game/generate-assets", payload, { signal }),
         GAME_ASSET_GENERATION_TIMEOUT_MS,
         () => {
-          toast.error("Image generation timed out. The scene will continue without generated assets.");
+          toast.error(localizeUi("ui.game.gamesurfacecomponent.imageGenerationTimedOutTheSceneWillContinueWithout"));
         },
       );
     },
@@ -5158,7 +5271,7 @@ function GameSurfaceComponent({
       gameImageIncludeCharacterAppearance,
       gameImageUseAvatarReferences,
       gameStoryboardBackgroundVisualEnabled,
-      openImagePromptReview,
+      openImagePromptReview, localizeUi,
     ],
   );
 
@@ -5181,9 +5294,10 @@ function GameSurfaceComponent({
   );
 
   async function applySceneResult(
-    result: import("@marinara-engine/shared").SceneAnalysis,
+    incomingResult: SceneAnalysis,
     msg: { id: string; content?: string | null },
   ) {
+    const result = await materializeGeneratedGameAudio(incomingResult);
     setSceneAnalysisFailed(false);
     // NOTE: Game state transitions are owned exclusively by the GM model via [state: ...] tags.
     // The scene model no longer emits stateChange to avoid conflicting state flips.
@@ -5489,7 +5603,7 @@ function GameSurfaceComponent({
           options?.showSuccessToast &&
           (res.generatedBackground || res.generatedIllustration || res.generatedNpcAvatars?.length)
         ) {
-          toast.success("Missing assets regenerated.", { duration: 1800 });
+          toast.success(localizeUi("ui.game.gamesurfacecomponent.missingAssetsRegenerated"), { duration: 1800 });
         }
 
         return res;
@@ -5499,7 +5613,7 @@ function GameSurfaceComponent({
         return null;
       }
     },
-    [applyGeneratedAssets, gameImageGenerationEnabled, runGameAssetGeneration],
+    [applyGeneratedAssets, gameImageGenerationEnabled, runGameAssetGeneration, localizeUi],
   );
 
   const retryAssetGeneration = useCallback(
@@ -5514,11 +5628,11 @@ function GameSurfaceComponent({
   const handleManualSceneBackground = useCallback(async () => {
     if (!activeChatId || manualBackgroundGenerating) return;
     if (gameStoryboardBackgroundVisualEnabled) {
-      toast.error("Scene background generation is disabled while storyboard visuals are shown as the background.");
+      toast.error(localizeUi("ui.game.gamesurfacecomponent.sceneBackgroundGenerationIsDisabledWhileStoryboardVisualsAre"));
       return;
     }
     if (!gameBackgroundGenerationEnabled) {
-      toast.error("Enable Game Illustrator and choose an image connection first.");
+      toast.error(localizeUi("ui.game.gamesurfacecomponent.enableGameIllustratorAndChooseAnImageConnectionFirst"));
       return;
     }
 
@@ -5539,7 +5653,7 @@ function GameSurfaceComponent({
       .slice(0, 500);
 
     if (!sceneDescription.trim()) {
-      toast.error("The GM needs a current scene before Illustrator can draw a background.");
+      toast.error(localizeUi("ui.game.gamesurfacecomponent.theGmNeedsACurrentSceneBeforeIllustratorCan"));
       return;
     }
 
@@ -5562,14 +5676,14 @@ function GameSurfaceComponent({
       const result = await runGameAssetGeneration(assetPayload, { allowPromptReview: true });
       setPendingAssetGeneration(null);
       if (!result?.generatedBackground) {
-        toast.error("Illustrator did not return a background for this scene.");
+        toast.error(localizeUi("ui.game.gamesurfacecomponent.illustratorDidNotReturnABackgroundForThisScene"));
         return;
       }
       await applyGeneratedAssets(result);
-      toast.success("Background generated.", { duration: 1800 });
+      toast.success(localizeUi("ui.game.gamesurfacecomponent.backgroundGenerated"), { duration: 1800 });
     } catch (error) {
       setAssetGenerationFailed(true);
-      toast.error(error instanceof Error ? error.message : "Background generation failed.");
+      toast.error(error instanceof Error ? error.message :localizeUi("ui.game.gamesurfacecomponent.backgroundGenerationFailed"));
     } finally {
       setManualBackgroundGenerating(false);
       setAssetGenerationBlocksScene(false);
@@ -5587,20 +5701,20 @@ function GameSurfaceComponent({
     gameSnapshot?.weather,
     manualBackgroundGenerating,
     metaTime,
-    runGameAssetGeneration,
+    runGameAssetGeneration, localizeUi,
   ]);
 
   const handleManualSceneIllustration = useCallback(async () => {
     if (!activeChatId) return;
     if (!gameImageGenerationEnabled) {
-      toast.error("Enable Game Illustrator and choose an image connection first.");
+      toast.error(localizeUi("ui.game.gamesurfacecomponent.enableGameIllustratorAndChooseAnImageConnectionFirst"));
       return;
     }
 
     const msg = latestAssistantMsgRef.current;
     const fullNarration = msg?.content ? parseGmTags(msg.content).cleanContent.trim() : "";
     if (!fullNarration) {
-      toast.error("The GM needs to write a scene before Illustrator can draw it.");
+      toast.error(localizeUi("ui.game.gamesurfacecomponent.theGmNeedsToWriteASceneBeforeIllustrator"));
       return;
     }
     const promptNarration = fullNarration.slice(0, 5000);
@@ -5656,13 +5770,13 @@ function GameSurfaceComponent({
       if (!result) return;
       await applyGeneratedAssets(result, { applyBackgroundToScene: false, applyIllustrationToScene: false });
       if (result.generatedIllustration) {
-        toast.success("Scene illustrated.", { duration: 1800 });
+        toast.success(localizeUi("ui.game.gamesurfacecomponent.sceneIllustrated"), { duration: 1800 });
       } else {
-        toast.error("Illustrator did not return an image for this scene.");
+        toast.error(localizeUi("ui.game.gamesurfacecomponent.illustratorDidNotReturnAnImageForThisScene"));
       }
     } catch (error) {
       setAssetGenerationFailed(true);
-      toast.error(error instanceof Error ? error.message : "Scene illustration failed.");
+      toast.error(error instanceof Error ? error.message :localizeUi("ui.game.gamesurfacecomponent.sceneIllustrationFailed"));
     } finally {
       setAssetGenerationBlocksScene(false);
     }
@@ -5679,21 +5793,21 @@ function GameSurfaceComponent({
     metaTime,
     npcs,
     runGameAssetGeneration,
-    sceneWrapCharacterNames,
+    sceneWrapCharacterNames, localizeUi,
   ]);
 
   const handleGenerateSceneVideo = useCallback(
     async (source?: { galleryImageId?: string }) => {
       if (!activeChatId || sceneVideoGenerating) return;
       if (!gameVideoGenerationEnabled) {
-        toast.error("Choose a Video Generation connection in Game Settings first.");
+        toast.error(localizeUi("ui.game.gamesurfacecomponent.chooseAVideoGenerationConnectionInGameSettingsFirst"));
         return;
       }
       const galleryImageId = source?.galleryImageId?.trim();
       const illustrationTag =
         typeof chatMeta.gameLastIllustrationTag === "string" ? chatMeta.gameLastIllustrationTag.trim() : "";
       if (!galleryImageId && !illustrationTag) {
-        toast.error("Generate a scene illustration before generating a scene video.");
+        toast.error(localizeUi("ui.game.gamesurfacecomponent.generateASceneIllustrationBeforeGeneratingASceneVideo"));
         return;
       }
 
@@ -5718,7 +5832,7 @@ function GameSurfaceComponent({
                 ),
               GAME_ASSET_PREVIEW_TIMEOUT_MS,
               () => {
-                toast.error("Video prompt preview timed out. Continuing with the default prompt.");
+                toast.error(localizeUi("ui.game.gamesurfacecomponent.videoPromptPreviewTimedOutContinuingWithTheDefault"));
               },
             );
           } catch (error) {
@@ -5748,7 +5862,7 @@ function GameSurfaceComponent({
                 GAME_ASSET_PROMPT_REVIEW_TIMEOUT_MS,
                 () => {
                   closeImagePromptReview(null);
-                  toast.error("Video prompt review timed out. Continuing with the default prompt.");
+                  toast.error(localizeUi("ui.game.gamesurfacecomponent.videoPromptReviewTimedOutContinuingWithTheDefault"));
                 },
               );
             } catch (error) {
@@ -5778,10 +5892,10 @@ function GameSurfaceComponent({
         void queryClient.invalidateQueries({ queryKey: ["gallery", "scene-videos", activeChatId] });
         void queryClient.invalidateQueries({ queryKey: ["game", "scene-videos", activeChatId] });
         await sceneVideosQuery.refetch();
-        toast.success("Scene video generated.", { duration: 1800 });
+        toast.success(localizeUi("ui.game.gamesurfacecomponent.sceneVideoGenerated"), { duration: 1800 });
       } catch (error) {
         setSceneVideoFailed(true);
-        toast.error(error instanceof Error ? error.message : "Scene video generation failed.");
+        toast.error(error instanceof Error ? error.message :localizeUi("ui.game.gamesurfacecomponent.sceneVideoGenerationFailed"));
       } finally {
         setImagePromptReviewSubmitting(false);
         setSceneVideoGenerating(false);
@@ -5795,7 +5909,7 @@ function GameSurfaceComponent({
       openImagePromptReview,
       queryClient,
       sceneVideoGenerating,
-      sceneVideosQuery,
+      sceneVideosQuery, localizeUi,
     ],
   );
 
@@ -5830,15 +5944,15 @@ function GameSurfaceComponent({
   const handleGenerateTurnStoryboard = useCallback(async () => {
     if (!activeChatId || storyboardGenerating || latestTurnStoryboardRendering || manualStoryboardReviewActive) return;
     if (!latestAssistantMsg?.id) {
-      toast.error("No GM narration turn is available to storyboard.");
+      toast.error(localizeUi("ui.game.gamesurfacecomponent.noGmNarrationTurnIsAvailableToStoryboard"));
       return;
     }
     if (isStreaming) {
-      toast.error("Wait for the current GM narration to finish before storyboarding this turn.");
+      toast.error(localizeUi("ui.game.gamesurfacecomponent.waitForTheCurrentGmNarrationToFinishBefore"));
       return;
     }
     if (!gameImageGenerationEnabled) {
-      toast.error("Choose an Illustrator image connection in Game Settings first.");
+      toast.error(localizeUi("ui.game.gamesurfacecomponent.chooseAnIllustratorImageConnectionInGameSettingsFirst"));
       return;
     }
 
@@ -5867,7 +5981,7 @@ function GameSurfaceComponent({
             () => previewTurnStoryboardPrompts.mutateAsync(payload),
             GAME_ASSET_PREVIEW_TIMEOUT_MS,
             () => {
-              toast.error("Storyboard prompt preview timed out. Continuing with the default prompts.");
+              toast.error(localizeUi("ui.game.gamesurfacecomponent.storyboardPromptPreviewTimedOutContinuingWithTheDefault"));
             },
           );
         } catch (error) {
@@ -5884,7 +5998,7 @@ function GameSurfaceComponent({
                 GAME_ASSET_PROMPT_REVIEW_TIMEOUT_MS,
                 () => {
                   closeImagePromptReview(null);
-                  toast.error("Storyboard prompt review timed out. Continuing with the default prompts.");
+                  toast.error(localizeUi("ui.game.gamesurfacecomponent.storyboardPromptReviewTimedOutContinuingWithTheDefault"));
                 },
               );
             } catch (error) {
@@ -5910,14 +6024,14 @@ function GameSurfaceComponent({
       const frameCount = result.storyboard.keyframes.length;
       toast.success(
         isGameTurnStoryboardRendering(result.storyboard)
-          ? `Storyboard planned with ${frameCount} keyframes; images are rendering.`
+          ?localizeUi("ui.game.gamesurfacecomponent.storyboardPlannedWithValue1KeyframesImagesAreRendering", { value1: frameCount })
           : result.storyboard.status === "partial"
-            ? `Storyboard saved with ${frameCount} keyframes; some media failed.`
-            : `Storyboard saved with ${frameCount} keyframes.`,
+            ?localizeUi("ui.game.gamesurfacecomponent.storyboardSavedWithValue1KeyframesSomeMediaFailed", { value1: frameCount })
+            :localizeUi("ui.game.gamesurfacecomponent.storyboardSavedWithValue1Keyframes", { value1: frameCount }),
         { duration: 2200 },
       );
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Storyboard generation failed.");
+      toast.error(error instanceof Error ? error.message :localizeUi("ui.game.gamesurfacecomponent.storyboardGenerationFailed"));
     } finally {
       setManualStoryboardReviewActive(false);
     }
@@ -5939,7 +6053,7 @@ function GameSurfaceComponent({
     openImagePromptReview,
     previewTurnStoryboardPrompts,
     applyGeneratedStoryboardToCache,
-    storyboardGenerating,
+    storyboardGenerating, localizeUi,
   ]);
 
   useEffect(() => {
@@ -6217,12 +6331,12 @@ function GameSurfaceComponent({
         regenerateMessageId: msg.id,
       });
       if (receivedContent) {
-        toast.success("Turn regenerated.", { duration: 1800 });
+        toast.success(localizeUi("ui.game.gamesurfacecomponent.turnRegenerated"), { duration: 1800 });
       }
     } catch {
       /* generate handles its own error toast */
     }
-  }, [activeChatId, generate, isStreaming]);
+  }, [activeChatId, generate, isStreaming, localizeUi]);
 
   const handleRetryYoutubeMusic = useCallback(async () => {
     if (!activeChatId || !useJsonMusicDjGameMusic || isStreaming || sceneAnalysis.isPending) return;
@@ -6237,17 +6351,17 @@ function GameSurfaceComponent({
       await retryAgents(activeChatId, ["spotify"]);
       toast.success(
         musicPlayerSource === "custom"
-          ? "Music DJ picking a fresh local track..."
-          : "Music DJ picking a fresh YouTube track...",
+          ?localizeUi("ui.game.gamesurfacecomponent.musicDjPickingAFreshLocalTrack")
+          :localizeUi("ui.game.gamesurfacecomponent.musicDjPickingAFreshYoutubeTrack"),
         { duration: 1800 },
       );
     } catch (error) {
       console.warn("[youtube/game] Retry failed:", error);
-      toast.error("Music DJ retry failed.");
+      toast.error(localizeUi("ui.game.gamesurfacecomponent.musicDjRetryFailed"));
     } finally {
       setYoutubeRetryPending(false);
     }
-  }, [activeChatId, isStreaming, musicPlayerSource, retryAgents, sceneAnalysis.isPending, useJsonMusicDjGameMusic]);
+  }, [activeChatId, isStreaming, musicPlayerSource, retryAgents, sceneAnalysis.isPending, useJsonMusicDjGameMusic, localizeUi]);
 
   const handleRetrySpotifyMusic = useCallback(async () => {
     if (!activeChatId || !useSpotifyGameMusic || isStreaming || sceneAnalysis.isPending) return;
@@ -6305,7 +6419,7 @@ function GameSurfaceComponent({
     try {
       const availableSpotifyTracks = await fetchSpotifySceneCandidates(tags.cleanContent, sceneContext);
       if (availableSpotifyTracks.length === 0) {
-        toast.error("No Spotify tracks were available for this scene.");
+        toast.error(localizeUi("ui.game.gamesurfacecomponent.noSpotifyTracksWereAvailableForThisScene"));
         return;
       }
 
@@ -6337,10 +6451,10 @@ function GameSurfaceComponent({
       }
 
       await playSpotifySceneTrack(selectedTrack);
-      toast.success("Spotify scene music refreshed.", { duration: 1800 });
+      toast.success(localizeUi("ui.game.gamesurfacecomponent.spotifySceneMusicRefreshed"), { duration: 1800 });
     } catch (error) {
       console.warn("[spotify/game] Retry failed:", error);
-      toast.error("Spotify scene music retry failed.");
+      toast.error(localizeUi("ui.game.gamesurfacecomponent.spotifySceneMusicRetryFailed"));
     } finally {
       setSpotifyRetryPending(false);
     }
@@ -6369,7 +6483,7 @@ function GameSurfaceComponent({
     sceneWrapCharacterNames,
     sidecarConfig.useForGameScene,
     sidecarReady,
-    useSpotifyGameMusic,
+    useSpotifyGameMusic, localizeUi,
   ]);
 
   const sendMessage = useCallback(
@@ -6459,18 +6573,18 @@ function GameSurfaceComponent({
           result,
           source: "game_setup",
         });
-        toast.success("World created. Review the hierarchical map before saving it.");
+        toast.success(localizeUi("ui.game.gamesurfacecomponent.worldCreatedReviewTheHierarchicalMapBeforeSavingIt"));
       } catch (error) {
         useGameModeStore.getState().setSetupActive(false);
         toast.error(
           error instanceof Error
-            ? `The game was created, but its map draft failed: ${error.message}. You can build one later from Chat Settings.`
-            : "The game was created, but its map draft failed. You can build one later from Chat Settings.",
+            ?localizeUi("ui.game.gamesurfacecomponent.theGameWasCreatedButItsMapDraftFailed_7b65e53", { value1: error.message })
+            :localizeUi("ui.game.gamesurfacecomponent.theGameWasCreatedButItsMapDraftFailed"),
           { duration: 10000 },
         );
       }
     },
-    [generateSetupMapDraft],
+    [generateSetupMapDraft, localizeUi],
   );
 
   const handleStartGameNow = useCallback(() => {
@@ -6493,12 +6607,12 @@ function GameSurfaceComponent({
         onError: (err) => {
           startGameGuardRef.current = false;
           setStartGameRequested(false);
-          toast.error(err instanceof Error ? err.message : "Failed to start game.");
+          toast.error(err instanceof Error ? err.message :localizeUi("ui.game.gamesurfacecomponent.failedToStartGame"));
           console.error("[GameSurface] startGame failed:", err);
         },
       },
     );
-  }, [activeChatId, generateInitialGameTurn, startGame, startGameRequested]);
+  }, [activeChatId, generateInitialGameTurn, startGame, startGameRequested, localizeUi]);
 
   const handleJsonRepairError = useCallback((error: unknown) => {
     const request = getJsonRepairRequest(error);
@@ -6533,12 +6647,12 @@ function GameSurfaceComponent({
           });
         }
         api.patch(`/chats/${activeChatId}/game-state`, { time: formattedTime }).catch(() => {});
-        toast.success(`Set game day to ${nextTime.day}.`);
+        toast.success(localizeUi("ui.game.gamesurfacecomponent.setGameDayToValue1", { value1: nextTime.day }));
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : "Failed to update game day.");
+        toast.error(error instanceof Error ? error.message :localizeUi("ui.game.gamesurfacecomponent.failedToUpdateGameDay"));
       }
     },
-    [activeChatId, gameTimeMeta?.hour, gameTimeMeta?.minute, updateChatMetadata],
+    [activeChatId, gameTimeMeta?.hour, gameTimeMeta?.minute, updateChatMetadata, localizeUi],
   );
 
   const handleGameTimeChange = useCallback(
@@ -6583,12 +6697,12 @@ function GameSurfaceComponent({
           });
         }
         api.patch(`/chats/${activeChatId}/game-state`, { time: formattedTime }).catch(() => {});
-        toast.success(`Set game time to ${getGameTimeOfDayLabel(nextTime.hour)}.`);
+        toast.success(localizeUi("ui.game.gamesurfacecomponent.setGameTimeToValue1", { value1: getGameTimeOfDayLabel(nextTime.hour) }));
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : "Failed to update game time.");
+        toast.error(error instanceof Error ? error.message :localizeUi("ui.game.gamesurfacecomponent.failedToUpdateGameTime"));
       }
     },
-    [activeChatId, currentGameDay, metaWeather, updateChatMetadata],
+    [activeChatId, currentGameDay, metaWeather, updateChatMetadata, localizeUi],
   );
 
   const handleJsonRepairApplied = useCallback(
@@ -6699,12 +6813,12 @@ function GameSurfaceComponent({
 
         useGameModeStore.getState().patchNpcAvatars([{ name: targetNpc.name, avatarUrl: response.avatarPath }]);
         clearFailedNpcAvatars([targetNpc.name]);
-        toast.success(`${targetNpc.name} portrait updated.`);
+        toast.success(localizeUi("ui.game.gamesurfacecomponent.value1PortraitUpdated", { value1: targetNpc.name }));
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : `Failed to update ${npcName} portrait.`);
+        toast.error(error instanceof Error ? error.message :localizeUi("ui.game.gamesurfacecomponent.failedToUpdateValue1Portrait", { value1: npcName }));
       }
     },
-    [activeChatId, clearFailedNpcAvatars, updateChatMetadata],
+    [activeChatId, clearFailedNpcAvatars, updateChatMetadata, localizeUi],
   );
 
   const handleNpcPortraitGenerate = useCallback(
@@ -6716,7 +6830,7 @@ function GameSurfaceComponent({
       if (!normalizedName) return;
 
       if (!chatMeta.enableSpriteGeneration || !chatMeta.gameImageConnectionId) {
-        toast.error("Enable Game image generation and choose an image connection first.");
+        toast.error(localizeUi("ui.game.gamesurfacecomponent.enableGameImageGenerationAndChooseAnImageConnection"));
         return;
       }
 
@@ -6765,12 +6879,12 @@ function GameSurfaceComponent({
         );
         if (generated) {
           clearFailedNpcAvatars([targetNpc.name]);
-          toast.success(`${targetNpc.name} portrait generated.`);
+          toast.success(localizeUi("ui.game.gamesurfacecomponent.value1PortraitGenerated", { value1: targetNpc.name }));
         } else {
-          toast.error(`No portrait was generated for ${targetNpc.name}.`);
+          toast.error(localizeUi("ui.game.gamesurfacecomponent.noPortraitWasGeneratedForValue1", { value1: targetNpc.name }));
         }
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : `Failed to generate ${displayName} portrait.`);
+        toast.error(error instanceof Error ? error.message :localizeUi("ui.game.gamesurfacecomponent.failedToGenerateValue1Portrait", { value1: displayName }));
       } finally {
         setGeneratingNpcPortraitNames((current) => {
           const next = new Set(current);
@@ -6786,7 +6900,7 @@ function GameSurfaceComponent({
       chatMeta.gameImageConnectionId,
       chatMeta.gameNpcs,
       clearFailedNpcAvatars,
-      runGameAssetGeneration,
+      runGameAssetGeneration, localizeUi,
     ],
   );
 
@@ -6808,13 +6922,13 @@ function GameSurfaceComponent({
           gameJournal: prunedJournal,
         });
         useGameModeStore.getState().setNpcs(nextNpcs);
-        toast.success(`${cleanGameNpcDisplayName(npcName)} removed from the NPC journal.`);
+        toast.success(localizeUi("ui.game.gamesurfacecomponent.value1RemovedFromTheNpcJournal", { value1: cleanGameNpcDisplayName(npcName) }));
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : `Failed to remove ${npcName} from the NPC journal.`);
+        toast.error(error instanceof Error ? error.message :localizeUi("ui.game.gamesurfacecomponent.failedToRemoveValue1FromTheNpcJournal", { value1: npcName }));
         throw error;
       }
     },
-    [activeChatId, chatMeta.gameJournal, updateChatMetadata],
+    [activeChatId, chatMeta.gameJournal, updateChatMetadata, localizeUi],
   );
 
   const handleAddInventoryItem = useCallback(async () => {
@@ -6860,7 +6974,7 @@ function GameSurfaceComponent({
       setInventoryNotifications([`You gained ${addedItemName}!`]);
       if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
       notificationTimerRef.current = setTimeout(() => setInventoryNotifications([]), 4000);
-      toast.success(`Added ${addedItemName} to inventory.`);
+      toast.success(localizeUi("ui.game.gamesurfacecomponent.addedValue1ToInventory", { value1: addedItemName }));
       return addedItemName;
     } catch (error) {
       if (patchedGameState) {
@@ -6870,7 +6984,7 @@ function GameSurfaceComponent({
       toast.error(message);
       return null;
     }
-  }, [activeChatId, inventoryItems, updateChatMetadata]);
+  }, [activeChatId, inventoryItems, updateChatMetadata, localizeUi]);
 
   const handleIncrementInventoryItem = useCallback(
     async (itemName: string) => {
@@ -6881,7 +6995,7 @@ function GameSurfaceComponent({
 
       const updatedInventory = addInventoryUnit(inventoryItems, normalizedItemName);
       if (updatedInventory === inventoryItems) {
-        toast.error(`Failed to increase ${normalizedItemName}.`);
+        toast.error(localizeUi("ui.game.gamesurfacecomponent.failedToIncreaseValue1", { value1: normalizedItemName }));
         return;
       }
 
@@ -6919,7 +7033,7 @@ function GameSurfaceComponent({
         setInventoryNotifications([`You gained ${normalizedItemName}!`]);
         if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
         notificationTimerRef.current = setTimeout(() => setInventoryNotifications([]), 4000);
-        toast.success(`Added 1 ${normalizedItemName}.`);
+        toast.success(localizeUi("ui.game.gamesurfacecomponent.added1Value1", { value1: normalizedItemName }));
       } catch (error) {
         if (patchedGameState) {
           api.patch(`/chats/${activeChatId}/game-state`, { playerStats: currentPlayerStats }).catch(() => {});
@@ -6928,7 +7042,7 @@ function GameSurfaceComponent({
         toast.error(message);
       }
     },
-    [activeChatId, inventoryItems, updateChatMetadata],
+    [activeChatId, inventoryItems, updateChatMetadata, localizeUi],
   );
 
   const handleRemoveInventoryItem = useCallback(
@@ -6937,7 +7051,7 @@ function GameSurfaceComponent({
 
       const updatedInventory = removeInventoryUnit(inventoryItems, itemName);
       if (updatedInventory === inventoryItems) {
-        toast.error(`${itemName} is no longer in your inventory.`);
+        toast.error(localizeUi("ui.game.gamesurfacecomponent.value1IsNoLongerInYourInventory", { value1: itemName }));
         return;
       }
 
@@ -6987,7 +7101,7 @@ function GameSurfaceComponent({
         setInventoryNotifications([`You removed ${itemName}.`]);
         if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
         notificationTimerRef.current = setTimeout(() => setInventoryNotifications([]), 4000);
-        toast.success(`Removed ${itemName} from inventory.`);
+        toast.success(localizeUi("ui.game.gamesurfacecomponent.removedValue1FromInventory", { value1: itemName }));
       } catch (error) {
         if (patchedGameState) {
           api.patch(`/chats/${activeChatId}/game-state`, { playerStats: currentPlayerStats }).catch(() => {});
@@ -6996,7 +7110,7 @@ function GameSurfaceComponent({
         toast.error(message);
       }
     },
-    [activeChatId, inventoryItems, updateChatMetadata],
+    [activeChatId, inventoryItems, updateChatMetadata, localizeUi],
   );
 
   const handleUseCombatInventoryItem = useCallback(
@@ -7006,7 +7120,7 @@ function GameSurfaceComponent({
       const normalizedItemName = normalizeInventoryName(itemName);
       const updatedInventory = removeInventoryUnit(inventoryItems, normalizedItemName);
       if (updatedInventory === inventoryItems) {
-        toast.error(`${normalizedItemName || itemName} is no longer in your inventory.`);
+        toast.error(localizeUi("ui.game.gamesurfacecomponent.value1IsNoLongerInYourInventory", { value1: normalizedItemName || itemName }));
         return;
       }
 
@@ -7056,7 +7170,7 @@ function GameSurfaceComponent({
         setInventoryNotifications([`You used ${normalizedItemName}.`]);
         if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
         notificationTimerRef.current = setTimeout(() => setInventoryNotifications([]), 4000);
-        toast.success(`Used ${normalizedItemName}.`);
+        toast.success(localizeUi("ui.game.gamesurfacecomponent.usedValue1", { value1: normalizedItemName }));
       } catch (error) {
         if (patchedGameState) {
           api.patch(`/chats/${activeChatId}/game-state`, { playerStats: currentPlayerStats }).catch(() => {});
@@ -7065,7 +7179,7 @@ function GameSurfaceComponent({
         toast.error(message);
       }
     },
-    [activeChatId, inventoryItems, updateChatMetadata],
+    [activeChatId, inventoryItems, updateChatMetadata, localizeUi],
   );
 
   const handleRenameInventoryItem = useCallback(
@@ -7074,7 +7188,7 @@ function GameSurfaceComponent({
 
       const renamedInventory = renameInventoryItem(inventoryItems, currentName, nextName);
       if (!renamedInventory) {
-        toast.error(`${currentName} is no longer in your inventory.`);
+        toast.error(localizeUi("ui.game.gamesurfacecomponent.value1IsNoLongerInYourInventory", { value1: currentName }));
         return null;
       }
 
@@ -7118,7 +7232,7 @@ function GameSurfaceComponent({
           });
         }
 
-        toast.success(`Renamed ${currentName} to ${resolvedName}.`);
+        toast.success(localizeUi("ui.game.gamesurfacecomponent.renamedValue1ToValue2", { value1: currentName, value2: resolvedName }));
         return resolvedName;
       } catch (error) {
         if (patchedGameState) {
@@ -7129,7 +7243,7 @@ function GameSurfaceComponent({
         return null;
       }
     },
-    [activeChatId, inventoryItems, updateChatMetadata],
+    [activeChatId, inventoryItems, updateChatMetadata, localizeUi],
   );
 
   const handleReorderInventoryItem = useCallback(
@@ -7610,9 +7724,9 @@ function GameSurfaceComponent({
     async (member: { id: string; name: string; canRemove?: boolean }) => {
       if (!activeChatId || !member.canRemove) return;
       const confirmed = await showConfirmDialog({
-        title: "Remove party member?",
-        message: `Remove ${member.name} from the active party? Their game character card will be kept in case they rejoin later.`,
-        confirmLabel: "Remove",
+        title:localizeUi("ui.game.gamesurfacecomponent.removePartyMember"),
+        message:localizeUi("ui.game.gamesurfacecomponent.removeValue1FromTheActivePartyTheirGameCharacter", { value1: member.name }),
+        confirmLabel:localizeUi("settings.notifications.customSound.actions.remove"),
         cancelLabel: "Keep",
         tone: "destructive",
       });
@@ -7625,7 +7739,7 @@ function GameSurfaceComponent({
         setRemovingPartyMemberId(null);
       }
     },
-    [activeChatId, removePartyMember],
+    [activeChatId, removePartyMember, localizeUi],
   );
 
   const combatUiActive = gameState === "combat" && !!combatParty && !!combatEnemies;
@@ -7868,7 +7982,7 @@ function GameSurfaceComponent({
           const message = err instanceof Error ? err.message : "Combat generation failed.";
           console.warn("[game-combat] Failed to generate combat state", err);
           setCombatGenerationError(message);
-          toast.error(`${message} Use the Combat button to retry.`);
+          toast.error(localizeUi("ui.game.gamesurfacecomponent.value1UseTheCombatButtonToRetry", { value1: message }));
         })
         .finally(() => setCombatGenerationPending(false));
     },
@@ -7878,7 +7992,7 @@ function GameSurfaceComponent({
       gameBackgroundAutoGenerationEnabled,
       gameImageAutoGenerationEnabled,
       hydrateGeneratedCombatState,
-      requestAssetGeneration,
+      requestAssetGeneration, localizeUi,
     ],
   );
 
@@ -8047,14 +8161,14 @@ function GameSurfaceComponent({
   const retryCombatGeneration = useCallback(() => {
     const messageId = queuedCombatGeneration?.messageId ?? latestAssistantMsg?.id;
     if (!messageId) {
-      toast.error("No current turn is available for combat generation.");
+      toast.error(localizeUi("ui.game.gamesurfacecomponent.noCurrentTurnIsAvailableForCombatGeneration"));
       return;
     }
     setQueuedCombatGeneration({ messageId });
     setPreparedCombatState(null);
     setCombatGenerationError(null);
     generateCombatStateForMessage(messageId);
-  }, [generateCombatStateForMessage, latestAssistantMsg?.id, queuedCombatGeneration?.messageId]);
+  }, [generateCombatStateForMessage, latestAssistantMsg?.id, queuedCombatGeneration?.messageId, localizeUi]);
 
   const handleRequestManualCombatStart = useCallback(async () => {
     if (combatUiActive) {
@@ -8067,13 +8181,13 @@ function GameSurfaceComponent({
     }
     const messageId = latestAssistantMsg?.id;
     if (!messageId) {
-      toast.error("The GM needs to write at least one turn before combat can start.");
+      toast.error(localizeUi("ui.game.gamesurfacecomponent.theGmNeedsToWriteAtLeastOneTurn"));
       return;
     }
     const confirmed = await showConfirmDialog({
-      title: "Start combat?",
-      message: "Generate a tactical combat encounter from the current game state?",
-      confirmLabel: "Yes",
+      title:localizeUi("ui.game.gamesurfacecomponent.startCombat"),
+      message:localizeUi("ui.game.gamesurfacecomponent.generateATacticalCombatEncounterFromTheCurrentGame"),
+      confirmLabel:localizeUi("ui.game.gamesurfacecomponent.yes"),
       cancelLabel: "No",
     });
     if (!confirmed) return;
@@ -8081,7 +8195,7 @@ function GameSurfaceComponent({
     setPreparedCombatState(null);
     setCombatGenerationError(null);
     generateCombatStateForMessage(messageId);
-  }, [combatGenerationPending, combatUiActive, generateCombatStateForMessage, latestAssistantMsg?.id]);
+  }, [combatGenerationPending, combatUiActive, generateCombatStateForMessage, latestAssistantMsg?.id, localizeUi]);
 
   useEffect(() => {
     if (!queuedQte || !latestAssistantMsg?.id) return;
@@ -8609,13 +8723,13 @@ function GameSurfaceComponent({
 
       try {
         await updateChatMetadata.mutateAsync({ id: activeChatId, gameCharacterCards: updatedCards });
-        toast.success(`${normalizedTitle} sheet updated.`);
+        toast.success(localizeUi("ui.game.gamesurfacecomponent.value1SheetUpdated", { value1: normalizedTitle }));
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : "Failed to save character sheet.");
+        toast.error(error instanceof Error ? error.message :localizeUi("ui.game.gamesurfacecomponent.failedToSaveCharacterSheet"));
         throw error;
       }
     },
-    [activeChatId, chatMeta.gameCharacterCards, updateChatMetadata],
+    [activeChatId, chatMeta.gameCharacterCards, updateChatMetadata, localizeUi],
   );
 
   // Map narration messages with character names
@@ -8635,7 +8749,7 @@ function GameSurfaceComponent({
       const cleanInstruction = instruction.trim();
       if (!cleanInstruction) return;
       if (!sessionInteractive || isStreaming) {
-        toast.error("Wait for the current GM response before attempting a special maneuver.");
+        toast.error(localizeUi("ui.game.gamesurfacecomponent.waitForTheCurrentGmResponseBeforeAttemptingA"));
         return;
       }
 
@@ -8660,7 +8774,7 @@ function GameSurfaceComponent({
         ].join("\n"),
       );
     },
-    [combatEnemies, combatParty, isStreaming, sendMessage, sessionInteractive],
+    [combatEnemies, combatParty, isStreaming, sendMessage, sessionInteractive, localizeUi],
   );
   const sessionSummaries = Array.isArray(chatMeta.gamePreviousSessionSummaries)
     ? (chatMeta.gamePreviousSessionSummaries as SessionSummary[])
@@ -8739,7 +8853,7 @@ function GameSurfaceComponent({
           id: activeChatId,
           gamePreviousSessionSummaries: updatedSummaries,
         });
-        toast.success(`Session ${sessionNumber} details updated.`);
+        toast.success(localizeUi("ui.game.gamesurfacecomponent.sessionValue1DetailsUpdated", { value1: sessionNumber }));
       } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to update session details.";
         toast.error(message);
@@ -8748,7 +8862,7 @@ function GameSurfaceComponent({
         setSavingSessionSummary(null);
       }
     },
-    [activeChatId, chatMeta.gamePreviousSessionSummaries, updateSessionHistoryMetadata],
+    [activeChatId, chatMeta.gamePreviousSessionSummaries, updateSessionHistoryMetadata, localizeUi],
   );
 
   const handleSaveCurrentSessionSecrets = useCallback(
@@ -8775,7 +8889,7 @@ function GameSurfaceComponent({
         });
         useGameModeStore.getState().setNpcs(nextSecrets.npcs);
         useGameModeStore.getState().setMaps(nextSecrets.maps, nextActiveMapId);
-        toast.success("Current session spoilers updated.");
+        toast.success(localizeUi("ui.game.gamesurfacecomponent.currentSessionSpoilersUpdated"));
       } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to update current session spoilers.";
         toast.error(message);
@@ -8784,7 +8898,7 @@ function GameSurfaceComponent({
         setSavingCurrentSessionSecrets(false);
       }
     },
-    [activeChatId, activeMapId, updateChatMetadata],
+    [activeChatId, activeMapId, updateChatMetadata, localizeUi],
   );
 
   const handleRegenerateSessionConclusion = useCallback(
@@ -8832,11 +8946,11 @@ function GameSurfaceComponent({
         const response = await rollDice.mutateAsync({ chatId: activeChatId, notation });
         return response.result;
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Failed to roll dice.");
+        toast.error(err instanceof Error ? err.message :localizeUi("ui.game.gamesurfacecomponent.failedToRollDice"));
         return null;
       }
     },
-    [activeChatId, rollDice],
+    [activeChatId, rollDice, localizeUi],
   );
 
   const handleDismissDice = useCallback(() => {
@@ -8927,7 +9041,7 @@ function GameSurfaceComponent({
           ? viewedMap?.nodes?.find((node) => node.id === position)?.spatialLocationId
           : viewedMap?.cells?.find((cell) => cell.x === position.x && cell.y === position.y)?.spatialLocationId;
       if (boundSpatialLocationId && spatialContext.isLoading) {
-        toast.info("Story locations are still loading. Try that map position again in a moment.");
+        toast.info(localizeUi("ui.game.gamesurfacecomponent.storyLocationsAreStillLoadingTryThatMapPosition"));
         setPendingMapMove(null);
         return;
       }
@@ -8936,18 +9050,18 @@ function GameSurfaceComponent({
         const definition = spatial.definition;
         if (!definition) return;
         if (!spatial.currentLocationId) {
-          toast.error("The current story location is unavailable. Repair the hierarchy before moving.");
+          toast.error(localizeUi("ui.game.gamesurfacecomponent.theCurrentStoryLocationIsUnavailableRepairTheHierarchy"));
           setPendingMapMove(null);
           return;
         }
         if (spatial.currentLocationId === boundSpatialLocationId) {
-          toast.info("The party is already at that story location.");
+          toast.info(localizeUi("ui.game.gamesurfacecomponent.thePartyIsAlreadyAtThatStoryLocation"));
           setPendingMapMove(null);
           return;
         }
         const destination = spatial.destinations.find((candidate) => candidate.id === boundSpatialLocationId);
         if (!destination) {
-          toast.error("That story location is not reachable from the party's current location.");
+          toast.error(localizeUi("ui.game.gamesurfacecomponent.thatStoryLocationIsNotReachableFromTheParty"));
           setPendingMapMove(null);
           return;
         }
@@ -8981,7 +9095,7 @@ function GameSurfaceComponent({
       spatialContext.data,
       spatialContext.isLoading,
       viewedMap,
-      viewedMapIsActive,
+      viewedMapIsActive, localizeUi,
     ],
   );
 
@@ -9012,7 +9126,7 @@ function GameSurfaceComponent({
           });
         } catch {
           if (interruptedCommandKey) interruptedInteractiveCommandKeysRef.current.delete(interruptedCommandKey);
-          toast.error("Failed to commit the interrupt. Please try again.");
+          toast.error(localizeUi("ui.game.gamesurfacecomponent.failedToCommitTheInterruptPleaseTryAgain"));
           return false;
         }
       }
@@ -9028,7 +9142,7 @@ function GameSurfaceComponent({
           });
         } catch {
           if (interruptedCommandKey) interruptedInteractiveCommandKeysRef.current.delete(interruptedCommandKey);
-          toast.error("Failed to mark the risky interrupt. Please try again.");
+          toast.error(localizeUi("ui.game.gamesurfacecomponent.failedToMarkTheRiskyInterruptPleaseTryAgain"));
           return false;
         }
       }
@@ -9040,7 +9154,7 @@ function GameSurfaceComponent({
         try {
           await moveOnMap.mutateAsync({ chatId: activeChatId, position: pendingMapMove.position, mapId: activeMapId });
         } catch {
-          toast.error("Failed to update the map position. Please try again.");
+          toast.error(localizeUi("ui.game.gamesurfacecomponent.failedToUpdateTheMapPositionPleaseTryAgain"));
           return false;
         }
       }
@@ -9063,7 +9177,7 @@ function GameSurfaceComponent({
       sendMessage,
       sessionInteractive,
       setDiceRollResult,
-      updateMessage,
+      updateMessage, localizeUi,
     ],
   );
 
@@ -9189,8 +9303,7 @@ function GameSurfaceComponent({
 
   const handleReturnToPreCombatTurn = useCallback(() => {
     if (!latestAssistantMsg?.id) return;
-    const confirmed = window.confirm(
-      "Exit combat and remove the GM turn that started this encounter? This returns you to the previous player turn.",
+    const confirmed = window.confirm(localizeUi("ui.game.gamesurfacecomponent.exitCombatAndRemoveTheGmTurnThatStarted"),
     );
     if (!confirmed) return;
 
@@ -9214,7 +9327,7 @@ function GameSurfaceComponent({
       clearCombatSnapshot(activeChatId);
     }
     onDeleteMessage(latestAssistantMsg.id);
-  }, [activeChatId, clearCombatSnapshot, latestAssistantMsg?.id, onDeleteMessage, transitionGameState]);
+  }, [activeChatId, clearCombatSnapshot, latestAssistantMsg?.id, onDeleteMessage, transitionGameState, localizeUi]);
 
   const handleCombatantsChange = useCallback((nextParty: Combatant[], nextEnemies: Combatant[]) => {
     setCombatParty(nextParty);
@@ -9469,10 +9582,10 @@ function GameSurfaceComponent({
         {
           onSuccess: (newChat) => {
             if (newChat) useChatStore.getState().setActiveChatId(newChat.id);
-            toast.success("Branch created.");
+            toast.success(localizeUi("ui.game.gamesurfacecomponent.branchCreated"));
           },
           onError: (error) => {
-            toast.error(error instanceof Error ? `Branch failed: ${error.message}` : "Branch failed.");
+            toast.error(error instanceof Error ?localizeUi("ui.game.gamesurfacecomponent.branchFailedValue1", { value1: error.message }) :localizeUi("ui.game.gamesurfacecomponent.branchFailed"));
           },
           onSettled: () => {
             toast.dismiss(branchToastId);
@@ -9480,7 +9593,7 @@ function GameSurfaceComponent({
         },
       );
     },
-    [activeChatId, branchChat],
+    [activeChatId, branchChat, localizeUi],
   );
 
   // Retry scene analysis for the latest message
@@ -9512,7 +9625,9 @@ function GameSurfaceComponent({
       currentState: gameState,
       turnNumber: Math.max(1, assistantTurnCount),
       availableBackgrounds: bgTags,
-      availableSfx: sfxTags,
+      availableSfx: generateGameSoundEffects ? [] : sfxTags,
+      generateSoundEffects: generateGameSoundEffects,
+      generateMusic: generateGameMusic,
       activeWidgets: hudWidgets,
       trackedNpcs: npcs,
       characterNames: sceneWrapCharacterNames,
@@ -9539,7 +9654,7 @@ function GameSurfaceComponent({
         {
           onSuccess: (result) => {
             onSuccess(result);
-            toast.success("Scene analysis retried.", { duration: 1800 });
+            toast.success(localizeUi("ui.game.gamesurfacecomponent.sceneAnalysisRetried"), { duration: 1800 });
           },
           onError: (err) => console.error("[retry-scene] Failed:", err),
         },
@@ -9550,7 +9665,7 @@ function GameSurfaceComponent({
         {
           onSuccess: (result) => {
             onSuccess(result);
-            toast.success("Scene analysis retried.", { duration: 1800 });
+            toast.success(localizeUi("ui.game.gamesurfacecomponent.sceneAnalysisRetried"), { duration: 1800 });
           },
           onError: (err) => console.error("[retry-scene] Failed:", err),
         },
@@ -9566,13 +9681,15 @@ function GameSurfaceComponent({
     currentBackground,
     gameBackgroundAutoGenerationEnabled,
     gameImageAutoGenerationEnabled,
+    generateGameSoundEffects,
+    generateGameMusic,
     gameSnapshot,
     chatMeta,
     activeChatId,
     sceneAnalysis,
     sceneWrapCharacterNames,
     sceneAnalysisEnabled,
-    metaTime,
+    metaTime, localizeUi,
   ]);
 
   // Remap legacy hud_bottom widgets to left/right (hud_bottom was removed)
@@ -9775,6 +9892,10 @@ function GameSurfaceComponent({
 
   // Does this chat need initial game creation?
   const needsCreation = !chatMeta.gameId;
+  const initialSetupPartyCharacterIds = useMemo(
+    () => getChatCharacterIds(chat.characterIds).filter((id) => id !== PROFESSOR_MARI_ID),
+    [chat.characterIds],
+  );
   const setupWizardDismissed = dismissedSetupWizardChatId === activeChatId;
   const canAutoDeleteEmptySetupChat = needsCreation && !isMessagesLoading && messages.length === 0;
   const shouldShowSetupWizard =
@@ -9868,12 +9989,13 @@ function GameSurfaceComponent({
               }
               setDismissedSetupWizardChatId(activeChatId);
               if (needsCreation || sessionStatus === "setup") {
-                toast.info("Game setup dismissed. The campaign was kept.");
+                toast.info(localizeUi("ui.game.gamesurfacecomponent.gameSetupDismissedTheCampaignWasKept"));
               }
             }}
             isLoading={createGame.isPending || gameSetup.isPending || generateSetupMapDraft.isPending}
             isDraftingMap={generateSetupMapDraft.isPending}
             characters={characters}
+            initialPartyCharacterIds={initialSetupPartyCharacterIds}
           />
         </Suspense>
         <GameJsonRepairModal
@@ -9938,21 +10060,19 @@ function GameSurfaceComponent({
             <div className="flex w-full flex-shrink-0 flex-col items-center gap-4">
               <label className="flex w-full max-w-sm flex-col gap-1.5 text-left">
                 <span className="flex items-center gap-1.5 text-xs font-medium text-[var(--muted-foreground)] dark:text-white/50">
-                  <Plug size={12} />
-                  GM / Party Model
-                </span>
+                  <Plug size={12} />{localizeUi("ui.game.gamesurfacecomponent.gmPartyModel")}</span>
                 <select
                   value={chat.connectionId ?? ""}
                   onChange={(e) => handleStartScreenConnectionChange(e.target.value)}
                   disabled={isStreaming || startGame.isPending || updateChat.isPending}
                   className="w-full rounded-lg bg-zinc-950/80 px-3 py-2 text-xs text-[var(--foreground)] outline-none ring-1 ring-zinc-700/80 transition-all focus:ring-zinc-400/40 disabled:opacity-60 dark:bg-white/10"
                 >
-                  <option value="">None</option>
-                  <option value="random">Random</option>
+                  <option value="">{localizeUi("ui.game.gamesurfacecomponent.none")}</option>
+                  <option value="random">{localizeUi("ui.game.gamesurfacecomponent.random")}</option>
                   {languageConnections.map((connection) => (
                     <option key={connection.id} value={connection.id}>
                       {connection.name}
-                      {connection.model ? ` - ${connection.model}` : ""}
+                      {connection.model ?localizeUi("ui.game.gamesetupwizard.value1", { value1: connection.model }) : ""}
                     </option>
                   ))}
                 </select>
@@ -9975,15 +10095,11 @@ function GameSurfaceComponent({
                         audioManager.retryPending();
                       }}
                       className="group flex items-center gap-2 rounded-lg bg-zinc-900 px-6 py-3 text-sm font-semibold text-zinc-100 ring-1 ring-zinc-700/80 transition-all hover:scale-105 hover:bg-zinc-800 hover:shadow-lg hover:shadow-black/25"
-                    >
-                      Continue
-                    </button>
+                    >{localizeUi("ui.noodle.wizardfooter.continue")}</button>
                   ) : (
                     <>
                       {initialTurnFailed ? (
-                        <div className="max-w-sm text-sm text-[var(--muted-foreground)] dark:text-white/60">
-                          Game generation failed. Choose another GM / Party Model or retry this one.
-                        </div>
+                        <div className="max-w-sm text-sm text-[var(--muted-foreground)] dark:text-white/60">{localizeUi("ui.game.gamesurfacecomponent.gameGenerationFailedChooseAnotherGmPartyModelOr")}</div>
                       ) : (
                         <div className="flex items-center gap-3 text-sm text-[var(--muted-foreground)] dark:text-white/60">
                           <div className="h-5 w-5 animate-spin rounded-full border-2 border-[var(--muted)]/40 border-t-[var(--foreground)]/70 dark:border-white/20 dark:border-t-white/70" />
@@ -10003,12 +10119,8 @@ function GameSurfaceComponent({
                       {hasEverHadPlayableContent && !isStreaming && sceneAnalysisFailed && (
                         <div className="flex items-center gap-2">
                           <button onClick={() => retrySceneAnalysis()} className={SURFACE_BTN}>
-                            <RefreshCw size={14} />
-                            Retry Scene Analysis
-                          </button>
-                          <button onClick={() => skipSceneAnalysis()} className={SURFACE_BTN}>
-                            Skip
-                          </button>
+                            <RefreshCw size={14} />{localizeUi("ui.game.gamesurfacecomponent.retrySceneAnalysis")}</button>
+                          <button onClick={() => skipSceneAnalysis()} className={SURFACE_BTN}>{localizeUi("onboarding.actions.skip")}</button>
                         </div>
                       )}
                       {/* Show skip only after stuck timeout — scene processing hung, not failed */}
@@ -10017,18 +10129,14 @@ function GameSurfaceComponent({
                         !sceneProcessed &&
                         sceneStuckVisible &&
                         !sceneAnalysisFailed && (
-                          <button onClick={() => skipSceneAnalysis()} className={cn("mt-1", SURFACE_BTN)}>
-                            Skip
-                          </button>
+                          <button onClick={() => skipSceneAnalysis()} className={cn("mt-1", SURFACE_BTN)}>{localizeUi("onboarding.actions.skip")}</button>
                         )}
                     </>
                   )}
                   {/* Show retry when generation stopped but no content arrived. */}
                   {!isStreaming && !hasEverHadPlayableContent && !startGame.isPending && (
                     <button onClick={generateInitialGameTurn} className={SURFACE_BTN}>
-                      <RefreshCw size={14} />
-                      Retry
-                    </button>
+                      <RefreshCw size={14} />{localizeUi("ui.game.gamesurfacecomponent.retry")}</button>
                   )}
                 </div>
               ) : (
@@ -10040,9 +10148,7 @@ function GameSurfaceComponent({
                   disabled={startGame.isPending || startGameRequested}
                   className="group flex items-center gap-2 rounded-lg bg-zinc-900 px-6 py-3 text-sm font-semibold text-zinc-100 ring-1 ring-zinc-700/80 transition-all hover:scale-105 hover:bg-zinc-800 hover:shadow-lg hover:shadow-black/25 disabled:opacity-50 disabled:hover:scale-100"
                 >
-                  <Play size={18} className="transition-transform group-hover:scale-110" />
-                  Start Game
-                </button>
+                  <Play size={18} className="transition-transform group-hover:scale-110" />{localizeUi("ui.game.gamesurfacecomponent.startGame")}</button>
               )}
             </div>
           </div>
@@ -10099,11 +10205,8 @@ function GameSurfaceComponent({
         <div className={cn(ROLEPLAY_POPOVER_HEADER, "flex items-start gap-3")}>
           <div className="min-w-0 flex-1">
             <div className={ROLEPLAY_POPOVER_TITLE}>
-              <Feather size="0.8rem" className="shrink-0 text-[var(--muted-foreground)]" />
-              Session
-            </div>
-            <div className={ROLEPLAY_POPOVER_SUBTITLE}>
-              Session {displaySessionNumber} · {sessionStatus}
+              <Feather size="0.8rem" className="shrink-0 text-[var(--muted-foreground)]" />{localizeUi("game.toolbar.session")}</div>
+            <div className={ROLEPLAY_POPOVER_SUBTITLE}>{localizeUi("game.toolbar.session")} {displaySessionNumber} · {sessionStatus}
             </div>
           </div>
           <div className="ml-auto flex shrink-0 items-center gap-1 pt-0.5">
@@ -10111,8 +10214,8 @@ function GameSurfaceComponent({
               type="button"
               onClick={() => setTutorialOpen(true)}
               className="flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-[var(--marinara-chat-chrome-button-text)] transition-colors hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-highlight-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)]"
-              title="Game tutorial"
-              aria-label="Game tutorial"
+              title={localizeUi("ui.game.gamesurfacecomponent.gameTutorial")}
+              aria-label={localizeUi("ui.game.gamesurfacecomponent.gameTutorial")}
             >
               <CircleHelp size={14} />
             </button>
@@ -10120,7 +10223,7 @@ function GameSurfaceComponent({
               type="button"
               onClick={() => setSessionPanelOpen(false)}
               className={ROLEPLAY_POPOVER_CLOSE_BUTTON}
-              aria-label="Close session"
+              aria-label={localizeUi("ui.game.gamesurfacecomponent.closeSession")}
             >
               <X size={ROLEPLAY_POPOVER_CLOSE_ICON_SIZE} />
             </button>
@@ -10141,7 +10244,7 @@ function GameSurfaceComponent({
               )}
             >
               {tab === "history" ? <ScrollText size={12} /> : <BookOpen size={12} />}
-              {tab === "history" ? "Session History" : "Journal"}
+              {tab === "history" ?localizeUi("ui.game.gamesurfacecomponent.sessionHistory") :localizeUi("ui.game.gamesurfacecomponent.journal")}
             </button>
           ))}
         </div>
@@ -10267,7 +10370,7 @@ function GameSurfaceComponent({
         onPointerMove={handleStoryboardViewerDragMove}
         onPointerUp={handleStoryboardViewerDragEnd}
         onPointerCancel={handleStoryboardViewerDragEnd}
-        aria-label="Storyboard viewer. Drag to move."
+        aria-label={localizeUi("ui.game.gamesurfacecomponent.storyboardViewerDragToMove")}
       >
         <div className="relative">
           <button
@@ -10282,8 +10385,8 @@ function GameSurfaceComponent({
               sizeClassName: "h-7 w-7",
               className: "absolute -right-2 -top-2 z-20 shadow-lg",
             })}
-            aria-label="Close storyboard viewer"
-            title="Close storyboard viewer"
+            aria-label={localizeUi("ui.game.gamesurfacecomponent.closeStoryboardViewer")}
+            title={localizeUi("ui.game.gamesurfacecomponent.closeStoryboardViewer")}
           >
             <X size={14} />
           </button>
@@ -10291,14 +10394,14 @@ function GameSurfaceComponent({
             <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2">
               <div
                 className="flex min-w-0 cursor-grab items-center gap-2 text-[0.6875rem] font-semibold uppercase tracking-wide text-white/75 active:cursor-grabbing"
-                aria-label="Drag storyboard viewer"
+                aria-label={localizeUi("ui.game.gamesurfacecomponent.dragStoryboardViewer")}
               >
                 <GripHorizontal size={13} className="shrink-0 text-white/45" />
                 <PanelsTopLeft size={13} className="shrink-0 text-[var(--primary)]" />
-                <span className="truncate">Storyboard</span>
+                <span className="truncate">{localizeUi("ui.game.gamesurfacecomponent.storyboard")}</span>
               </div>
               <span className="shrink-0 text-[0.625rem] text-white/45">
-                {frame ? formatStoryboardSectionLabel(frame) : "Rendering"}
+                {frame ? formatStoryboardSectionLabel(frame) :localizeUi("ui.game.gamesurfacecomponent.rendering")}
               </span>
             </div>
 
@@ -10333,7 +10436,7 @@ function GameSurfaceComponent({
                 {storyboardGenerating || latestTurnStoryboardRendering ? (
                   <Loader2 size={14} className="animate-spin" />
                 ) : null}
-                {frame ? frame.status.replace("_", " ") : "Creating storyboard"}
+                {frame ? frame.status.replace("_", " ") :localizeUi("ui.game.gamesurfacecomponent.creatingStoryboard")}
               </div>
             )}
 
@@ -10349,8 +10452,8 @@ function GameSurfaceComponent({
                         type="button"
                         onClick={handleStoryboardViewerReplay}
                         className={STORYBOARD_VIEWER_CONTROL_BUTTON}
-                        title="Replay storyboard video"
-                        aria-label="Replay storyboard video"
+                        title={localizeUi("ui.game.gamesurfacecomponent.replayStoryboardVideo")}
+                        aria-label={localizeUi("ui.game.gamesurfacecomponent.replayStoryboardVideo")}
                       >
                         <RotateCcw size={13} />
                       </button>
@@ -10358,8 +10461,8 @@ function GameSurfaceComponent({
                         type="button"
                         onClick={handleStoryboardViewerPlaybackToggle}
                         className={STORYBOARD_VIEWER_CONTROL_BUTTON}
-                        title={storyboardViewerPlaying ? "Pause storyboard video" : "Play storyboard video"}
-                        aria-label={storyboardViewerPlaying ? "Pause storyboard video" : "Play storyboard video"}
+                        title={storyboardViewerPlaying ?localizeUi("ui.game.gamesurfacecomponent.pauseStoryboardVideo") :localizeUi("ui.game.gamesurfacecomponent.playStoryboardVideo")}
+                        aria-label={storyboardViewerPlaying ?localizeUi("ui.game.gamesurfacecomponent.pauseStoryboardVideo") :localizeUi("ui.game.gamesurfacecomponent.playStoryboardVideo")}
                       >
                         {storyboardViewerPlaying ? <Pause size={13} /> : <Play size={13} />}
                       </button>
@@ -10367,8 +10470,8 @@ function GameSurfaceComponent({
                         type="button"
                         onClick={() => setStoryboardViewerMuted((muted) => !muted)}
                         className={STORYBOARD_VIEWER_CONTROL_BUTTON}
-                        title={storyboardViewerMuted ? "Unmute storyboard video" : "Mute storyboard video"}
-                        aria-label={storyboardViewerMuted ? "Unmute storyboard video" : "Mute storyboard video"}
+                        title={storyboardViewerMuted ?localizeUi("ui.game.gamesurfacecomponent.unmuteStoryboardVideo") :localizeUi("ui.game.gamesurfacecomponent.muteStoryboardVideo")}
+                        aria-label={storyboardViewerMuted ?localizeUi("ui.game.gamesurfacecomponent.unmuteStoryboardVideo") :localizeUi("ui.game.gamesurfacecomponent.muteStoryboardVideo")}
                       >
                         {storyboardViewerMuted ? <VolumeX size={13} /> : <Volume2 size={13} />}
                       </button>
@@ -10386,8 +10489,8 @@ function GameSurfaceComponent({
                       })
                     }
                     className={STORYBOARD_VIEWER_CONTROL_BUTTON}
-                    title={`Change storyboard viewer size. Current: ${storyboardViewerSize}`}
-                    aria-label={`Change storyboard viewer size. Current: ${storyboardViewerSize}`}
+                    title={localizeUi("ui.game.replaystoryboardmedia.changeStoryboardViewerSizeCurrentValue1", { value1: storyboardViewerSize })}
+                    aria-label={localizeUi("ui.game.replaystoryboardmedia.changeStoryboardViewerSizeCurrentValue1", { value1: storyboardViewerSize })}
                   >
                     <Maximize2 size={13} />
                   </button>
@@ -10418,7 +10521,7 @@ function GameSurfaceComponent({
           </div>
           <div
             className="absolute -bottom-2 -right-2 z-20 flex h-7 w-7 cursor-nwse-resize items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] text-[var(--marinara-chat-chrome-button-text)] shadow-lg transition-all duration-150 hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)] active:scale-95"
-            aria-label="Resize storyboard viewer"
+            aria-label={localizeUi("ui.game.gamesurfacecomponent.resizeStoryboardViewer")}
             tabIndex={0}
             onPointerDown={handleStoryboardViewerResizeStart}
             onPointerMove={handleStoryboardViewerResizeMove}
@@ -10515,49 +10618,51 @@ function GameSurfaceComponent({
             className="marinara-chat-popover__item flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-[var(--marinara-chat-chrome-panel-text)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-highlight-text)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
             title={
               gameStoryboardBackgroundVisualEnabled
-                ? "Storyboard background display is active, so scene background generation is disabled"
-                : "Generate a background for the current scene"
+                ?localizeUi("ui.game.gamesurfacecomponent.storyboardBackgroundDisplayIsActiveSoSceneBackgroundGeneration")
+                :localizeUi("ui.game.gamesurfacecomponent.generateABackgroundForTheCurrentScene")
             }
           >
-            {manualBackgroundGenerating ? <Loader2 size={14} className="animate-spin" /> : <ImagePlus size={14} />}
-            Generate background
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleGenerateSceneVideo()}
-            disabled={
-              sceneVideoGenerating ||
-              !gameVideoGenerationEnabled ||
-              typeof chatMeta.gameLastIllustrationTag !== "string" ||
-              chatMeta.gameLastIllustrationTag.trim().length === 0
-            }
-            className="marinara-chat-popover__item flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-[var(--marinara-chat-chrome-panel-text)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-highlight-text)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
-            title="Generate a scene video from the latest illustration"
-          >
-            {sceneVideoGenerating ? <Loader2 size={14} className="animate-spin" /> : <Film size={14} />}
-            Generate video
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleGenerateTurnStoryboard()}
-            disabled={
-              storyboardGenerating ||
-              latestTurnStoryboardRendering ||
-              manualStoryboardReviewActive ||
-              isStreaming ||
-              !gameImageGenerationEnabled ||
-              !latestAssistantMsg?.id
-            }
-            className="marinara-chat-popover__item flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-[var(--marinara-chat-chrome-panel-text)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-highlight-text)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
-            title="Create storyboard keyframes from the current GM narration"
-          >
-            {storyboardGenerating || latestTurnStoryboardRendering ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <PanelsTopLeft size={14} />
-            )}
-            Storyboard turn
-          </button>
+            {manualBackgroundGenerating ? <Loader2 size={14} className="animate-spin" /> : <ImagePlus size={14} />}{localizeUi("ui.game.gamesurfacecomponent.generateBackground")}</button>
+          {gameSceneVideosEnabled && (
+            <button
+              type="button"
+              onClick={() => void handleGenerateSceneVideo()}
+              disabled={
+                sceneVideoGenerating ||
+                !gameVideoGenerationEnabled ||
+                typeof chatMeta.gameLastIllustrationTag !== "string" ||
+                chatMeta.gameLastIllustrationTag.trim().length === 0
+              }
+              className="marinara-chat-popover__item flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-[var(--marinara-chat-chrome-panel-text)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-highlight-text)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+              title={localizeUi("ui.game.gamesurfacecomponent.generateASceneVideoFromTheLatestIllustration")}
+            >
+              {sceneVideoGenerating ? <Loader2 size={14} className="animate-spin" /> : <Film size={14} />}
+              {localizeUi("ui.game.gamesurfacecomponent.generateVideo")}
+            </button>
+          )}
+          {gameStoryboardsEnabled && (
+            <button
+              type="button"
+              onClick={() => void handleGenerateTurnStoryboard()}
+              disabled={
+                storyboardGenerating ||
+                latestTurnStoryboardRendering ||
+                manualStoryboardReviewActive ||
+                isStreaming ||
+                !gameImageGenerationEnabled ||
+                !latestAssistantMsg?.id
+              }
+              className="marinara-chat-popover__item flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-[var(--marinara-chat-chrome-panel-text)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-highlight-text)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+              title={localizeUi("ui.game.gamesurfacecomponent.createStoryboardKeyframesFromTheCurrentGmNarration")}
+            >
+              {storyboardGenerating || latestTurnStoryboardRendering ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <PanelsTopLeft size={14} />
+              )}
+              {localizeUi("ui.game.gamesurfacecomponent.storyboardTurn")}
+            </button>
+          )}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           {(latestTurnStoryboard || storyboardGenerating) && (
@@ -10569,7 +10674,7 @@ function GameSurfaceComponent({
                   </h3>
                   <p className="mt-0.5 text-[0.6875rem] uppercase tracking-wide text-[var(--marinara-chat-chrome-panel-muted)]">
                     {storyboardGenerating || latestTurnStoryboardRendering
-                      ? "Generating"
+                      ?localizeUi("ui.characters.charactercallclipsgallery.generating")
                       : (latestTurnStoryboard?.status ?? "ready").replace("_", " ")}
                   </p>
                 </div>
@@ -10581,26 +10686,21 @@ function GameSurfaceComponent({
                       className="marinara-chat-popover__item flex items-center gap-1.5 rounded-md border border-[var(--marinara-chat-chrome-panel-divider)] px-2 py-1 text-[0.6875rem] font-medium text-[var(--marinara-chat-chrome-panel-text)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-highlight-text)]"
                       title={
                         gameStoryboardViewerDisplayMode === "background"
-                          ? "Show storyboard background"
-                          : "Show the floating storyboard viewer"
+                          ?localizeUi("ui.game.gamesurfacecomponent.showStoryboardBackground")
+                          :localizeUi("ui.game.gamesurfacecomponent.showTheFloatingStoryboardViewer")
                       }
                     >
-                      <PanelsTopLeft size={12} />
-                      Show viewer
-                    </button>
+                      <PanelsTopLeft size={12} />{localizeUi("ui.game.gamesurfacecomponent.showViewer")}</button>
                   ) : null}
                   {latestTurnStoryboard?.turnNumber ? (
-                    <span className="rounded-md border border-[var(--marinara-chat-chrome-panel-divider)] px-2 py-1 text-[0.6875rem] text-[var(--marinara-chat-chrome-panel-muted)]">
-                      Turn {latestTurnStoryboard.turnNumber}
+                    <span className="rounded-md border border-[var(--marinara-chat-chrome-panel-divider)] px-2 py-1 text-[0.6875rem] text-[var(--marinara-chat-chrome-panel-muted)]">{localizeUi("ui.game.gamesurfacecomponent.turn")} {latestTurnStoryboard.turnNumber}
                     </span>
                   ) : null}
                 </div>
               </div>
               {storyboardGenerating && !latestTurnStoryboard ? (
                 <div className="flex items-center gap-2 rounded-lg border border-[var(--marinara-chat-chrome-panel-divider)] px-3 py-4 text-xs text-[var(--marinara-chat-chrome-panel-muted)]">
-                  <Loader2 size={14} className="animate-spin" />
-                  Creating storyboard keyframes
-                </div>
+                  <Loader2 size={14} className="animate-spin" />{localizeUi("ui.game.gamesurfacecomponent.creatingStoryboardKeyframes")}</div>
               ) : null}
               {latestTurnStoryboard?.error ? (
                 <p className="mb-3 rounded-lg border border-[var(--marinara-chat-chrome-panel-divider)] px-3 py-2 text-[0.6875rem] text-[var(--destructive)]">
@@ -10621,7 +10721,7 @@ function GameSurfaceComponent({
                 />
               ) : null}
               {sceneVideoFailed && (
-                <p className="mt-2 text-[0.6875rem] text-[var(--destructive)]">Scene video generation failed.</p>
+                <p className="mt-2 text-[0.6875rem] text-[var(--destructive)]">{localizeUi("ui.game.gamesurfacecomponent.sceneVideoGenerationFailed")}</p>
               )}
             </div>
           )}
@@ -10704,8 +10804,8 @@ function GameSurfaceComponent({
                         setRetryMenuOpen(nextOpen);
                       }}
                       className={GAME_TOP_ICON_BUTTON}
-                      title="Retry..."
-                      aria-label="Retry..."
+                      title={t("game.toolbar.retry")}
+                      aria-label={t("game.toolbar.retry")}
                     >
                       <RotateCcw
                         size={14}
@@ -10717,13 +10817,13 @@ function GameSurfaceComponent({
                         <div className="mb-1 flex items-center justify-between gap-2 border-b border-[var(--marinara-chat-chrome-panel-divider)] px-2 pb-1.5 pt-0.5">
                           <div className={ROLEPLAY_POPOVER_TITLE}>
                             <RotateCcw size="0.75rem" className="shrink-0 text-[var(--muted-foreground)]" />
-                            <span>Retry</span>
+                            <span>{t("game.toolbar.retry")}</span>
                           </div>
                           <button
                             type="button"
                             onClick={() => setRetryMenuOpen(false)}
                             className={ROLEPLAY_POPOVER_CLOSE_BUTTON}
-                            aria-label="Close retry menu"
+                            aria-label={t("game.toolbar.closeRetry")}
                           >
                             <X size={ROLEPLAY_POPOVER_CLOSE_ICON_SIZE} />
                           </button>
@@ -10736,11 +10836,11 @@ function GameSurfaceComponent({
                           className={GAME_ACTION_MENU_ITEM}
                         >
                           <RotateCcw size={13} />
-                          <span>Retry Turn</span>
+                          <span>{t("game.toolbar.retryTurn")}</span>
                         </button>
                         <button onClick={handleRetryScene} disabled={!canRetryScene} className={GAME_ACTION_MENU_ITEM}>
                           <RefreshCw size={13} className={sceneAnalysis.isPending ? "animate-spin" : ""} />
-                          <span>Retry Scene Analysis</span>
+                          <span>{t("game.toolbar.retrySceneAnalysis")}</span>
                         </button>
                         {useSpotifyGameMusic && (
                           <button
@@ -10753,7 +10853,7 @@ function GameSurfaceComponent({
                             ) : (
                               <Volume2 size={13} />
                             )}
-                            <span>Retry Music DJ</span>
+                            <span>{t("game.toolbar.retryMusicDj")}</span>
                           </button>
                         )}
                         {useJsonMusicDjGameMusic && (
@@ -10767,7 +10867,7 @@ function GameSurfaceComponent({
                             ) : (
                               <Volume2 size={13} />
                             )}
-                            <span>Retry Music DJ</span>
+                            <span>{t("game.toolbar.retryMusicDj")}</span>
                           </button>
                         )}
                         <button
@@ -10779,7 +10879,7 @@ function GameSurfaceComponent({
                           className={GAME_ACTION_MENU_ITEM}
                         >
                           <Image size={13} />
-                          <span>Retry Assets Image Generation</span>
+                          <span>{t("game.toolbar.retryAssets")}</span>
                         </button>
                       </div>
                     )}
@@ -10790,8 +10890,8 @@ function GameSurfaceComponent({
                       className={getChatToolbarButtonClass({
                         open: sessionPanelOpen,
                       })}
-                      title="Session"
-                      aria-label="Session"
+                      title={t("game.toolbar.session")}
+                      aria-label={t("game.toolbar.session")}
                     >
                       <Feather size={14} />
                     </button>
@@ -10813,7 +10913,8 @@ function GameSurfaceComponent({
                         setMobileRetryMenuAnchor(null);
                       }}
                       className={GAME_TOP_ICON_BUTTON}
-                      title="Volume"
+                      title={t("game.toolbar.volume")}
+                      aria-label={t("game.toolbar.volume")}
                     >
                       {audioMuted || masterVolume === 0 ? <VolumeX size={14} /> : <Volume2 size={14} />}
                     </button>
@@ -10845,8 +10946,8 @@ function GameSurfaceComponent({
                       className={getChatToolbarButtonClass({
                         open: gameAssetsPanelOpen,
                       })}
-                      title="Game Assets"
-                      aria-label="Game Assets"
+                      title={t("game.toolbar.assets")}
+                      aria-label={t("game.toolbar.assets")}
                     >
                       <Folder size={14} />
                     </button>
@@ -10858,20 +10959,40 @@ function GameSurfaceComponent({
                     buttonClassName={GAME_TOP_ICON_BUTTON}
                     onOpen={dismissOtherFloatingWindows}
                   />
-                  <button onClick={handleOpenGalleryPanel} className={GAME_TOP_ICON_BUTTON} title="Gallery">
+                  <button
+                    data-chat-toolbar-panel-action="gallery"
+                    onClick={handleOpenGalleryPanel}
+                    className={GAME_TOP_ICON_BUTTON}
+                    title={t("chat.toolbar.gallery")}
+                    aria-label={t("chat.toolbar.gallery")}
+                  >
                     <Image size={14} />
                   </button>
                   {onSwitchChat ? (
                     <button
                       onClick={handleSwitchConnectedChat}
                       className={GAME_TOP_ICON_BUTTON}
-                      title={connectedChatName ? `Switch to ${connectedChatName}` : "Switch to connected chat"}
-                      aria-label={connectedChatName ? `Switch to ${connectedChatName}` : "Switch to connected chat"}
+                      title={
+                        connectedChatName
+                          ? t("chat.toolbar.switchTo", { name: connectedChatName })
+                          : t("chat.toolbar.switchToConnected")
+                      }
+                      aria-label={
+                        connectedChatName
+                          ? t("chat.toolbar.switchTo", { name: connectedChatName })
+                          : t("chat.toolbar.switchToConnected")
+                      }
                     >
                       <ArrowRightLeft size={14} />
                     </button>
                   ) : null}
-                  <button onClick={handleOpenSettingsPanel} className={GAME_TOP_ICON_BUTTON} title="Chat Settings">
+                  <button
+                    data-chat-toolbar-panel-action="settings"
+                    onClick={handleOpenSettingsPanel}
+                    className={GAME_TOP_ICON_BUTTON}
+                    title={t("chat.toolbar.settings")}
+                    aria-label={t("chat.toolbar.settings")}
+                  >
                     <Settings2 size={14} />
                   </button>
                 </div>
@@ -10898,7 +11019,8 @@ function GameSurfaceComponent({
                         setMobileRetryMenuOpen(false);
                       }}
                       className={GAME_MOBILE_ROOT_BUTTON}
-                      title="Game actions"
+                      title={t("game.toolbar.actions")}
+                      aria-label={t("game.toolbar.actions")}
                     >
                       <MoreHorizontal size={15} />
                     </button>
@@ -10929,8 +11051,8 @@ function GameSurfaceComponent({
                               setMobileVolumePopoverAnchor(null);
                             }}
                             className={GAME_MOBILE_ICON_BUTTON}
-                            title="Retry"
-                            aria-label="Retry"
+                            title={t("game.toolbar.retry")}
+                            aria-label={t("game.toolbar.retry")}
                           >
                             <RotateCcw
                               size={14}
@@ -10947,13 +11069,13 @@ function GameSurfaceComponent({
                                 <div className="mb-1 flex items-center justify-between gap-2 border-b border-[var(--marinara-chat-chrome-panel-divider)] px-2 pb-1.5 pt-0.5">
                                   <div className={ROLEPLAY_POPOVER_TITLE}>
                                     <RotateCcw size="0.75rem" className="shrink-0 text-[var(--muted-foreground)]" />
-                                    <span>Retry</span>
+                                    <span>{t("game.toolbar.retry")}</span>
                                   </div>
                                   <button
                                     type="button"
                                     onClick={() => setMobileRetryMenuOpen(false)}
                                     className={ROLEPLAY_POPOVER_CLOSE_BUTTON}
-                                    aria-label="Close retry menu"
+                                    aria-label={t("game.toolbar.closeRetry")}
                                   >
                                     <X size={ROLEPLAY_POPOVER_CLOSE_ICON_SIZE} />
                                   </button>
@@ -10968,7 +11090,7 @@ function GameSurfaceComponent({
                                   className={GAME_ACTION_MENU_ITEM}
                                 >
                                   <RotateCcw size={13} />
-                                  <span>Retry Turn</span>
+                                  <span>{t("game.toolbar.retryTurn")}</span>
                                 </button>
                                 <button
                                   onClick={() => {
@@ -10980,7 +11102,7 @@ function GameSurfaceComponent({
                                   className={GAME_ACTION_MENU_ITEM}
                                 >
                                   <RefreshCw size={13} className={sceneAnalysis.isPending ? "animate-spin" : ""} />
-                                  <span>Retry Scene Analysis</span>
+                                  <span>{t("game.toolbar.retrySceneAnalysis")}</span>
                                 </button>
                                 {useSpotifyGameMusic && (
                                   <button
@@ -10993,7 +11115,7 @@ function GameSurfaceComponent({
                                     ) : (
                                       <Volume2 size={13} />
                                     )}
-                                    <span>Retry Music DJ</span>
+                                    <span>{t("game.toolbar.retryMusicDj")}</span>
                                   </button>
                                 )}
                                 {useJsonMusicDjGameMusic && (
@@ -11007,7 +11129,7 @@ function GameSurfaceComponent({
                                     ) : (
                                       <Volume2 size={13} />
                                     )}
-                                    <span>Retry Music DJ</span>
+                                    <span>{t("game.toolbar.retryMusicDj")}</span>
                                   </button>
                                 )}
                                 <button
@@ -11020,7 +11142,7 @@ function GameSurfaceComponent({
                                   className={GAME_ACTION_MENU_ITEM}
                                 >
                                   <Image size={13} />
-                                  <span>Retry Assets Image Generation</span>
+                                  <span>{t("game.toolbar.retryAssets")}</span>
                                 </button>
                               </div>,
                             )}
@@ -11036,8 +11158,8 @@ function GameSurfaceComponent({
                               compact: true,
                               open: sessionPanelOpen,
                             })}
-                            title="Session"
-                            aria-label="Session"
+                            title={t("game.toolbar.session")}
+                            aria-label={t("game.toolbar.session")}
                           >
                             <Feather size={14} />
                           </button>
@@ -11058,7 +11180,8 @@ function GameSurfaceComponent({
                               setMobileGameAssetsPanelAnchor(null);
                             }}
                             className={GAME_MOBILE_ICON_BUTTON}
-                            title="Volume"
+                            title={t("game.toolbar.volume")}
+                            aria-label={t("game.toolbar.volume")}
                           >
                             {audioMuted || masterVolume === 0 ? <VolumeX size={14} /> : <Volume2 size={14} />}
                           </button>
@@ -11103,8 +11226,8 @@ function GameSurfaceComponent({
                               compact: true,
                               open: gameAssetsPanelOpen,
                             })}
-                            title="Game Assets"
-                            aria-label="Game Assets"
+                            title={t("game.toolbar.assets")}
+                            aria-label={t("game.toolbar.assets")}
                           >
                             <Folder size={14} />
                           </button>
@@ -11119,15 +11242,17 @@ function GameSurfaceComponent({
                               open,
                             })
                           }
-                          title="Active Context"
+                          title={t("chat.toolbar.activeContext")}
                           onOpen={dismissOtherFloatingWindows}
                         />
                         <button
+                          data-chat-toolbar-panel-action="gallery"
                           onClick={(event) => {
                             handleOpenGalleryPanel(event);
                           }}
                           className={GAME_MOBILE_ICON_BUTTON}
-                          title="Gallery"
+                          title={t("chat.toolbar.gallery")}
+                          aria-label={t("chat.toolbar.gallery")}
                         >
                           <Image size={14} />
                         </button>
@@ -11138,20 +11263,28 @@ function GameSurfaceComponent({
                               handleSwitchConnectedChat();
                             }}
                             className={GAME_MOBILE_ICON_BUTTON}
-                            title={connectedChatName ? `Switch to ${connectedChatName}` : "Switch to connected chat"}
+                            title={
+                              connectedChatName
+                                ? t("chat.toolbar.switchTo", { name: connectedChatName })
+                                : t("chat.toolbar.switchToConnected")
+                            }
                             aria-label={
-                              connectedChatName ? `Switch to ${connectedChatName}` : "Switch to connected chat"
+                              connectedChatName
+                                ? t("chat.toolbar.switchTo", { name: connectedChatName })
+                                : t("chat.toolbar.switchToConnected")
                             }
                           >
                             <ArrowRightLeft size={14} />
                           </button>
                         ) : null}
                         <button
+                          data-chat-toolbar-panel-action="settings"
                           onClick={(event) => {
                             handleOpenSettingsPanel(event);
                           }}
                           className={GAME_MOBILE_ICON_BUTTON}
-                          title="Chat Settings"
+                          title={t("chat.toolbar.settings")}
+                          aria-label={t("chat.toolbar.settings")}
                         >
                           <Settings2 size={14} />
                         </button>
@@ -11255,17 +11388,12 @@ function GameSurfaceComponent({
                       <div className="flex items-start gap-3">
                         <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-400" />
                         <div className="min-w-0 flex-1">
-                          <div className="text-xs font-medium text-amber-200">Local scene helper failed to start</div>
-                          <div className="mt-1 text-[0.6875rem] leading-relaxed text-white/70">
-                            Marinara will keep the game running without the local sidecar for now.
-                            {sidecarFailedRuntimeVariant &&
+                          <div className="text-xs font-medium text-amber-200">{localizeUi("ui.game.gamesurfacecomponent.localSceneHelperFailedToStart")}</div>
+                          <div className="mt-1 text-[0.6875rem] leading-relaxed text-white/70">{localizeUi("ui.game.gamesurfacecomponent.marinaraWillKeepTheGameRunningWithoutTheLocal")}{sidecarFailedRuntimeVariant &&
                               ` Runtime: ${sidecarFailedRuntimeVariant.replace(/-/g, " ")}.`}
-                            {sidecarStartupError ? ` ${sidecarStartupError}.` : ""}
+                            {sidecarStartupError ?localizeUi("ui.game.gamesurfacecomponent.value1", { value1: sidecarStartupError }) : ""}
                           </div>
-                          <div className="mt-1 text-[0.6875rem] leading-relaxed text-white/55">
-                            Open Local AI Model to retry startup, switch models, or disable local scene analysis
-                            temporarily.
-                          </div>
+                          <div className="mt-1 text-[0.6875rem] leading-relaxed text-white/55">{localizeUi("ui.game.gamesurfacecomponent.openLocalAiModelToRetryStartupSwitchModels")}</div>
                         </div>
                         <button
                           onClick={() => {
@@ -11273,9 +11401,7 @@ function GameSurfaceComponent({
                             openSidecarModal(true);
                           }}
                           className="rounded-lg bg-white/10 px-3 py-1.5 text-[0.6875rem] font-medium text-white/80 transition-colors hover:bg-white/20 hover:text-white"
-                        >
-                          Open Local AI Model
-                        </button>
+                        >{localizeUi("ui.game.gamesurfacecomponent.openLocalAiModel")}</button>
                       </div>
                     </div>
                   </div>
@@ -11286,14 +11412,12 @@ function GameSurfaceComponent({
                   <div className="pointer-events-auto absolute bottom-32 left-1/2 z-30 -translate-x-1/2">
                     <div className="flex items-center gap-3 rounded-xl bg-black/80 px-4 py-2.5 shadow-lg backdrop-blur-sm">
                       <AlertTriangle size={14} className="shrink-0 text-amber-400" />
-                      <span className="text-xs text-white/70">Image generation failed</span>
+                      <span className="text-xs text-white/70">{localizeUi("ui.game.gamesurfacecomponent.imageGenerationFailed")}</span>
                       <button
                         onClick={() => retryAssetGeneration()}
                         className="flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5 text-xs text-white/80 transition-colors hover:bg-white/20 hover:text-white"
                       >
-                        <RefreshCw size={12} />
-                        Retry
-                      </button>
+                        <RefreshCw size={12} />{localizeUi("ui.game.gamesurfacecomponent.retry")}</button>
                       <button
                         onClick={() => {
                           setAssetGenerationFailed(false);
@@ -11313,14 +11437,12 @@ function GameSurfaceComponent({
                   <div className="pointer-events-auto absolute bottom-32 left-1/2 z-30 -translate-x-1/2">
                     <div className="flex items-center gap-3 rounded-xl bg-black/80 px-4 py-2.5 shadow-lg backdrop-blur-sm">
                       <AlertTriangle size={14} className="shrink-0 text-amber-400" />
-                      <span className="text-xs text-white/70">Scene analysis failed</span>
+                      <span className="text-xs text-white/70">{localizeUi("ui.game.gamesurfacecomponent.sceneAnalysisFailed")}</span>
                       <button
                         onClick={() => retrySceneAnalysis()}
                         className="flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5 text-xs text-white/80 transition-colors hover:bg-white/20 hover:text-white"
                       >
-                        <RefreshCw size={12} />
-                        Retry
-                      </button>
+                        <RefreshCw size={12} />{localizeUi("ui.game.gamesurfacecomponent.retry")}</button>
                       <button
                         onClick={() => setSceneAnalysisFailed(false)}
                         className="text-white/40 transition-colors hover:text-white/70"
@@ -11426,9 +11548,7 @@ function GameSurfaceComponent({
                       <Suspense
                         fallback={
                           <div className="flex h-full flex-1 items-center justify-center text-sm text-white/70">
-                            <Loader2 size={15} className="mr-2 animate-spin" />
-                            Loading replay...
-                          </div>
+                            <Loader2 size={15} className="mr-2 animate-spin" />{localizeUi("ui.game.gamesurfacecomponent.loadingReplay")}</div>
                         }
                       >
                         <GameSessionReplay
@@ -11460,21 +11580,17 @@ function GameSurfaceComponent({
                           type="button"
                           onClick={() => setCombatLogsOpen(true)}
                           className="flex items-center gap-1.5 rounded-lg border border-white/15 bg-black/65 px-3 py-1.5 text-xs font-semibold text-white/80 shadow-lg backdrop-blur-md transition-colors hover:bg-black/80 hover:text-white"
-                          title="Open combat logs"
+                          title={localizeUi("ui.game.gamesurfacecomponent.openCombatLogs")}
                         >
-                          <ScrollText size={13} />
-                          Logs
-                        </button>
+                          <ScrollText size={13} />{localizeUi("ui.game.gamesurfacecomponent.logs")}</button>
                         <button
                           type="button"
                           onClick={handleReturnToPreCombatTurn}
                           disabled={!latestAssistantMsg?.id}
                           className="flex items-center gap-1.5 rounded-lg border border-amber-300/25 bg-amber-500/20 px-3 py-1.5 text-xs font-semibold text-amber-100 shadow-lg backdrop-blur-md transition-colors hover:bg-amber-500/30 disabled:opacity-50"
-                          title="Exit combat and remove the turn that started it"
+                          title={localizeUi("ui.game.gamesurfacecomponent.exitCombatAndRemoveTheTurnThatStartedIt")}
                         >
-                          <RotateCcw size={13} />
-                          Previous Turn
-                        </button>
+                          <RotateCcw size={13} />{localizeUi("ui.game.gamesurfacecomponent.previousTurn")}</button>
                       </>
                     );
 
@@ -11482,9 +11598,7 @@ function GameSurfaceComponent({
                       <div className="relative h-full min-h-0">
                         <Suspense
                           fallback={
-                            <div className="flex h-full items-center justify-center text-sm text-white/70">
-                              Loading combat...
-                            </div>
+                            <div className="flex h-full items-center justify-center text-sm text-white/70">{localizeUi("ui.game.gamesurfacecomponent.loadingCombat")}</div>
                           }
                         >
                           {effectiveCombatStyle === "tactical" ? (
@@ -11728,7 +11842,7 @@ function GameSurfaceComponent({
                 {combatLogsOpen && (
                   <div
                     className="absolute inset-0 z-40 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm"
-                    onClick={() => setCombatLogsOpen(false)}
+                    {...combatLogsBackdropDismiss}
                   >
                     <div
                       className="flex max-h-[82vh] w-full max-w-2xl flex-col rounded-xl border border-white/15 bg-[var(--card)] shadow-2xl"
@@ -11737,13 +11851,13 @@ function GameSurfaceComponent({
                       <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
                         <div className="flex items-center gap-2">
                           <ScrollText size={16} className="text-[var(--muted-foreground)]" />
-                          <span className="text-sm font-semibold text-[var(--foreground)]">Combat Logs</span>
+                          <span className="text-sm font-semibold text-[var(--foreground)]">{localizeUi("ui.game.gamesurfacecomponent.combatLogs")}</span>
                         </div>
                         <button
                           type="button"
                           onClick={() => setCombatLogsOpen(false)}
                           className="rounded-lg p-1 text-[var(--muted-foreground)] transition-colors hover:bg-zinc-800/80 hover:text-[var(--foreground)]"
-                          title="Close logs"
+                          title={localizeUi("ui.game.gamesurfacecomponent.closeLogs")}
                         >
                           <X size={16} />
                         </button>
@@ -11760,7 +11874,7 @@ function GameSurfaceComponent({
                         }}
                       >
                         {combatLogEntries.length === 0 ? (
-                          <p className="text-sm text-[var(--muted-foreground)]">No logs yet.</p>
+                          <p className="text-sm text-[var(--muted-foreground)]">{localizeUi("ui.game.gamesurfacecomponent.noLogsYet")}</p>
                         ) : (
                           <>
                             {hiddenCombatLogCount > 0 && (
@@ -11774,8 +11888,7 @@ function GameSurfaceComponent({
                                     );
                                   }}
                                   className="rounded-full border border-white/10 bg-black/55 px-3 py-1.5 text-xs font-medium text-white/70 shadow-lg transition-colors hover:bg-white/10 hover:text-white"
-                                >
-                                  Show more older logs ({hiddenCombatLogCount})
+                                >{localizeUi("ui.game.gamesurfacecomponent.showMoreOlderLogs")}{hiddenCombatLogCount})
                                 </button>
                               </div>
                             )}
@@ -11926,6 +12039,16 @@ function GameSurfaceComponent({
         <GameCharacterSheet
           card={partyCards[characterSheetCharId]}
           onClose={closeCharacterSheet}
+          onRegenerate={async () => {
+            const result = await regenerateCharacterSheet.mutateAsync({
+              chatId: activeChatId,
+              characterId: characterSheetCharId,
+              characterName: partyCards[characterSheetCharId].title,
+              debugMode: useUIStore.getState().debugMode,
+            });
+            return result.gameCard;
+          }}
+          isRegenerating={regenerateCharacterSheet.isPending}
           onSave={(gameCard: GameCharacterSheetGameCard | undefined) =>
             handleSaveCharacterSheet(partyCards[characterSheetCharId].title, gameCard)
           }
@@ -11934,25 +12057,20 @@ function GameSurfaceComponent({
 
       {imagePromptReviewModal}
 
-      <Modal open={interruptModalOpen} onClose={closeInterruptModal} title="Attempt to Interrupt?" width="max-w-md">
+      <Modal open={interruptModalOpen} onClose={closeInterruptModal} title={localizeUi("ui.game.gamesurfacecomponent.attemptToInterrupt")} width="max-w-md">
         <div className="flex flex-col gap-4">
           <div className="flex items-start gap-3">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-red-500/15">
               <AlertTriangle size="1.125rem" className="text-red-300" />
             </div>
-            <p className="text-sm text-[var(--muted-foreground)]">
-              Interruption attempts can go badly depending on the situation. Force Interrupt cuts in cleanly without
-              telling the GM it was an interrupt — Yes attempts an in-fiction interruption that the GM may resist.
-            </p>
+            <p className="text-sm text-[var(--muted-foreground)]">{localizeUi("ui.game.gamesurfacecomponent.interruptionAttemptsCanGoBadlyDependingOnTheSituation")}</p>
           </div>
 
           <div className="flex flex-wrap items-center justify-end gap-2">
             <button
               onClick={closeInterruptModal}
               className="rounded-lg bg-zinc-950/80 px-3 py-1.5 text-xs font-medium text-[var(--muted-foreground)] ring-1 ring-zinc-700/80 transition-colors hover:bg-zinc-800/80 hover:text-[var(--foreground)]"
-            >
-              No
-            </button>
+            >{localizeUi("ui.game.gamesurfacecomponent.no")}</button>
             <button
               onClick={() => confirmInterrupt("force")}
               className="rounded-lg px-3 py-1.5 text-xs font-semibold ring-1 transition-colors"
@@ -11962,17 +12080,13 @@ function GameSurfaceComponent({
                 borderColor: "rgba(32, 194, 14, 0.35)",
                 boxShadow: "0 0 0 1px rgba(32, 194, 14, 0.35) inset",
               }}
-              title="Cut in without telling the GM it was an interrupt"
-            >
-              Force Interrupt
-            </button>
+              title={localizeUi("ui.game.gamesurfacecomponent.cutInWithoutTellingTheGmItWasAn")}
+            >{localizeUi("ui.game.gamesurfacecomponent.forceInterrupt")}</button>
             <button
               onClick={() => confirmInterrupt("risky")}
               className="rounded-lg bg-red-500/20 px-3 py-1.5 text-xs font-semibold text-red-200 ring-1 ring-red-500/40 transition-colors hover:bg-red-500/30"
-              title="Attempt an in-fiction interruption — outcomes can fail"
-            >
-              Yes
-            </button>
+              title={localizeUi("ui.game.gamesurfacecomponent.attemptAnInFictionInterruptionOutcomesCanFail")}
+            >{localizeUi("ui.game.gamesurfacecomponent.yes")}</button>
           </div>
         </div>
       </Modal>
@@ -11980,7 +12094,7 @@ function GameSurfaceComponent({
       <Modal
         open={confirmEndSessionOpen}
         onClose={handleCloseEndSessionDialog}
-        title={concludeSession.isPending ? "Ending Session" : "End Session"}
+        title={concludeSession.isPending ?localizeUi("ui.game.gamesurfacecomponent.endingSession") :localizeUi("ui.game.gamesurfacecomponent.endSession")}
         width="max-w-md"
       >
         <div className="flex flex-col gap-4">
@@ -11990,8 +12104,8 @@ function GameSurfaceComponent({
             </div>
             <p className="text-sm text-[var(--muted-foreground)]">
               {concludeSession.isPending
-                ? "Ending this session and generating its summary. Please wait here until the process finishes."
-                : "Are you sure you want to end this session? You can start a new session afterwards, but this one will be marked as concluded."}
+                ?localizeUi("ui.game.gamesurfacecomponent.endingThisSessionAndGeneratingItsSummaryPleaseWait")
+                :localizeUi("ui.game.gamesurfacecomponent.areYouSureYouWantToEndThisSession")}
             </p>
           </div>
 
@@ -12003,15 +12117,13 @@ function GameSurfaceComponent({
 
           {!concludeSession.isPending && (
             <label className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-[var(--foreground)]">
-                What do you want to happen in the next session (optional)?
-              </span>
+              <span className="text-xs font-medium text-[var(--foreground)]">{localizeUi("ui.game.gamesurfacecomponent.whatDoYouWantToHappenInTheNext")}</span>
               <textarea
                 value={nextSessionRequest}
                 onChange={(event) => setNextSessionRequest(event.target.value)}
                 rows={4}
                 maxLength={5000}
-                placeholder="Leave empty to let the GM steer naturally."
+                placeholder={localizeUi("ui.game.gamesurfacecomponent.leaveEmptyToLetTheGmSteerNaturally")}
                 className="resize-none rounded-lg border border-zinc-700/80 bg-zinc-950/80 px-3 py-2 text-sm leading-relaxed text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]/70 focus:border-zinc-400/60"
               />
             </label>
@@ -12022,15 +12134,13 @@ function GameSurfaceComponent({
               onClick={handleCloseEndSessionDialog}
               disabled={concludeSession.isPending}
               className="rounded-lg bg-zinc-950/80 px-3 py-1.5 text-xs font-medium text-[var(--muted-foreground)] ring-1 ring-zinc-700/80 transition-colors hover:bg-zinc-800/80 hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Cancel
-            </button>
+            >{localizeUi("chat.delete.dialog.cancel")}</button>
             <button
               onClick={handleConfirmEndSession}
               disabled={concludeSession.isPending}
               className="rounded-lg bg-[var(--destructive)]/15 px-3 py-1.5 text-xs font-medium text-[var(--destructive)] ring-1 ring-[var(--destructive)]/25 transition-colors hover:bg-[var(--destructive)]/25 disabled:opacity-50"
             >
-              {concludeSession.isPending ? "Ending Session..." : "End Session"}
+              {concludeSession.isPending ?localizeUi("ui.game.gamesurfacecomponent.endingSession_06ef62f") :localizeUi("ui.game.gamesurfacecomponent.endSession")}
             </button>
           </div>
         </div>

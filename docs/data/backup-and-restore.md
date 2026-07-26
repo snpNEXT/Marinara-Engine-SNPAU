@@ -37,6 +37,18 @@ This step matters most on Android and iOS. On those devices the app's own data f
 
 The **.zip** also contains a plain text file named `RESTORE.txt`. It explains how to recover your data by hand if you ever need to. Treat the backup as private: it can hold secret files used to unlock your saved API keys. To learn what each folder holds, see the data location guide linked below.
 
+## Automatic backups
+
+The **Backup & Export** section can also create a rotating automatic full backup on the device that runs Marinara.
+Turn on **Automatic Backups**, then choose **Daily**, **Weekly**, or **Monthly**. Marinara creates the first backup
+shortly after you enable it and replaces that automatic archive after each successful run, so the backup folder does
+not grow without limit.
+
+Automatic backups are stored as `backups/marinara-automatic-backup.zip` inside Marinara's data folder. They use the
+same restorable, streamed archive format as **Download Backup**, including uploaded media and the encryption-key file
+when one exists. Keep a separate copy outside Marinara's data folder if you need protection from a lost disk, erased
+app storage, or a device reset.
+
 ## Export Profile
 
 **Export Profile** creates a smaller file with your account data. Media is included, so avatars, images, and your custom notification sound come along too.
@@ -56,13 +68,13 @@ The dialog offers two formats:
 | **Marinara Native** | Keeps Marinara fields, lorebook folders, character and persona data, presets, agents, themes, Personal Extension drafts, and inline media. | Yes |
 | **Compatible JSON** | Plain character, persona, and lorebook files for other roleplay tools. | No |
 
-Choose **Marinara Native** to keep a copy you can restore in Marinara later. It downloads a file named `marinara-profile.json`.
+Choose **Marinara Native** to keep a copy you can restore in Marinara later. Smaller profiles download as
+`marinara-profile.json`; larger profiles are offered as a streamed `marinara-profile.zip` whose data is split into
+bounded table files so a large library does not have to fit into one in-memory JSON string.
 
 Personal Extension code is preserved in a native profile, but its enabled state and execution approval are not. Every restored extension arrives disabled and must be reviewed again in **Settings** > **Addons**.
 
 Choose **Compatible JSON** only when you want to move characters or lorebooks to another tool. It downloads a **.zip** of plain files. You cannot restore this file back into Marinara with **Import Profile**.
-
-If a **Marinara Native** file would be very large, Marinara cannot fit it into one JSON file. It then asks **Export profile as ZIP?**. Click to accept, and it downloads `marinara-profile.zip` with the same data instead.
 
 ## Restoring with Import Profile
 
@@ -106,7 +118,7 @@ Importing does not erase keys you have already set. If you re-import an old prof
 
 ## The Existing backups list
 
-The **Backup & Export** section can show an **Existing backups** list with a delete button. In normal use this list stays empty. **Download Backup** saves the file straight to your device. It does not leave a copy on the server, so nothing appears here. You do not need this list to make or keep a backup.
+The **Backup & Export** section can show an **Existing backups** list with a delete button. In normal use this list stays empty. **Download Backup** saves the file straight to your device. It does not leave a copy in this list, and the single rotating automatic archive is managed by the Automatic Backups control instead. You do not need this list to make or keep a downloaded backup.
 
 ## Related guides
 

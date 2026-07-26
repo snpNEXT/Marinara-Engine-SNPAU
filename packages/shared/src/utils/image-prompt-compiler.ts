@@ -28,6 +28,36 @@ export interface CompileImagePromptInput {
   hardNegative?: string | null;
   /** Apply the selected grammar to generated prose that is normally preserved for review/readability. */
   applyPromptModeToSourcePrompt?: boolean;
+  /**
+   * Suppress appending the profile's raw styleText to the prompt. Used when the
+   * style is already conveyed another way (e.g. fed to the prompt-building LLM
+   * as guidance), so it is not duplicated verbatim into the final image prompt.
+   */
+  omitProfileStyleText?: boolean;
+}
+
+/**
+ * The active profile's style text when it should steer generation (a real base
+ * style, not "auto"). Empty when there is no explicit style to apply.
+ */
+export function resolveImageStyleGuidanceText(
+  styleProfiles: ImageStyleProfileSettings,
+  styleProfileId?: string | null,
+): string {
+  const profile = findImageStyleProfile(styleProfiles, styleProfileId || styleProfiles.defaultProfileId);
+  const styleText = profile.styleText?.trim() ?? "";
+  return styleText && profile.baseStyle !== "auto" ? styleText : "";
+}
+
+/**
+ * Guidance block appended to an image prompt-builder's system prompt so the
+ * generated prompt reflects the configured style instead of having the raw
+ * style text pasted verbatim into the final prompt.
+ */
+export function formatImageStylePromptGuidance(styleText: string): string {
+  const trimmed = styleText.trim();
+  if (!trimmed) return "";
+  return `\n\nVisual style guidance: compose the image prompt so it naturally reflects this style: ${trimmed}. Weave the style into the description; do not copy this guidance verbatim into your output.`;
 }
 
 export function compileImagePrompt(input: CompileImagePromptInput): CompiledImagePrompt {
@@ -112,7 +142,7 @@ function compileImagePromptPass(
   const sourceCues = compactPrompt ? deriveTaggedSourceCues(sourceCueText) : [];
   const profileSubjectTags = reconcileProfileSubjectTags(profile.subjectTags[input.kind] ?? "", sourceCues);
   const profileStyleText =
-    compactPrompt || (profile.styleText && generatedStyle)
+    input.omitProfileStyleText || compactPrompt || (profile.styleText && generatedStyle)
       ? ""
       : profile.styleText && profile.baseStyle !== "auto"
         ? profile.styleText

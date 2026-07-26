@@ -6,6 +6,39 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Added
 
+- Added a **Documentation Language** selector under **Settings → General** and at the end of the first-time tutorial. Languages ship as downloadable packs from the repository's `docs-i18n` branch: **Download & Replace** fetches the selected language into the data folder with per-file integrity verification and live progress, then removes the previous language's pack, so installs carry only one language and checkouts carry none. Guides without a translation open in English with an `EN` badge, the in-app docs search works in the active language, the choice survives every update path, the first start after an update automatically refreshes the pack when its translations changed, and a **Fix documentation** failsafe verifies, re-downloads, or resets a broken pack. Forks and mirrors can point `DOCS_I18N_BASE_URL` at their own copy of the branch (#4100).
+- Added the first documentation language pack: **Spanish**, covering all 123 in-app guides (developer docs included) in neutral international Spanish, with UI control names kept in English so instructions can be followed against the English interface. Contributor docs now require keeping every language pack on `docs-i18n` in step when guides change (#4100).
+- Added rotating daily, weekly, or monthly automatic full backups under **Settings → Advanced → Backup & Export**, with the latest run and failure state shown in the UI (#4071).
+- Added a **Retry** action to Game Mode character-sheet editing. It regenerates only the selected Persona or party member from their card and the current campaign history, keeps the result as an unsaved draft for review, and preserves the original sheet unless the user saves (#4048).
+- Added a compact **New Chat** launcher to Home that explains Conversation, Roleplay, and Game before opening the selected mode's existing setup wizard (#4058).
+- Added a Roleplay **Illustrator image connection** override in Chat Settings, separate from the prompt-writing connection and with the Illustrator Agent's configured image model as its fallback (#4057).
+
+### Changed
+
+- Made the Game dynamic-image prompt timeout configurable with `GAME_DYNAMIC_IMAGE_PROMPT_TIMEOUT_MS`, retaining 45 seconds as the default and accepting values from 10 seconds to 1 hour (#4052).
+- Made Game session conclusions prepare the next playable arc with refreshed goals, quest seeds, pressure clocks, factions, and named NPCs so the following session does not inherit a stale scenario plan (#4059).
+
+### Fixed
+
+- Rendered indented code fences correctly in the shared markdown renderer: a fence nested inside a list item (as in several developer guides) previously never closed and showed its ` ``` ` markers as literal text in the docs viewer, and list-nested code no longer renders or copies phantom leading spaces (#4100).
+- Replaced the unsafe built-in **Clean HTML (Outgoing Prompt)** regex with a validator-safe tag cleaner and migrated unchanged legacy defaults, restoring HTML and group-speaker-tag cleanup for Immersive HTML and Agent prompt history without overwriting customized scripts (#4101).
+- Streamed native profile and full-backup ZIP exports to disk with bounded JSONL table shards, preventing large libraries from failing with `Invalid string length` while preserving preview/import compatibility and archive integrity checks (#4064).
+- Included the live Character or Persona card as the first, explicitly labelled current revision in version history; saved revisions now show stable sequence numbers and second-precision edit times (#4040).
+- Made Conversation composer chrome focus the real text field, kept mobile thinking controls clear of participant names, and repaired the downloadable Calls surface's mobile participant labels and seven-button control rail (#4053, #4054).
+- Removed checked marks from unselected Character and Persona multi-select controls (#4055).
+- Enforced case-insensitive, globally unique public Noodle handles across Personas and Characters, including deterministic suffixes for auto-created profiles and reconciliation of older collisions (#4056).
+- Routed Krea models through OpenRouter's dedicated Images API while retaining image-only modality detection for every current `krea/` model (#4061).
+- Rewrote incomplete legacy UI-settings blobs with newly synced preferences, preserving an explicitly disabled Game Text Effects setting across staging updates (#4062).
+
+## [2.3.5]
+
+### Added
+
+- Added a built-in **kaomoji picker** to the composer (a `(◕‿◕)` button beside the emoji picker in Roleplay/Game, and a Kaomoji tab in the Conversation media panel) with categories and fuzzy keyword search, so emoticons like `¯\_(ツ)_/¯` and `(╯°□°）╯︵ ┻━┻` can be inserted without leaving the app (#4038).
+- Added user-defined **Custom Quick Replies**: create your own buttons in **Settings → General → Quick replies** that each send a fixed message, macro, or `/slash` command from the quick replies menu beside Send, in both Conversation and Roleplay/Game input (#4024).
+- Added a **Show Only Translation** toggle to **Chat Settings → Translation** that displays just the translated text in place of the original once a message is translated, and rendered translated text through the same markdown pipeline as messages so bold, italics, and quotes format correctly (#4024).
+- Added an `AGENT_CALL_TIMEOUT_MS` override for agent LLM calls (trackers, HTML reformatter, and other agents). The previous fixed 5-minute cap cancelled slow local models mid-stream and then burned a second 5 minutes on the automatic invalid-JSON retry; the cap is now configurable from 10 seconds to 1 hour and documented next to `CHAT_GENERATION_TIMEOUT_MS` (#3958).
+
 - Added safe host-rendered contribution slots to Browser Personal Extensions. `marinara.ui.registerContribution(...)` can add themed top-bar buttons, Extensions menu items, and right-side panels containing bounded text, actions, inputs, selects, toggles, sliders, and color controls. Marinara validates and renders every descriptor while activation and form events return only to the exact-hash-approved sandbox Worker; extensions never receive host DOM, markup, styling, React, network, or direct API authority. The existing constrained `marinara.ui.showWindow(...)` window supports the expanded controls as well.
 - Added Atlas Cloud as an image and video generation service, including curated starter models, text/reference image requests, asynchronous job polling, connection tests, and Game/scene-video routing (#3989).
 - Added an Android-only **Show Android status bar** control under **Settings > General > App Behavior**, preserving fullscreen as the default while allowing the Android app to remember and restore the time, battery level, and notification icons across restarts (#3985).
@@ -18,6 +51,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Changed
 
+- Reworked the Chat Settings **Prompt Preset** area. Roleplay now shows the preset-section editor directly once a preset is selected instead of hiding it behind a collapsible toggle. Conversation and Game show the effective Conversation/Game prompt (from the selected preset, or the built-in default when the preset has none) in an inline editor you can type in directly, expand to a full window, and browse macros from — and the redundant "open selected preset" shortcut button was removed. Chat Settings now also remembers which sections you left expanded and restores them the next time you open the drawer.
+- Synchronized the stable release identity as v2.3.5 across the Engine, PWA manifest, Windows installer, Android bootstrap APK, update checks, Home release link, and Professor Mari's What's New announcement. Android uses `versionName` `2.3.5` with `versionCode` `40` so it updates over every previously published APK.
 - Confined Professor Mari's raw shell commands to macOS Seatbelt or Linux Bubblewrap with outbound network denied, inherited server secrets removed, environment-secret and Git-internal files unreadable, and filesystem writes limited to ordinary workspace files and a private temporary directory. Dependency manifests, lockfiles, launchers, installers, and CI workflows are read-only in the shell and use an explicit in-chat review; raw package-manager mutations are blocked even when a package is cached. Raw shell now fails closed when no supported sandbox is available, while structured workspace and app-data tools remain available (#3973).
 - Made **Default Dialogue Color** permanently active for cards without their own dialogue color and removed its redundant Appearance toggle; Character and Persona card colors still take priority.
 
@@ -30,6 +65,19 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Fixed
 
+- Kept the mobile chat composer above the Android Firefox software keyboard by explicitly requesting content
+  resizing and sizing the app shell to the smallest live visual/layout viewport, including delayed keyboard geometry
+  updates after focus (#4044).
+- Improved character and persona card version history: restoring an older version now saves the current card to history first (so the newer version is never lost), each saved version keeps its own edit timestamp instead of the later save's time, and the side-by-side comparison view wraps long unbroken text such as URLs and HTML in creator notes instead of overflowing (#4040).
+- Made Settings tabs—including **Appearance**—resolve duplicate English labels against the selected locale instead
+  of falling back through an unrelated untranslated key, and routed the remaining static client interface copy,
+  editor and library controls, chat toolbars, notices, accessibility text, and Noodle surfaces through the English
+  localization catalog with an automated untranslated-UI audit.
+- Moved Character and Persona creator/version metadata beside the editable card name in editor headers, with responsive truncation that preserves the version and keeps long names from displacing header actions.
+- Stopped Conversation **Selfie** mode from pasting the image style profile's Generation Style Text verbatim into the final image prompt. The style now guides the prompt-building model (matching Roleplay illustration), so it still shapes the image without the redundant, CLIP-diluting copy (#4028).
+- Moved the Natural/Random progression choice onto the **Push Story** button: clicking it now opens a Naturally/Randomly selector that arms the chosen mode for the next response, replacing the mode controls previously buried in **Chat Settings → Agents → Narrative Director**, the add-agent setup, and the Narrative Director editor's Story Push Mode default (#4022).
+- Fetched the full Google Gemini model catalog in the connection editor by following the ListModels pagination, and refreshed the built-in Gemini/Gemma fallback list with the latest entries (#4021).
+- Gave in-app updates realistic install budgets on slow devices — update steps get four times as long on Android/Termux, where switching between stable and staging forces a near-full dependency reinstall — and update failures now report the failing pnpm step, timeouts, and the tail of the process output instead of an opaque `Command failed` (#4020).
 - Refreshed single- and multi-message deletion with the shared modal and control styling, including chroma-driven buttons, selection bars, checkboxes, and selected-message highlights instead of fixed destructive pink or red treatments.
 - Restored the immediate **Thinking…** placeholder in Roleplay and made Conversation and Roleplay expose one reasoning control as soon as the first reasoning chunk arrives. The existing Model Thoughts viewer now stays open and updates with the live reasoning stream, while completed messages retain their saved reasoning control (#3963).
 - Fixed Web Search (and other tools) returning empty or malformed parameters with GPT-5.6/5.5/5.4 and Codex models on the OpenAI Responses API. Streamed function-call arguments are keyed by the response item id rather than the call id, so the tool query is no longer dropped mid-stream (#4010).

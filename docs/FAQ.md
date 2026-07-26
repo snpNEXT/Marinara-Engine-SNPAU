@@ -86,9 +86,13 @@ Some options cost nothing to try. **Pollinations** image generation needs no key
 
 ## Are my API keys safe?
 
-Yes. Every API key is encrypted with AES-256 before it is saved on disk. When you export a connection, a profile, or a backup, your keys are always stripped out and never included.
+Yes. Every API key is encrypted with AES-256 before it is saved on disk. Connection and profile exports strip secret
+values. A full backup is different: it contains the encrypted records and, when present, the encryption-key file
+needed to unlock them, so keep full backup ZIPs private.
 
-Because exports leave keys out, you must re-enter each API key after you import a profile or restore a backup.
+Because profile import intentionally leaves secret values out, you must re-enter each API key after importing a
+profile, including when you use **Import Profile** on a full backup ZIP. A manual full data-folder restore preserves
+the encrypted keys when its matching encryption-key file is restored too.
 
 ## What is a character card?
 
@@ -127,7 +131,10 @@ For setup and details, see [Memory and Summaries](agents/memory.md).
 
 Open **Settings**, go to the **Advanced** tab, find the **Backup & Export** section, and click **Download Backup**. This saves a single `.zip` archive with your data and your uploaded files. To restore it later, use **Import Profile (JSON/ZIP)** in **Settings** under the **Imports** tab and choose the same `.zip`.
 
-Remember that a backup does not include your API keys, so re-enter them after you restore. For the full guide, see [Backing Up and Restoring](data/backup-and-restore.md).
+You can also enable a rotating daily, weekly, or monthly automatic backup in the same section. Full backup ZIPs can
+contain the encrypted records and the key file needed to unlock them, so keep them private. **Import Profile** still
+leaves provider secrets blank, so re-enter keys after importing. For the full guide, see
+[Backing Up and Restoring](data/backup-and-restore.md).
 
 ## How do extensions work, and can I import third-party code?
 

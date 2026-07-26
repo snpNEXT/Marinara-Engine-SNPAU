@@ -55,7 +55,9 @@ export function startNoodleAutoPostScheduler(app: FastifyInstance) {
     if (stopped || polling) return;
     polling = true;
     try {
-      if (!(await noodle.getSettings()).enableNoodler) return;
+      const settings = await noodle.getSettings();
+      // Master schedule switch pauses automatic posting without disabling NoodleR itself.
+      if (!settings.enableNoodler || !settings.autoPostingScheduleEnabled) return;
       const accounts = await noodle.listAutoPostEnabledAccounts();
       const nowIso = new Date().toISOString();
       for (const account of accounts) {

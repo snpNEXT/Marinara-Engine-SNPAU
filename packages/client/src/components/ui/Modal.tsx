@@ -13,7 +13,9 @@ import {
   NEUTRAL_PANEL_TITLE,
 } from "./neutral-surface-styles";
 import { useDialogFocusScope } from "../../hooks/use-dialog-focus-scope";
+import { useBackdropDismiss } from "../../hooks/use-backdrop-dismiss";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 interface ModalProps {
   open: boolean;
@@ -52,6 +54,7 @@ export function Modal({
   panelStyle,
   closeDisabled = false,
 }: ModalProps) {
+  const { t: localizeUi } = useUiTranslation();
   const localize = useLocalizedUiText();
   const localizedTitle = localize(title);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -61,6 +64,7 @@ export function Modal({
   const [mounted, setMounted] = useState(false);
   const [animating, setAnimating] = useState<"enter" | "exit" | null>(null);
   const enterRafRef = useRef<number | null>(null);
+  const backdropDismiss = useBackdropDismiss(onClose, closeDisabled);
   useDialogFocusScope(open && mounted, panelRef, initialFocusRef, restoreFocusRef, focusScopePortalSelector);
 
   useEffect(() => {
@@ -140,12 +144,11 @@ export function Modal({
         transition: "opacity 150ms ease-out",
       }}
       onTransitionEnd={handleAnimationEnd}
-      onClick={(e) => {
-        if (e.target === overlayRef.current && !closeDisabled) onClose();
-      }}
+      {...backdropDismiss}
     >
       {/* Backdrop */}
       <div
+        data-backdrop-dismiss-surface="true"
         className="mari-modal-backdrop absolute inset-0 bg-black/55 backdrop-blur-[2px]"
         style={{
           opacity: isEntering ? 1 : 0,
@@ -176,7 +179,7 @@ export function Modal({
             type="button"
             onClick={onClose}
             disabled={closeDisabled}
-            aria-label={`${localize("Close")} ${localizedTitle}`}
+            aria-label={localizeUi("ui.ui.modal.value1Value2", { value1: localize("Close"), value2: localizedTitle })}
             className="rounded-lg p-1.5 text-[var(--marinara-chat-chrome-panel-muted)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-highlight-text)] disabled:cursor-wait disabled:opacity-40"
           >
             <X size="1rem" />

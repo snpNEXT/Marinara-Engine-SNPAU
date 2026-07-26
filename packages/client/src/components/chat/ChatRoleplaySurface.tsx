@@ -1,5 +1,5 @@
 import { createPortal } from "react-dom";
-import { useTranslation } from "react-i18next";
+import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
 import {
   Suspense,
   lazy,
@@ -16,6 +16,7 @@ import {
 } from "react";
 import { isMessageShadowedByLiveStream } from "../../lib/generation-stream-policy";
 import {
+  normalizeChatSummaryEntries,
   type ChatSummaryEntry,
   type MarkerConfig,
   type PromptGroup,
@@ -405,7 +406,7 @@ function groupPathEnabled(groupId: string | null, groupsById: Map<string, Prompt
   return true;
 }
 
-function resolveChatSummaryInjectionHint(
+function resolveChatSummaryInjectionHintKey(
   presetFull: { sections: PromptSection[]; groups: PromptGroup[] } | null | undefined,
 ): string | null {
   if (!presetFull) return null;
@@ -421,15 +422,15 @@ function resolveChatSummaryInjectionHint(
   );
 
   if (summarySections.length === 0) {
-    return "Enabled summaries will be added at the end of the system prompt. Add an enabled Chat Summary marker to the active preset to choose a specific position.";
+    return "chat.summary.injectionHint.missingMarker";
   }
   if (activeSummarySections.length > 0) {
-    return "Enabled summaries will be inserted where the active preset's Chat Summary marker is placed.";
+    return "chat.summary.injectionHint.activeMarker";
   }
   if (enabledSummarySections.length === 0) {
-    return "The active preset's Chat Summary marker is disabled, so enabled summaries will be added at the end of the system prompt.";
+    return "chat.summary.injectionHint.disabledMarker";
   }
-  return "The active preset's Chat Summary marker is inside a disabled group, so enabled summaries will be added at the end of the system prompt.";
+  return "chat.summary.injectionHint.disabledGroup";
 }
 
 function ActiveContextLinksButton({
@@ -443,6 +444,7 @@ function ActiveContextLinksButton({
   chatCharIds: string[];
   characterMap: CharacterMap;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -554,13 +556,13 @@ function ActiveContextLinksButton({
       <div className="flex items-center gap-2 px-2 pb-1">
         <div className={cn(ROLEPLAY_POPOVER_TITLE, "min-w-0 flex-1")}>
           <BookOpen size="0.75rem" className="shrink-0 text-[var(--muted-foreground)]" />
-          <span className="truncate">Active Context</span>
+          <span className="truncate">{t("chat.toolbar.activeContext")}</span>
         </div>
         <button
           type="button"
           onClick={() => setOpen(false)}
           className={cn(ROLEPLAY_POPOVER_CLOSE_BUTTON, "-my-1 shrink-0")}
-          aria-label="Close active context"
+          aria-label={t("chat.toolbar.closeActiveContext")}
         >
           <X size={ROLEPLAY_POPOVER_CLOSE_ICON_SIZE} />
         </button>
@@ -569,8 +571,10 @@ function ActiveContextLinksButton({
         {characterIds.map((id, index) => (
           <button key={id} type="button" role="menuitem" className={itemClassName} onClick={() => openCharacter(id)}>
             <User size="0.8125rem" className={iconClassName} />
-            <span className="min-w-0 flex-1 truncate">{characterMap.get(id)?.name ?? `Character ${index + 1}`}</span>
-            <span className="shrink-0 text-[0.625rem] text-foreground/45">Card</span>
+            <span className="min-w-0 flex-1 truncate">
+              {characterMap.get(id)?.name ?? t("chat.toolbar.characterFallback", { number: index + 1 })}
+            </span>
+            <span className="shrink-0 text-[0.625rem] text-foreground/45">{t("editor.tabs.card")}</span>
           </button>
         ))}
         {visibleLorebookIds.map((id, index) => {
@@ -584,9 +588,13 @@ function ActiveContextLinksButton({
               onClick={() => openLorebook(id)}
             >
               <BookOpen size="0.8125rem" className={iconClassName} />
-              <span className="min-w-0 flex-1 truncate">{lorebookNameById.get(id) ?? `Lorebook ${index + 1}`}</span>
+              <span className="min-w-0 flex-1 truncate">
+                {lorebookNameById.get(id) ?? t("chat.toolbar.lorebookFallback", { number: index + 1 })}
+              </span>
               <span className="shrink-0 text-[0.625rem] text-foreground/45">
-                {entries.length > 0 ? `${entries.length} hit${entries.length === 1 ? "" : "s"}` : "Lorebook"}
+                {entries.length > 0
+                  ? t("chat.toolbar.lorebookHits", { count: entries.length })
+                  : t("chat.toolbar.lorebook")}
               </span>
             </button>
           );
@@ -597,7 +605,7 @@ function ActiveContextLinksButton({
               fallback={
                 <div className="flex items-center gap-2 py-4 text-xs text-[var(--muted-foreground)]">
                   <Loader2 size="0.75rem" className="animate-spin" />
-                  Loading active context...
+                  {t("chat.toolbar.loadingActiveContext")}
                 </div>
               }
             >
@@ -608,8 +616,8 @@ function ActiveContextLinksButton({
         {promptPresetId && (
           <button type="button" role="menuitem" className={itemClassName} onClick={() => openPreset(promptPresetId)}>
             <FileText size="0.8125rem" className={iconClassName} />
-            <span className="min-w-0 flex-1 truncate">{presetName ?? "Prompt preset"}</span>
-            <span className="shrink-0 text-[0.625rem] text-foreground/45">Preset</span>
+            <span className="min-w-0 flex-1 truncate">{presetName ?? t("chat.toolbar.promptPreset")}</span>
+            <span className="shrink-0 text-[0.625rem] text-foreground/45">{t("chat.toolbar.preset")}</span>
           </button>
         )}
       </div>
@@ -628,8 +636,8 @@ function ActiveContextLinksButton({
           });
         }}
         className={getChatToolbarButtonClass({ compact, open })}
-        title="Active Context"
-        aria-label="Active Context"
+        title={t("chat.toolbar.activeContext")}
+        aria-label={t("chat.toolbar.activeContext")}
         aria-haspopup="menu"
         aria-expanded={open}
       >
@@ -710,12 +718,25 @@ function SummaryButton({
   totalMessageCount: number;
   promptPresetId?: string | null;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const [anchor, setAnchor] = useState<ComponentProps<typeof SummaryPopover>["anchor"]>(null);
   const compact = useUIStore((s) => s.centerCompact);
   const { data: presetFull } = usePresetFull(promptPresetId ?? null);
-  const summaryInjectionHint = useMemo(() => resolveChatSummaryInjectionHint(presetFull), [presetFull]);
+  const summaryInjectionHintKey = useMemo(() => resolveChatSummaryInjectionHintKey(presetFull), [presetFull]);
+  const summaryInjectionHint = summaryInjectionHintKey ? t(summaryInjectionHintKey) : null;
+  const enabledSummaryCount = useMemo(
+    () =>
+      normalizeChatSummaryEntries(summaryEntries, {
+        legacySummary: summary,
+      }).filter((entry) => entry.enabled).length,
+    [summary, summaryEntries],
+  );
+  const summaryButtonLabel =
+    enabledSummaryCount > 0
+      ? t("chat.summary.toolbarLabelWithCount", { count: enabledSummaryCount })
+      : t("chat.summary.toolbarLabel");
   const readSummaryAnchor = useCallback((): ComponentProps<typeof SummaryPopover>["anchor"] => {
     const button = buttonRef.current;
     if (!button || typeof window === "undefined") return null;
@@ -768,14 +789,25 @@ function SummaryButton({
     <div className="relative" onClick={(e) => e.stopPropagation()}>
       <button
         ref={buttonRef}
+        data-chat-toolbar-panel-action="summary"
         onClick={() => {
           setAnchor(readSummaryAnchor());
           setOpen(!open);
         }}
-        className={getChatToolbarButtonClass({ active: !!summary, compact, open })}
-        title="Chat Summary"
+        aria-label={summaryButtonLabel}
+        className={getChatToolbarButtonClass({
+          compact,
+          open,
+          sizeClassName: "relative h-8 w-8",
+        })}
+        title={summaryButtonLabel}
       >
         <ScrollText size="0.875rem" />
+        {enabledSummaryCount > 0 && (
+          <span className="absolute -right-1 -top-1 flex min-w-4 justify-center rounded-full bg-[var(--marinara-chat-chrome-highlight-bg)] px-1 text-[0.5625rem] font-semibold leading-4 text-[var(--marinara-chat-chrome-panel-muted)]">
+            {enabledSummaryCount}
+          </span>
+        )}
       </button>
       {open && (
         <Suspense fallback={null}>
@@ -820,6 +852,7 @@ function AuthorNotesButton({
   renderPanel: boolean;
   mobilePanel: boolean;
 }) {
+  const { t } = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -834,6 +867,7 @@ function AuthorNotesButton({
     const handle = (e: PointerEvent) => {
       const target = e.target as Node;
       if (ref.current?.contains(target) || panelRef.current?.contains(target)) return;
+      if (target instanceof Element && target.closest("[data-macro-modal]")) return;
       // On mobile, the virtual keyboard opening can synthesise a pointer/mouse
       // event outside the panel that would otherwise close it mid-edit; don't
       // dismiss while a field inside the panel is focused. Mobile-only: on desktop
@@ -917,7 +951,8 @@ function AuthorNotesButton({
           onOpenChange(nextOpen);
         }}
         className={getChatToolbarButtonClass({ active: hasNotes, compact, open })}
-        title="Author's Notes"
+        title={t("chat.toolbar.authorNotes")}
+        aria-label={t("chat.toolbar.authorNotes")}
       >
         <PenLine size="0.875rem" />
       </button>
@@ -947,7 +982,7 @@ function AuthorNotesButton({
                   fallback={
                     <div className="flex items-center gap-2 py-4 text-xs text-[var(--muted-foreground)]">
                       <Loader2 size="0.75rem" className="animate-spin" />
-                      Loading author's notes...
+                      {t("chat.toolbar.loadingAuthorNotes")}
                     </div>
                   }
                 >
@@ -978,7 +1013,7 @@ function AuthorNotesButton({
                   fallback={
                     <div className="flex items-center gap-2 py-4 text-xs text-[var(--muted-foreground)]">
                       <Loader2 size="0.75rem" className="animate-spin" />
-                      Loading author's notes...
+                      {t("chat.toolbar.loadingAuthorNotes")}
                     </div>
                   }
                 >
@@ -1224,6 +1259,8 @@ export function ChatRoleplaySurface({
   onSelectAllBelowSelection,
   isGrouped,
 }: RoleplaySurfaceProps) {
+  const { t: localizeUi } = useUiTranslation();
+  const { t } = useTranslation();
   useRenderTimer("rp-surface"); // [#3104 diagnostic]
   const { data: installedCapabilities = [] } = useInstalledCapabilityPackages();
   const createObserverMessage = useCreateMessage(activeChatId);
@@ -1623,17 +1660,27 @@ export function ChatRoleplaySurface({
                       renderPanel={!compactToolbarOwnsAuthorNotes}
                       mobilePanel={false}
                     />
-                    <ChatToolbarButton icon={<Image size="0.875rem" />} title="Gallery" onClick={onOpenGallery} />
+                    <ChatToolbarButton
+                      icon={<Image size="0.875rem" />}
+                      title={t("chat.toolbar.gallery")}
+                      panelAction="gallery"
+                      onClick={onOpenGallery}
+                    />
                     {chat?.connectedChatId && (
                       <ChatToolbarButton
                         icon={<ArrowRightLeft size="0.875rem" />}
-                        title={linkedChatName ? `Switch to ${linkedChatName}` : "Connected chat"}
+                        title={
+                          linkedChatName
+                            ? t("chat.toolbar.switchTo", { name: linkedChatName })
+                            : t("chat.toolbar.connectedChat")
+                        }
                         onClick={() => useChatStore.getState().setActiveChatId(chat.connectedChatId!)}
                       />
                     )}
                     <ChatToolbarButton
                       icon={<Settings2 size="0.875rem" />}
-                      title="Chat Settings"
+                      title={t("chat.toolbar.settings")}
+                      panelAction="settings"
                       onClick={onOpenSettings}
                     />
                   </ChatToolbarMenu>
@@ -1742,17 +1789,27 @@ export function ChatRoleplaySurface({
                           renderPanel={compactToolbarOwnsAuthorNotes}
                           mobilePanel
                         />
-                        <ChatToolbarButton icon={<Image size="0.875rem" />} title="Gallery" onClick={onOpenGallery} />
+                        <ChatToolbarButton
+                          icon={<Image size="0.875rem" />}
+                          title={t("chat.toolbar.gallery")}
+                          panelAction="gallery"
+                          onClick={onOpenGallery}
+                        />
                         {chat?.connectedChatId && (
                           <ChatToolbarButton
                             icon={<ArrowRightLeft size="0.875rem" />}
-                            title={linkedChatName ? `Switch to ${linkedChatName}` : "Connected chat"}
+                            title={
+                              linkedChatName
+                                ? t("chat.toolbar.switchTo", { name: linkedChatName })
+                                : t("chat.toolbar.connectedChat")
+                            }
                             onClick={() => useChatStore.getState().setActiveChatId(chat.connectedChatId!)}
                           />
                         )}
                         <ChatToolbarButton
                           icon={<Settings2 size="0.875rem" />}
-                          title="Chat Settings"
+                          title={t("chat.toolbar.settings")}
+                          panelAction="settings"
                           onClick={onOpenSettings}
                         />
                       </ChatToolbarMenu>
@@ -1813,17 +1870,27 @@ export function ChatRoleplaySurface({
                         renderPanel={compactToolbarOwnsAuthorNotes}
                         mobilePanel
                       />
-                      <ChatToolbarButton icon={<Image size="0.875rem" />} title="Gallery" onClick={onOpenGallery} />
+                      <ChatToolbarButton
+                        icon={<Image size="0.875rem" />}
+                        title={t("chat.toolbar.gallery")}
+                        panelAction="gallery"
+                        onClick={onOpenGallery}
+                      />
                       {chat?.connectedChatId && (
                         <ChatToolbarButton
                           icon={<ArrowRightLeft size="0.875rem" />}
-                          title={linkedChatName ? `Switch to ${linkedChatName}` : "Connected chat"}
+                          title={
+                            linkedChatName
+                              ? t("chat.toolbar.switchTo", { name: linkedChatName })
+                              : t("chat.toolbar.connectedChat")
+                          }
                           onClick={() => useChatStore.getState().setActiveChatId(chat.connectedChatId!)}
                         />
                       )}
                       <ChatToolbarButton
                         icon={<Settings2 size="0.875rem" />}
-                        title="Chat Settings"
+                        title={t("chat.toolbar.settings")}
+                        panelAction="settings"
                         onClick={onOpenSettings}
                       />
                     </ChatToolbarMenu>
@@ -1864,9 +1931,7 @@ export function ChatRoleplaySurface({
                         <Loader2 size="0.75rem" className="animate-spin" />
                       ) : (
                         <ChevronUp size="0.75rem" />
-                      )}
-                      Load More
-                    </button>
+                      )}{localizeUi("ui.chat.chatroleplaysurface.loadMore")}</button>
                   </div>
                 )}
 

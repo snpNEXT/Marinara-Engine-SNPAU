@@ -9,6 +9,7 @@ import { formatBytes, formatDate } from "../../lib/format";
 import { gameAssetFileUrl } from "../../lib/game-asset-urls";
 import { CATEGORY_ICONS } from "./constants";
 import { FileIcon, isImage } from "./utils";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 const ASSET_GRID_PAGE_SIZE = 240;
 
@@ -87,6 +88,7 @@ export function AssetGrid({
   getFolderSelectionStatus,
   onOpenFolderSelection,
 }: AssetGridProps) {
+  const { t: localizeUi } = useUiTranslation();
   const [visibleCount, setVisibleCount] = useState(ASSET_GRID_PAGE_SIZE);
   const [failedThumbnails, setFailedThumbnails] = useState<Set<string>>(() => new Set());
   const nodesSignature = `${nodes.length}:${nodes[0]?.path ?? ""}:${nodes[nodes.length - 1]?.path ?? ""}`;
@@ -100,8 +102,8 @@ export function AssetGrid({
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 pt-8 text-[var(--muted-foreground)]">
         <FolderOpen size="2rem" className="opacity-40" />
-        <p className="text-sm">This folder is empty</p>
-        <p className="text-xs opacity-60">Drop files here to upload</p>
+        <p className="text-sm">{localizeUi("ui.gameAssets.assetgrid.thisFolderIsEmpty")}</p>
+        <p className="text-xs opacity-60">{localizeUi("ui.gameAssets.assetgrid.dropFilesHereToUpload")}</p>
       </div>
     );
   }
@@ -120,12 +122,9 @@ export function AssetGrid({
   const loadMore = () => setVisibleCount((count) => Math.min(nodes.length, count + ASSET_GRID_PAGE_SIZE));
   const paginationFooter = hasMoreNodes ? (
     <div className="flex items-center justify-center gap-3 px-3 py-3 text-xs text-[var(--muted-foreground)]">
-      <span>
-        Showing {visibleNodes.length} of {nodes.length}
+      <span>{localizeUi("ui.gameAssets.assetgrid.showing")} {visibleNodes.length} {localizeUi("ui.noodle.noodlehome.of")} {nodes.length}
       </span>
-      <button type="button" onClick={loadMore} className="mari-chrome-control mari-chrome-control--small text-xs">
-        Load more
-      </button>
+      <button type="button" onClick={loadMore} className="mari-chrome-control mari-chrome-control--small text-xs">{localizeUi("ui.gameAssets.assetgrid.loadMore")}</button>
     </div>
   ) : null;
 
@@ -182,8 +181,8 @@ export function AssetGrid({
                         ? "border-[var(--border)] bg-[var(--background)] text-[var(--muted-foreground)] hover:border-[var(--primary)]/40"
                         : "border-[var(--primary)]/35 bg-[var(--primary)]/10 text-[var(--primary)] hover:bg-[var(--primary)]/15")
                     }
-                    title="Select assets for this game"
-                    aria-label={`Select ${node.name} assets for this game`}
+                    title={localizeUi("ui.gameAssets.assetgrid.selectAssetsForThisGame")}
+                    aria-label={localizeUi("ui.gameAssets.assetgrid.selectValue1AssetsForThisGame", { value1: node.name })}
                   >
                     <FolderSelectionMark status={folderSelectionStatus} />
                   </button>
@@ -238,9 +237,9 @@ export function AssetGrid({
         className={`grid ${gridColsClass} items-center gap-3 border-b border-[var(--border)]/40 px-3 py-1.5 text-xs font-medium text-[var(--muted-foreground)]`}
       >
         <span></span>
-        <span className="col-span-2">Name</span>
-        {listColumns.size && <span className="text-right">Size</span>}
-        {listColumns.modified && <span className="text-right">Modified</span>}
+        <span className="col-span-2">{localizeUi("ui.characters.metadatatab.name")}</span>
+        {listColumns.size && <span className="text-right">{localizeUi("ui.gameAssets.assetgrid.size")}</span>}
+        {listColumns.modified && <span className="text-right">{localizeUi("ui.gameAssets.assetgrid.modified")}</span>}
         <span></span>
       </div>
       {visibleNodes.map((node) => {
@@ -286,8 +285,8 @@ export function AssetGrid({
                       ? "border-[var(--border)] text-[var(--muted-foreground)] hover:border-[var(--primary)]/40"
                       : "border-[var(--primary)]/35 bg-[var(--primary)]/10 text-[var(--primary)] hover:bg-[var(--primary)]/15")
                   }
-                  title="Select assets for this game"
-                  aria-label={`Select ${node.name} assets for this game`}
+                  title={localizeUi("ui.gameAssets.assetgrid.selectAssetsForThisGame")}
+                  aria-label={localizeUi("ui.gameAssets.assetgrid.selectValue1AssetsForThisGame", { value1: node.name })}
                 >
                   <FolderSelectionMark status={folderSelectionStatus} />
                 </button>

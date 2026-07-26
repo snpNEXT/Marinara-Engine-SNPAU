@@ -40,6 +40,7 @@ import {
   COMPACT_CHARACTER_MOOD_STATIC_CLASS,
   CompactCharacterField,
 } from "./CharacterTrackerField";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 const CHARACTER_CARD_CLASS =
   "group/character @container relative isolate h-full min-w-0 overflow-hidden rounded-md border border-[color-mix(in_srgb,var(--tracker-profile-rule)_52%,transparent)] bg-[image:var(--tracker-profile-material)] p-0.5 shadow-[0_0_9px_color-mix(in_srgb,var(--tracker-profile-dialogue-glow)_13%,transparent),inset_0_1px_0_color-mix(in_srgb,var(--foreground)_4%,transparent),inset_0_-1px_0_color-mix(in_srgb,var(--background)_24%,transparent)] transition-colors duration-200 hover:border-[color-mix(in_srgb,var(--foreground)_18%,var(--tracker-profile-rule)_82%)] [background-blend-mode:var(--tracker-profile-material-blend)]";
@@ -109,6 +110,7 @@ function CompactThoughtBubble({
   hideMode?: boolean;
   onToggleHidden?: () => void;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   const lock = useTrackerFieldLock(lockKey);
   const hiddenToggleActive = hideMode && !!onToggleHidden;
   if (hidden && !hideMode) return null;
@@ -123,18 +125,18 @@ function CompactThoughtBubble({
             <button
               type="button"
               onClick={onToggleHidden}
-              title={hidden ? "Show thoughts" : "Hide thoughts"}
-              aria-label={hidden ? "Show thoughts" : "Hide thoughts"}
+              title={hidden ?localizeUi("ui.trackerPanel.thoughtbubble.showThoughts") :localizeUi("ui.trackerPanel.thoughtbubble.hideThoughts")}
+              aria-label={hidden ?localizeUi("ui.trackerPanel.thoughtbubble.showThoughts") :localizeUi("ui.trackerPanel.thoughtbubble.hideThoughts")}
               aria-pressed={hidden}
               className="min-h-4 w-full min-w-0 rounded px-0 py-0 text-left text-[0.59375rem] font-medium italic leading-[1.05] text-[color-mix(in_srgb,var(--tracker-profile-text)_72%,transparent)] transition-colors hover:bg-[var(--tracker-profile-accent-solid)]/10"
             >
-              <span className="line-clamp-3 break-words tracking-[0]">{hidden ? "Hidden" : thoughtText}</span>
+              <span className="line-clamp-3 break-words tracking-[0]">{hidden ?localizeUi("ui.trackerPanel.thoughtbubble.hidden") : thoughtText}</span>
             </button>
           ) : onSave ? (
             <InlineEdit
               value={value ?? ""}
               onSave={onSave}
-              placeholder="Thoughts"
+              placeholder={localizeUi("ui.trackerPanel.thoughtbubble.thoughts")}
               className="min-h-4 w-full min-w-0 px-0 py-0 text-[0.59375rem] font-medium italic leading-[1.05] [--foreground:color-mix(in_srgb,var(--tracker-profile-text)_90%,var(--tracker-profile-accent-solid)_10%)] [--muted-foreground:color-mix(in_srgb,var(--tracker-profile-muted-text)_82%,var(--tracker-profile-accent-solid)_18%)] hover:bg-[var(--tracker-profile-accent-solid)]/10"
               showEditHint={false}
               previewLineCount={3}
@@ -193,6 +195,7 @@ export function CharacterTrackerCard({
   onToggleFeatured?: () => void;
   onUploadAvatar?: () => void;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   const {
     fieldLocks,
     hiddenTrackerFields,
@@ -341,8 +344,8 @@ export function CharacterTrackerCard({
             type="button"
             onClick={onRemove}
             className={CHARACTER_REMOVE_BUTTON_CLASS}
-            title="Remove character"
-            aria-label={`Remove ${visibleText(character.name, "character")}`}
+            title={localizeUi("ui.trackerPanel.charactertrackercard.removeCharacter")}
+            aria-label={localizeUi("ui.trackerPanel.charactertrackercard.removeValue1", { value1: visibleText(character.name, "character") })}
           >
             <X size="0.6875rem" />
           </button>
@@ -354,7 +357,7 @@ export function CharacterTrackerCard({
           <InlineEdit
             value={character.name}
             onSave={(name) => onUpdate({ ...character, name: name || "Character" })}
-            placeholder="Character"
+            placeholder={localizeUi("ui.characters.cardlibrarydetailcard.character")}
             className={CHARACTER_NAME_EDIT_CLASS}
             showEditHint={false}
             fitPreview
@@ -381,8 +384,8 @@ export function CharacterTrackerCard({
         <button
           type="button"
           onClick={onToggleFeatured}
-          title="Feature character card"
-          aria-label="Feature character card"
+          title={localizeUi("ui.trackerPanel.charactertrackercard.featureCharacterCard")}
+          aria-label={localizeUi("ui.trackerPanel.charactertrackercard.featureCharacterCard")}
           aria-pressed={false}
           className={CHARACTER_FEATURE_BUTTON_CLASS}
         >
@@ -424,7 +427,7 @@ export function CharacterTrackerCard({
               icon={<HeartPulse size="0.6875rem" />}
               accessibleLabel="Mood"
               value={character.mood}
-              placeholder="Mood"
+              placeholder={localizeUi("ui.trackerPanel.charactertrackercard.mood")}
               onSave={onUpdate ? (mood) => onUpdate({ ...character, mood }) : undefined}
               tone="mood"
               readable={readableDetailRows}
@@ -440,7 +443,7 @@ export function CharacterTrackerCard({
               icon={<Eye size="0.6875rem" />}
               accessibleLabel="Look"
               value={character.appearance}
-              placeholder="Appearance"
+              placeholder={localizeUi("chat.settings.inlineEditor.fields.appearance")}
               onSave={onUpdate ? (appearance) => onUpdate({ ...character, appearance: appearance || null }) : undefined}
               tone="appearance"
               readable={readableDetailRows}
@@ -455,7 +458,7 @@ export function CharacterTrackerCard({
               icon={<Shirt size="0.6875rem" />}
               accessibleLabel="Outfit"
               value={character.outfit}
-              placeholder="Outfit"
+              placeholder={localizeUi("ui.trackerPanel.charactertrackercard.outfit")}
               onSave={onUpdate ? (outfit) => onUpdate({ ...character, outfit: outfit || null }) : undefined}
               tone="outfit"
               readable={readableDetailRows}
@@ -499,7 +502,7 @@ export function CharacterTrackerCard({
                 <InlineEdit
                   value={name}
                   onSave={(nextName) => updateCustomField(name, nextName, rawValue)}
-                  placeholder="Field"
+                  placeholder={localizeUi("ui.trackerPanel.charactertrackercard.field")}
                   ariaLabel={`${name} field name`}
                   className="min-w-0 px-0.5 py-0 font-medium"
                   scrollOnHover
@@ -522,7 +525,7 @@ export function CharacterTrackerCard({
                 <InlineEdit
                   value={displayValue}
                   onSave={(nextValue) => updateCustomField(name, name, nextValue)}
-                  placeholder="Value"
+                  placeholder={localizeUi("ui.trackerPanel.charactertrackercard.value")}
                   ariaLabel={`${name} value`}
                   className="min-w-0 px-0.5 py-0"
                   scrollOnHover={!readableCustomFields}
@@ -556,8 +559,8 @@ export function CharacterTrackerCard({
                 <button
                   type="button"
                   onClick={() => removeCustomField(name)}
-                  title={`Remove ${name}`}
-                  aria-label={`Remove ${name}`}
+                  title={localizeUi("ui.trackerPanel.charactertrackercard.removeValue1", { value1: name })}
+                  aria-label={localizeUi("ui.trackerPanel.charactertrackercard.removeValue1", { value1: name })}
                   className="flex h-5 w-5 items-center justify-center justify-self-end rounded text-[var(--destructive)] transition-all hover:bg-[var(--destructive)]/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border)] active:scale-90 [@media(pointer:coarse)]:h-6 [@media(pointer:coarse)]:w-6"
                 >
                   <X size="0.625rem" />
@@ -566,7 +569,7 @@ export function CharacterTrackerCard({
             </div>
           ))}
           {hasEditableCustomFieldAdd && (
-            <InlineAddRow title="Add custom field" onClick={addCustomField} className="col-span-full" />
+            <InlineAddRow title={localizeUi("ui.trackerPanel.charactertrackercard.addCustomField")} onClick={addCustomField} className="col-span-full" />
           )}
         </div>
       )}
