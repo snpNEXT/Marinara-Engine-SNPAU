@@ -3401,23 +3401,18 @@ export async function generateRoutes(app: FastifyInstance) {
           agentContext.memory._personaAvatarPath =
             persona && typeof persona.avatarPath === "string" ? persona.avatarPath : null;
         }
-        // Inject the image gen connection's prompting hint into agent memory so the illustrator
-        // (and any other image-prompt-generating agent) can use it.
-        // Resolve using the same priority as the illustrator itself:
-        // game/roleplay image connection → agent settings image connection → conversation selfie connection → default image gen connection.
+        // Inject the image connection's prompting hint into agent memory so the
+        // Illustrator sees guidance from the same connection it will generate with.
         {
           const illustratorAgentForHint = resolvedAgents.find((a) => a.type === "illustrator");
-          const agentImageConnId = ((illustratorAgentForHint?.settings?.imageConnectionId as string) ?? "").trim();
-          const imgHintCandidates = [
-            typeof chatMeta.gameImageConnectionId === "string" ? chatMeta.gameImageConnectionId.trim() : "",
-            agentImageConnId,
-            typeof chatMeta.imageGenConnectionId === "string" ? chatMeta.imageGenConnectionId.trim() : "",
-          ].filter(Boolean);
-          let imgConnForHint = null;
-          for (const id of imgHintCandidates) {
-            imgConnForHint = await connections.getById(id).catch(() => null);
-            if (imgConnForHint) break;
-          }
+          const imageConnectionId = resolveIllustratorImageConnectionId(
+            requestChatMode,
+            chatMeta,
+            illustratorAgentForHint?.settings?.imageConnectionId,
+          );
+          let imgConnForHint = imageConnectionId
+            ? await connections.getById(imageConnectionId).catch(() => null)
+            : null;
           imgConnForHint ??= await connections.getDefaultForImageGeneration().catch(() => null);
           const hint =
             imgConnForHint && typeof (imgConnForHint as any).imagePromptHint === "string"

@@ -3300,12 +3300,11 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
         replyMediaToolRef,
         openProfile,
         onNudgeReply: (() => {
-          const author = accountById.get(post.authorAccountId);
-          if (!author || author.kind !== "character" || !author.invited) return undefined;
+          if (mentionableCharacterAccounts.length === 0) return undefined;
           return () => {
             setNudgePrompt("");
             setNudgeFastMode(false);
-            setNudgeRequest({ accountId: author.id, displayName: author.displayName, targetPostId: post.id });
+            setNudgeRequest({ accountId: "", displayName: "", targetPostId: post.id });
           };
         })(),
         startEditingPost,
@@ -4241,12 +4240,40 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
         onClose={() => setNudgeRequest(null)}
         title={
           nudgeRequest?.targetPostId
-            ? localizeUi("ui.noodle.noodlehome.nudgeReplyTitle", { value1: nudgeRequest.displayName })
+            ? localizeUi("ui.noodle.noodlehome.nudgeReplyTitle")
             : localizeUi("ui.noodle.noodlehome.nudgePostTitle", { value1: nudgeRequest?.displayName ?? "" })
         }
         width="max-w-md"
       >
         <div className="space-y-3">
+          {nudgeRequest?.targetPostId && (
+            <label className="block space-y-1">
+              <span className={labelClass}>{localizeUi("ui.noodle.noodlehome.nudgeCharacter")}</span>
+              <select
+                value={nudgeRequest.accountId}
+                onChange={(event) => {
+                  const account = accountById.get(event.target.value);
+                  setNudgeRequest((current) =>
+                    current
+                      ? {
+                          ...current,
+                          accountId: event.target.value,
+                          displayName: account?.displayName ?? "",
+                        }
+                      : null,
+                  );
+                }}
+                className={fieldClass}
+              >
+                <option value="">{localizeUi("ui.noodle.noodlehome.nudgeCharacterPlaceholder")}</option>
+                {mentionableCharacterAccounts.map((account) => (
+                  <option key={account.id} value={account.id}>
+                    {account.displayName}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <textarea
             value={nudgePrompt}
             onChange={(event) => setNudgePrompt(event.target.value)}
@@ -4266,7 +4293,7 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
             </button>
             <button
               type="button"
-              disabled={!nudgeRequest || nudgeNoodleCharacter.isPending}
+              disabled={!nudgeRequest?.accountId || nudgeNoodleCharacter.isPending}
               onClick={() => {
                 if (!nudgeRequest) return;
                 nudgeNoodleCharacter.mutate(
