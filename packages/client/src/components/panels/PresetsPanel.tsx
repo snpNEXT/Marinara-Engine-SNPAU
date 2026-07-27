@@ -1046,7 +1046,7 @@ export function PresetsPanel() {
         {presetFolders.length > 0 && <p className="mari-folder-helper">{localizeUi("ui.panels.presetspanel.dragAndDropPresetsToFoldersDoubleClickOr")}</p>}
       </div>
 
-      <PanelSection title={localizeUi("navigation.topbar.presets")} icon={<FileText size="0.8125rem" />}>
+      <PanelSection title={localizeUi("ui.panels.presetspanel.prompts")} icon={<FileText size="0.8125rem" />}>
         <div className="flex flex-col gap-0.5">
           {presetFolders.map((folder) => {
             const isEditing = editingFolderId === folder.id;

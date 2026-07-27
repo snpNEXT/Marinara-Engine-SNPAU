@@ -250,6 +250,8 @@ export function LorebookEntryRow({
   const rowRef = useRef<HTMLDivElement>(null);
   const statusButtonRef = useRef<HTMLButtonElement>(null);
   const statusMenuRef = useRef<HTMLDivElement>(null);
+  const upstreamOutletNameRef = useRef(entry.outletName);
+  const pendingOutletNameRef = useRef(entry.outletName);
 
   // Re-sync local state when the upstream entry changes (e.g. after refetch)
   // so we don't show stale values, but avoid clobbering an in-flight edit.
@@ -257,6 +259,11 @@ export function LorebookEntryRow({
   useEffect(() => {
     if (lastSyncedRef.current === entry) return;
     lastSyncedRef.current = entry;
+    const previousOutletName = upstreamOutletNameRef.current;
+    upstreamOutletNameRef.current = entry.outletName;
+    if (pendingOutletNameRef.current === previousOutletName) {
+      pendingOutletNameRef.current = entry.outletName;
+    }
     setLocalEnabled(entry.enabled);
     setLocalStatus(deriveStatus(entry));
     setLocalPosition(entry.position);
@@ -422,7 +429,9 @@ export function LorebookEntryRow({
       if (
         !(await showConfirmDialog({
           title:localizeUi("ui.lorebooks.lorebookentryrow.deleteEntry_46ca45b"),
-          message:localizeUi("ui.lorebooks.lorebookentryrow.deleteThisLorebookEntry"),
+          message: localizeUi("dialog.delete.namedPermanent", {
+            name: entry.name,
+          }),
           confirmLabel:localizeUi("lorebook.editor.batch.delete"),
           tone: "destructive",
         }))
@@ -431,10 +440,13 @@ export function LorebookEntryRow({
       }
       deleteEntry.mutate({ lorebookId, entryId: entry.id });
     },
-    [lorebookId, entry.id, deleteEntry, localizeUi],
+    [deleteEntry, entry.id, entry.name, localizeUi, lorebookId],
   );
 
   const duplicateDisabled = duplicateEntry.isPending || updateEntry.isPending;
+  const handleOutletNameDraftChange = useCallback((outletName: string) => {
+    pendingOutletNameRef.current = outletName;
+  }, []);
 
   const handleDuplicate = useCallback(
     (e: ReactMouseEvent) => {
@@ -456,6 +468,7 @@ export function LorebookEntryRow({
           order: localOrder,
           probability: localProbability === 100 ? null : localProbability,
           useRegex: localUseRegex,
+          outletName: pendingOutletNameRef.current,
         },
       });
     },
@@ -790,14 +803,15 @@ export function LorebookEntryRow({
                 label={localizeUi("ui.lorebooks.lorebookentryrow.position")}
                 value={String(localPosition)}
                 onChange={(v) => {
-                  const n = Number(v);
+                  const n = Number(v) as LorebookEntry["position"];
                   setLocalPosition(n);
                   patch({ position: n });
                 }}
                 options={[
-                  { value: "0", label: "Before chat" },
-                  { value: "1", label: "After chat" },
-                  { value: "2", label: "@ Depth" },
+                  { value: "0", label: localizeUi("ui.lorebooks.lorebookentryrow.beforeChat") },
+                  { value: "1", label: localizeUi("ui.lorebooks.lorebookentryrow.afterChat") },
+                  { value: "2", label: localizeUi("ui.lorebooks.lorebookentryrow.atDepth") },
+                  { value: "7", label: localizeUi("ui.lorebooks.lorebookentryrow.outlet") },
                 ]}
               />
               {showDepthInput && (
@@ -865,17 +879,18 @@ export function LorebookEntryRow({
           <CompactSelect
             value={String(localPosition)}
             onChange={(v) => {
-              const n = Number(v);
+              const n = Number(v) as LorebookEntry["position"];
               setLocalPosition(n);
               patch({ position: n });
             }}
             title={localizeUi("ui.lorebooks.lorebookentryrow.positionInThePromptBeforeChatAfterChatOr")}
             options={[
-              { value: "0", label: "↑Char" },
-              { value: "1", label: "↓Char" },
-              { value: "2", label: "@Depth" },
+              { value: "0", label: localizeUi("ui.lorebooks.lorebookentryrow.beforeCompact") },
+              { value: "1", label: localizeUi("ui.lorebooks.lorebookentryrow.afterCompact") },
+              { value: "2", label: localizeUi("ui.lorebooks.lorebookentryrow.depthCompact") },
+              { value: "7", label: localizeUi("ui.lorebooks.lorebookentryrow.outlet") },
             ]}
-            className="w-[4.35rem]"
+            className="w-[4.75rem]"
           />
           {showDepthInput && (
             <CompactNumber
@@ -969,11 +984,13 @@ export function LorebookEntryRow({
       {isExpanded && (
         <ExpandedDrawer
           entry={entry}
+          position={localPosition}
           lorebookId={lorebookId}
           characters={characters}
           characterTags={characterTags}
           compact={compact}
           onUpdateEntry={onUpdateEntry}
+          onOutletNameDraftChange={handleOutletNameDraftChange}
         />
       )}
     </div>
@@ -1191,6 +1208,7 @@ function buildEntrySavePayload(form: Partial<LorebookEntry>) {
     generationTriggerFilterMode: form.generationTriggerFilterMode,
     generationTriggerFilters: form.generationTriggerFilters,
     additionalMatchingSources: form.additionalMatchingSources,
+    outletName: form.outletName,
     role: form.role,
     sticky: form.sticky,
     cooldown: form.cooldown,
@@ -1275,18 +1293,22 @@ function FilterPills({
 
 function ExpandedDrawer({
   entry,
+  position,
   lorebookId,
   characters,
   characterTags,
   compact,
   onUpdateEntry,
+  onOutletNameDraftChange,
 }: {
   entry: LorebookEntry;
+  position: number;
   lorebookId: string;
   characters: Array<{ id: string; name: string; tags: string[] }>;
   characterTags: string[];
   compact: boolean;
   onUpdateEntry?: LorebookEntryUpdateHandler;
+  onOutletNameDraftChange: (outletName: string) => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const { mutate: mutateEntry, mutateAsync: mutateEntryAsync } = useUpdateLorebookEntry();
@@ -1580,6 +1602,28 @@ function ExpandedDrawer({
           </div>
         </div>
       </details>
+
+      {position === 7 && (
+        <FieldGroup
+          label={localizeUi("ui.lorebooks.expandeddrawer.outletName")}
+          icon={MapPin}
+          help={localizeUi("ui.lorebooks.expandeddrawer.outletNameHelp", { macro: "{{outlet::name}}" })}
+        >
+          <input
+            type="text"
+            value={form.outletName ?? ""}
+            onChange={(event) => {
+              onOutletNameDraftChange(event.target.value);
+              update({ outletName: event.target.value });
+            }}
+            onBlur={flushAutosave}
+            maxLength={200}
+            className="mari-editor-field w-full px-2.5 py-2 text-xs"
+            placeholder={localizeUi("ui.lorebooks.expandeddrawer.outletNamePlaceholder")}
+            aria-label={localizeUi("ui.lorebooks.expandeddrawer.outletName")}
+          />
+        </FieldGroup>
+      )}
 
       {/* Content */}
       <FieldGroup

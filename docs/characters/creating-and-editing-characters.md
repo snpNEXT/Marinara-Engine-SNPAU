@@ -138,7 +138,9 @@ To go back to an older version:
 1. Open the **Compare** window for the version you want, or click its restore icon in the list.
 2. Click **Restore this version**, then confirm.
 
-Restoring replaces your current card with that snapshot. It does not add a new history entry. You can also delete a saved snapshot from the list. Deleting a snapshot does not change your current card.
+Restoring replaces your current card with that snapshot. It does not add a new history entry. Use the pencil icon to correct a saved snapshot's card-version label without restoring it. You can also delete a saved snapshot from the list; deleting one does not change your current card.
+
+Use **Reset** in the **Version history** header when you want to restart the card's versioning. After confirmation, Marinara deletes every saved snapshot and sets the current card version to `0.0`. This cannot be undone.
 
 ## Reviewing agent-proposed card updates
 

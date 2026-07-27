@@ -134,8 +134,12 @@ export interface ChatOptions {
   onToken?: (chunk: string) => void | Promise<void>;
   /** Enable extended thinking (reasoning models) */
   enableThinking?: boolean;
-  /** Reasoning effort level for models that support it */
-  reasoningEffort?: "low" | "medium" | "high" | "minimal" | "xhigh" | "max";
+  /**
+   * Reasoning effort level for models that support it.
+   * `none` is an explicit request to disable thinking; `undefined` leaves the
+   * provider/model default untouched.
+   */
+  reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh" | "max";
   /** When true, previous provider-native reasoning state is not reused. */
   excludePastReasoning?: boolean;
   /** Output verbosity for GPT-5+ models */

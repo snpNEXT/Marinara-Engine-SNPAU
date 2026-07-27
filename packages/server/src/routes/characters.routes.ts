@@ -2,6 +2,7 @@
 // Routes: Characters, Personas & Groups
 // ──────────────────────────────────────────────
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { z } from "zod";
 import {
   createCharacterSchema,
   updateCharacterSchema,
@@ -83,6 +84,7 @@ const CALL_VIDEO_CLIP_LABELS = {
 } as const;
 const CALL_VIDEO_CLIP_UPLOAD_MAX_BYTES = 250 * 1024 * 1024;
 const ALLOWED_CALL_VIDEO_CLIP_UPLOAD_EXTS = new Set([".mp4"]);
+const renameCardVersionSchema = z.object({ version: z.string().trim().min(1).max(100) });
 type UploadedMultipartFile = NonNullable<Awaited<ReturnType<FastifyRequest["file"]>>>;
 
 function applyTrackerCardPaint(currentValue: unknown, paint: Record<string, unknown>) {
@@ -786,6 +788,21 @@ export async function charactersRoutes(app: FastifyInstance) {
     const deleted = await storage.deleteVersion(req.params.id, req.params.versionId);
     if (!deleted) return reply.status(404).send({ error: "Character version not found" });
     return reply.status(204).send();
+  });
+
+  app.patch<{ Params: { id: string; versionId: string } }>("/:id/versions/:versionId", async (req, reply) => {
+    const { version } = renameCardVersionSchema.parse(req.body);
+    const renamed = await storage.renameVersion(req.params.id, req.params.versionId, version);
+    if (!renamed) return reply.status(404).send({ error: "Character version not found" });
+    return renamed;
+  });
+
+  app.post<{ Params: { id: string } }>("/:id/versions/reset", async (req, reply) => {
+    const reset = await enqueueUpdate(characterUpdateQueues, req.params.id, () =>
+      storage.resetVersions(req.params.id),
+    );
+    if (!reset) return reply.status(404).send({ error: "Character not found" });
+    return reset;
   });
 
   app.post("/", async (req) => {
@@ -1717,6 +1734,24 @@ export async function charactersRoutes(app: FastifyInstance) {
     const deleted = await storage.deletePersonaVersion(req.params.id, req.params.versionId);
     if (!deleted) return reply.status(404).send({ error: "Persona version not found" });
     return reply.status(204).send();
+  });
+
+  app.patch<{ Params: { id: string; versionId: string } }>(
+    "/personas/:id/versions/:versionId",
+    async (req, reply) => {
+      const { version } = renameCardVersionSchema.parse(req.body);
+      const renamed = await storage.renamePersonaVersion(req.params.id, req.params.versionId, version);
+      if (!renamed) return reply.status(404).send({ error: "Persona version not found" });
+      return renamed;
+    },
+  );
+
+  app.post<{ Params: { id: string } }>("/personas/:id/versions/reset", async (req, reply) => {
+    const reset = await enqueueUpdate(personaUpdateQueues, req.params.id, () =>
+      storage.resetPersonaVersions(req.params.id),
+    );
+    if (!reset) return reply.status(404).send({ error: "Persona not found" });
+    return reset;
   });
 
   app.post("/personas", async (req) => {

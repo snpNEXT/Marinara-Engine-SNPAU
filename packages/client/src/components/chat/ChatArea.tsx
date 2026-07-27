@@ -31,7 +31,7 @@ import {
   chatKeys,
 } from "../../hooks/use-chats";
 
-import { useChatStore } from "../../stores/chat.store";
+import { getCurrentInputSnapshot, useChatStore } from "../../stores/chat.store";
 import { useGenerate } from "../../hooks/use-generate";
 import { useGenerateGallerySelfie } from "../../hooks/use-gallery";
 import {
@@ -1958,7 +1958,7 @@ export function ChatArea() {
       }
       try {
         // Regenerate as a new swipe on the existing message
-        const currentInput = useChatStore.getState().currentInput;
+        const currentInput = getCurrentInputSnapshot();
         const hasInput = currentInput ? currentInput.trim().length > 0 : false;
         await generate(
           guideGenerations && hasInput

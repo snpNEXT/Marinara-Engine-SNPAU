@@ -23,6 +23,7 @@
 import { randomUUID } from "node:crypto";
 import { isClaudeAdaptiveOnlyNoSamplingModel, shouldSuppressUnknownModelParameters } from "@marinara-engine/shared";
 import { BaseLLMProvider, type ChatMessage, type ChatOptions, type LLMUsage } from "../base-provider.js";
+import { supportsAnthropicThinkingDisable } from "./anthropic.provider.js";
 import { logger } from "../../../lib/logger.js";
 import { isClaudeSubscriptionResumeEnabled } from "../../../config/runtime-config.js";
 import {
@@ -413,7 +414,13 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
     };
     if (systemPrompt !== undefined) sdkOptions.systemPrompt = systemPrompt;
 
-    if (!suppressModelParameters && options.enableThinking) {
+    if (
+      !suppressModelParameters &&
+      options.reasoningEffort === "none" &&
+      supportsAnthropicThinkingDisable(options.model)
+    ) {
+      sdkOptions.thinking = { type: "disabled" };
+    } else if (!suppressModelParameters && options.enableThinking) {
       sdkOptions.thinking = { type: "adaptive" };
       // EffortLevel covers low|medium|high|xhigh|max; reasoningEffort matches
       // that provider-facing set.

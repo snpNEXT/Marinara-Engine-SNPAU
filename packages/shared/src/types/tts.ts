@@ -18,9 +18,7 @@ export const TTS_DIALOGUE_PAUSE_DEFAULT_SECONDS = 1;
 
 function normalizeDialoguePauseMs(value: number): number {
   const wholeSeconds = Math.round(value / 1000);
-  return (
-    Math.min(TTS_DIALOGUE_PAUSE_MAX_SECONDS, Math.max(TTS_DIALOGUE_PAUSE_MIN_SECONDS, wholeSeconds)) * 1000
-  );
+  return Math.min(TTS_DIALOGUE_PAUSE_MAX_SECONDS, Math.max(TTS_DIALOGUE_PAUSE_MIN_SECONDS, wholeSeconds)) * 1000;
 }
 
 export const ttsConversationCallAudioInputModeSchema = z.enum(["system", "auto", "transcribe", "local_whisper"]);
@@ -244,6 +242,17 @@ export interface TTSVoicesResponse {
     labels?: Record<string, string | number | boolean | null> | null;
   }>;
   /** True when the list came from the provider; false = local fallback or no provider voices */
+  fromProvider: boolean;
+  source: TTSSource;
+}
+
+/** Returned by GET /api/tts/models */
+export interface TTSModelsResponse {
+  models: Array<{
+    id: string;
+    name: string;
+  }>;
+  /** True when the list came from the provider; false = built-in fallback choices */
   fromProvider: boolean;
   source: TTSSource;
 }

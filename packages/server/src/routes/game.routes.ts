@@ -33,7 +33,12 @@ import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createLLMProvider } from "../services/llm/provider-registry.js";
 import { withConnectionFallbackProvider } from "../services/llm/connection-fallback-provider.js";
 import { extractLeadingThinkingBlocks } from "../services/llm/inline-thinking.js";
-import { type ChatCompletionResult, type ChatMessage, type ChatOptions } from "../services/llm/base-provider.js";
+import {
+  withLlmRequestTimeout,
+  type ChatCompletionResult,
+  type ChatMessage,
+  type ChatOptions,
+} from "../services/llm/base-provider.js";
 import { isDiceNotation, rollDice } from "../services/game/dice.service.js";
 import { jsonishLooksTruncated, parseGameJsonish } from "../services/game/jsonish.js";
 import {
@@ -157,7 +162,11 @@ import {
   type ModelAccessPolicy,
 } from "../services/generation/model-access-policy.js";
 import { postToDiscordWebhook } from "../services/discord-webhook.js";
-import { getGameDynamicImagePromptTimeoutMs, isDebugAgentsEnabled } from "../config/runtime-config.js";
+import {
+  getChatGenerationTimeoutMs,
+  getGameDynamicImagePromptTimeoutMs,
+  isDebugAgentsEnabled,
+} from "../config/runtime-config.js";
 import type {
   GameActiveState,
   GameInitialSetupConnectionSnapshot,
@@ -7172,7 +7181,8 @@ export async function gameRoutes(app: FastifyInstance) {
       });
       const provider = await createGameMainProvider(connections, conn, baseUrl);
 
-      const conclusionAbort = createResponseAbortTracker(reply, GAME_GENERATION_TIMEOUT_MS, "Game session conclusion");
+      const conclusionTimeoutMs = getChatGenerationTimeoutMs();
+      const conclusionAbort = createResponseAbortTracker(reply, conclusionTimeoutMs, "Game session conclusion");
       const conclusionOptions = gameGenOptions(
         conn.model,
         {
@@ -7210,11 +7220,14 @@ export async function gameRoutes(app: FastifyInstance) {
         );
       }
 
-      const result = await runGameChatComplete(
-        provider,
-        conclusionMessages,
-        conclusionOptions,
-        "Game session conclusion",
+      const result = await withLlmRequestTimeout(conclusionTimeoutMs, () =>
+        runGameChatComplete(
+          provider,
+          conclusionMessages,
+          conclusionOptions,
+          "Game session conclusion",
+          conclusionTimeoutMs,
+        ),
       );
       logger.info("[game/session/conclude] Conclusion generation completed for chat %s", chatId);
       const conclusionExtraction = extractLeadingThinkingBlocks(
@@ -7721,9 +7734,10 @@ export async function gameRoutes(app: FastifyInstance) {
       parameters: conclusionGenerationParameters,
     });
     const provider = await createGameMainProvider(connections, conn, baseUrl);
+    const conclusionTimeoutMs = getChatGenerationTimeoutMs();
     const conclusionAbort = createResponseAbortTracker(
       reply,
-      GAME_GENERATION_TIMEOUT_MS,
+      conclusionTimeoutMs,
       "Game session conclusion regeneration",
     );
     const conclusionOptions = gameGenOptions(
@@ -7763,11 +7777,14 @@ export async function gameRoutes(app: FastifyInstance) {
       );
     }
 
-    const result = await runGameChatComplete(
-      provider,
-      conclusionMessages,
-      conclusionOptions,
-      "Game session conclusion regeneration",
+    const result = await withLlmRequestTimeout(conclusionTimeoutMs, () =>
+      runGameChatComplete(
+        provider,
+        conclusionMessages,
+        conclusionOptions,
+        "Game session conclusion regeneration",
+        conclusionTimeoutMs,
+      ),
     );
     const conclusionExtraction = extractLeadingThinkingBlocks(
       result.content ?? "",

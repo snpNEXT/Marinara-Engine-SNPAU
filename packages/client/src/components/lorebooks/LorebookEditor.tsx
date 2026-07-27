@@ -1560,7 +1560,9 @@ export function LorebookEditor() {
     if (
       !(await showConfirmDialog({
         title:localizeUi("ui.lorebooks.lorebookeditor.deleteLorebook_570bd40"),
-        message:localizeUi("ui.lorebooks.lorebookeditor.deleteThisLorebookAllEntriesWillBeLost"),
+        message: localizeUi("dialog.delete.namedContents", {
+          name: lorebook?.name || localizeUi("ui.lorebooks.lorebookeditor.deleteLorebook"),
+        }),
         confirmLabel:localizeUi("lorebook.editor.batch.delete"),
         tone: "destructive",
       }))
@@ -1569,7 +1571,7 @@ export function LorebookEditor() {
     }
     await deleteLorebook.mutateAsync(lorebookId);
     closeDetail();
-  }, [lorebookId, deleteLorebook, closeDetail, localizeUi]);
+  }, [closeDetail, deleteLorebook, lorebook?.name, lorebookId, localizeUi]);
 
   // ── Loading ──
   if (isLoading || !lorebook) {
@@ -2420,6 +2422,14 @@ export function LorebookEditor() {
                   >
                     <Plus size="0.8125rem" />{localizeUi("ui.lorebooks.lorebookeditor.addEntry")}</button>
                 </div>
+
+                <p
+                  role="note"
+                  className="flex items-start gap-1.5 px-1 text-[0.6875rem] leading-relaxed text-[var(--muted-foreground)]"
+                >
+                  <Info size="0.6875rem" aria-hidden="true" className="mt-0.5 shrink-0 text-[var(--primary)]" />
+                  <span>{t("lorebook.editor.batch.hint")}</span>
+                </p>
 
                 {entrySelectionMode && (
                   <div className="mari-editor-toolbar flex flex-wrap items-center gap-2 px-3 py-2">

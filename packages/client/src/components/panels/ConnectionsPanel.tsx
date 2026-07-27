@@ -1834,16 +1834,23 @@ export function ConnectionsPanel() {
             >{localizeUi("ui.panels.connectionspanel.linkapi")}</a>
             !
           </p>
-          <div className="flex gap-2">
+          <div className="grid min-w-0 grid-cols-2 gap-2">
             <a
               href="https://linkapi.ai/"
               target="_blank"
               rel="noopener noreferrer"
-              className="mari-chrome-control mari-chrome-control--small text-xs"
+              className="mari-chrome-control mari-chrome-control--small w-full px-2 text-xs"
             >
-              <ExternalLink size="0.75rem" />{localizeUi("ui.panels.connectionspanel.visitLinkapi")}</a>
-            <button onClick={dismissLinkApiBanner} className="mari-chrome-control mari-chrome-control--small text-xs">
-              <X size="0.75rem" />{localizeUi("ui.panels.connectionspanel.dismissPermanently")}</button>
+              <ExternalLink size="0.75rem" className="shrink-0" />
+              <span>{localizeUi("ui.panels.connectionspanel.visitLinkapi")}</span>
+            </a>
+            <button
+              onClick={dismissLinkApiBanner}
+              className="mari-chrome-control mari-chrome-control--small w-full px-2 text-xs"
+            >
+              <X size="0.75rem" className="shrink-0" />
+              <span>{localizeUi("ui.panels.connectionspanel.dismissPermanently")}</span>
+            </button>
           </div>
         </div>
       )}

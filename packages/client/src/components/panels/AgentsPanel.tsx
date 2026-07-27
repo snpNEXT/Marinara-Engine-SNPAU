@@ -20,6 +20,8 @@ import {
   FolderOpen,
   ArrowUpDown,
   GripVertical,
+  ShieldCheck,
+  TriangleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useUIStore, type ResourcePanelSort } from "../../stores/ui.store";
@@ -27,6 +29,8 @@ import {
   useAgentConfigs,
   useCreateAgent,
   useDeleteAgent,
+  useAgentImportPolicy,
+  useImportAgent,
   useUploadAgentImage,
   type AgentConfigRow,
 } from "../../hooks/use-agents";
@@ -39,6 +43,7 @@ import {
   isAgentConfigDeleted,
   isRetiredBuiltInAgentId,
   normalizeAgentPhaseForType,
+  type CustomAgentCapability,
   type AgentCategory,
 } from "@marinara-engine/shared";
 import { confirmNonEmptyFolderDelete, showConfirmDialog } from "../../lib/app-dialogs";
@@ -74,8 +79,15 @@ import { AgentArtwork } from "../agents/AgentArtwork";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
+import { Modal } from "../ui/Modal";
 
 type JsonRecord = Record<string, unknown>;
+type NormalizedAgentImport = NonNullable<ReturnType<typeof normalizeAgentImportEntry>>;
+type PendingAgentImport = {
+  agents: NormalizedAgentImport[];
+  source: "file" | "folder";
+  skippedFunctionCount: number;
+};
 const AGENT_GRADIENT_SURFACE =
   "mari-panel-gradient-surface mari-panel-gradient--agents text-[var(--mari-panel-gradient-text)]";
 const AGENT_GRADIENT_BUTTON = "mari-panel-gradient-button mari-panel-gradient--agents";
@@ -202,6 +214,8 @@ export function AgentsPanel() {
   const { data: capabilityAgents } = useCapabilityAgentRegistry();
   const { data: capabilityCatalog } = useCapabilityCatalog();
   const createAgent = useCreateAgent();
+  const importAgent = useImportAgent();
+  const { data: agentImportPolicy, isLoading: agentImportPolicyLoading } = useAgentImportPolicy();
   const deleteAgent = useDeleteAgent();
   const uploadAgentImage = useUploadAgentImage();
   const { data: agentFolders = [] } = useLibraryFolders("agents");
@@ -220,6 +234,10 @@ export function AgentsPanel() {
   const imageTargetAgentIdRef = useRef<string | null>(null);
   const [agentImportError, setAgentImportError] = useState<string | null>(null);
   const [agentImportSuccess, setAgentImportSuccess] = useState<string | null>(null);
+  const [pendingAgentImport, setPendingAgentImport] = useState<PendingAgentImport | null>(null);
+  const [approvedImportCapabilities, setApprovedImportCapabilities] = useState<
+    Record<string, CustomAgentCapability[]>
+  >({});
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(new Set());
   const [exportingSelected, setExportingSelected] = useState(false);
@@ -231,6 +249,20 @@ export function AgentsPanel() {
   const handleFolderRenameGesture = useFolderRenameGesture();
   const touchSafeAgentDragMode = useTouchSafeAgentDragMode();
   const nativeAgentDragEnabled = !touchSafeAgentDragMode;
+  const agentImportsEnabled = agentImportPolicy?.enabled === true;
+  const agentImportsDisabledHelp = localizeUi("settings.agentImports.enableFirst");
+
+  const openAgentImportPicker = useCallback(
+    (kind: "file" | "folder") => {
+      if (!agentImportsEnabled) {
+        toast.info(agentImportsDisabledHelp);
+        return;
+      }
+      if (kind === "file") agentImportInputRef.current?.click();
+      else agentFolderImportInputRef.current?.click();
+    },
+    [agentImportsDisabledHelp, agentImportsEnabled],
+  );
 
   const agentConfigRows = useMemo(() => (agentConfigs ?? []) as AgentConfigRow[], [agentConfigs]);
   const availableBuiltInAgents = useMemo(() => {
@@ -506,39 +538,85 @@ export function AgentsPanel() {
     exitSelectionMode();
   }, [deleteAgent, exitSelectionMode, selectedAgents, localizeUi]);
 
-  const importAgentEntries = useCallback(
-    async (entries: FolderPackageImportEntry[], skippedFunctionCount = 0) => {
+  const prepareAgentEntries = useCallback(
+    (entries: FolderPackageImportEntry[], source: "file" | "folder", skippedFunctionCount = 0) => {
       if (entries.length === 0) throw new Error("No agents found in file");
 
-      let imported = 0;
-      const failed: string[] = [];
-      for (const entry of entries) {
-        const normalized = normalizeAgentImportEntry(entry.raw, entry.resolveTextFile);
-        if (!normalized) continue;
-        try {
-          await createAgent.mutateAsync(normalized);
-          imported++;
-        } catch (error) {
-          failed.push(error instanceof Error ? error.message : `Failed to import ${normalized.name}`);
-        }
-      }
-
-      if (imported === 0 && failed.length === 0) {
-        throw new Error("No valid agents found in file");
-      }
-      if (imported > 0) {
-        setAgentImportSuccess(
-          `Imported ${imported} agent${imported === 1 ? "" : "s"}.` +
-            (skippedFunctionCount > 0
-              ? ` Skipped ${skippedFunctionCount} bundled function${skippedFunctionCount === 1 ? "" : "s"} for safety; import trusted functions separately from Function Calls.`
-              : ""),
-        );
-      }
-      if (failed.length > 0) {
-        setAgentImportError(`${failed.length} import item${failed.length === 1 ? "" : "s"} failed. ${failed[0]}`);
-      }
+      const agents = entries
+        .map((entry) => normalizeAgentImportEntry(entry.raw, entry.resolveTextFile))
+        .filter((agent): agent is NormalizedAgentImport => agent !== null);
+      if (agents.length === 0) throw new Error("No valid agents found in file");
+      setApprovedImportCapabilities({});
+      setPendingAgentImport({ agents, source, skippedFunctionCount });
     },
-    [createAgent],
+    [],
+  );
+
+  const handleApproveAgentImport = useCallback(async () => {
+    if (!pendingAgentImport) return;
+    let imported = 0;
+    const failed: string[] = [];
+    const failedAgents: NormalizedAgentImport[] = [];
+    for (const candidate of pendingAgentImport.agents) {
+      const { requestedCapabilities: _requestedCapabilities, ...agent } = candidate;
+      try {
+        await importAgent.mutateAsync({
+          agent,
+          source: pendingAgentImport.source,
+          approvedCapabilities: approvedImportCapabilities[candidate.type] ?? [],
+          acknowledgePermissions: true,
+        });
+        imported++;
+      } catch (error) {
+        failed.push(error instanceof Error ? error.message : `Failed to import ${candidate.name}`);
+        failedAgents.push(candidate);
+      }
+    }
+
+    if (imported > 0) {
+      setAgentImportSuccess(
+        `${localizeUi("settings.agentImports.import.success", { count: imported })}${
+          pendingAgentImport.skippedFunctionCount > 0
+            ? ` ${localizeUi("settings.agentImports.review.functionsSkipped", {
+                count: pendingAgentImport.skippedFunctionCount,
+              })}`
+            : ""
+        }`,
+      );
+    }
+    if (failed.length > 0) {
+      setAgentImportError(
+        localizeUi("settings.agentImports.import.failed", {
+          count: failed.length,
+          error: failed[0],
+        }),
+      );
+    }
+    if (failed.length === 0) {
+      setPendingAgentImport(null);
+    } else {
+      const failedAgentTypes = new Set(failedAgents.map((agent) => agent.type));
+      setApprovedImportCapabilities((current) =>
+        Object.fromEntries(Object.entries(current).filter(([type]) => failedAgentTypes.has(type))),
+      );
+      setPendingAgentImport({
+        ...pendingAgentImport,
+        agents: failedAgents,
+        skippedFunctionCount: 0,
+      });
+    }
+  }, [approvedImportCapabilities, importAgent, localizeUi, pendingAgentImport]);
+
+  const toggleApprovedImportCapability = useCallback(
+    (agentType: string, capability: CustomAgentCapability) => {
+      setApprovedImportCapabilities((current) => {
+        const selected = new Set(current[agentType] ?? []);
+        if (selected.has(capability)) selected.delete(capability);
+        else selected.add(capability);
+        return { ...current, [agentType]: Array.from(selected) };
+      });
+    },
+    [],
   );
 
   const handleImportAgents = useCallback(
@@ -547,6 +625,11 @@ export function AgentsPanel() {
       setAgentImportSuccess(null);
       const file = event.target.files?.[0];
       if (!file) return;
+      if (!agentImportsEnabled) {
+        setAgentImportError(agentImportsDisabledHelp);
+        event.target.value = "";
+        return;
+      }
 
       try {
         const entries = isZipFile(file)
@@ -579,20 +662,25 @@ export function AgentsPanel() {
                 skippedFunctionCount: getFolderImportEntries(parsed, ["functions", "customTools", "tools"]).length,
               };
             })();
-        await importAgentEntries(entries.agents, entries.skippedFunctionCount);
+        prepareAgentEntries(entries.agents, "file", entries.skippedFunctionCount);
       } catch (error) {
         setAgentImportError(error instanceof Error ? error.message : "Failed to import agents");
       }
 
       event.target.value = "";
     },
-    [importAgentEntries],
+    [agentImportsDisabledHelp, agentImportsEnabled, prepareAgentEntries],
   );
 
   const handleImportAgentFolder = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
       setAgentImportError(null);
       setAgentImportSuccess(null);
+      if (!agentImportsEnabled) {
+        setAgentImportError(agentImportsDisabledHelp);
+        event.target.value = "";
+        return;
+      }
       try {
         const files = await readTextFilesFromFileList(event.target.files);
         const entries = collectFolderPackageEntries(files, {
@@ -604,13 +692,13 @@ export function AgentsPanel() {
           collectionKeys: ["functions", "customTools", "tools"],
         });
         const skippedFunctionCount = countSkippedAgentImportFunctions(entries, functionEntries);
-        await importAgentEntries(entries, skippedFunctionCount);
+        prepareAgentEntries(entries, "folder", skippedFunctionCount);
       } catch (error) {
         setAgentImportError(error instanceof Error ? error.message : "Failed to import agents");
       }
       event.target.value = "";
     },
-    [importAgentEntries],
+    [agentImportsDisabledHelp, agentImportsEnabled, prepareAgentEntries],
   );
 
   const handlePickAgentImage = useCallback((agentIdOrType: string) => {
@@ -763,16 +851,26 @@ export function AgentsPanel() {
           <Plus size="0.8125rem" />
         </button>
         <button
-          onClick={() => agentImportInputRef.current?.click()}
-          className="mari-chrome-control mari-chrome-control--primary flex-1 text-xs"
-          title={localizeUi("ui.panels.agentspanel.importAgents")}
+          type="button"
+          onClick={() => openAgentImportPicker("file")}
+          aria-disabled={!agentImportsEnabled || agentImportPolicyLoading}
+          className={cn(
+            "mari-chrome-control mari-chrome-control--primary flex-1 text-xs",
+            (!agentImportsEnabled || agentImportPolicyLoading) && "cursor-not-allowed grayscale opacity-45",
+          )}
+          title={agentImportsEnabled ? localizeUi("ui.panels.agentspanel.importAgents") : agentImportsDisabledHelp}
         >
           <Download size="0.8125rem" />
         </button>
         <button
-          onClick={() => agentFolderImportInputRef.current?.click()}
-          className="mari-chrome-control mari-chrome-control--primary flex-1 text-xs"
-          title={localizeUi("ui.panels.agentspanel.importAgentFolder")}
+          type="button"
+          onClick={() => openAgentImportPicker("folder")}
+          aria-disabled={!agentImportsEnabled || agentImportPolicyLoading}
+          className={cn(
+            "mari-chrome-control mari-chrome-control--primary flex-1 text-xs",
+            (!agentImportsEnabled || agentImportPolicyLoading) && "cursor-not-allowed grayscale opacity-45",
+          )}
+          title={agentImportsEnabled ? localizeUi("ui.panels.agentspanel.importAgentFolder") : agentImportsDisabledHelp}
         >
           <FolderOpen size="0.8125rem" />
         </button>
@@ -1128,6 +1226,131 @@ export function AgentsPanel() {
           exporting={exportingSelected}
         />
       )}
+
+      <Modal
+        open={pendingAgentImport !== null}
+        onClose={() => {
+          if (!importAgent.isPending) setPendingAgentImport(null);
+        }}
+        title={localizeUi("settings.agentImports.review.title")}
+        width="max-w-2xl"
+        mobileFullscreen
+        closeDisabled={importAgent.isPending}
+      >
+        {pendingAgentImport && (
+          <div className="space-y-4">
+            <div className="flex gap-3 rounded-xl border border-[var(--border)] bg-[var(--secondary)]/45 p-3 text-sm leading-6">
+              <TriangleAlert
+                className="mt-0.5 shrink-0 text-[var(--marinara-chat-chrome-highlight-text)]"
+                size="1rem"
+              />
+              <p className="text-[var(--muted-foreground)]">
+                {localizeUi("settings.agentImports.review.description")}
+              </p>
+            </div>
+
+            {pendingAgentImport.skippedFunctionCount > 0 && (
+              <div className="rounded-lg bg-[var(--primary)]/10 px-3 py-2 text-xs text-[var(--primary)]">
+                {localizeUi("settings.agentImports.review.functionsSkipped", {
+                  count: pendingAgentImport.skippedFunctionCount,
+                })}
+              </div>
+            )}
+
+            <div className="max-h-[55dvh] space-y-3 overflow-y-auto pr-1">
+              {pendingAgentImport.agents.map((candidate) => {
+                const requestedCapabilities = candidate.requestedCapabilities;
+                const selectedCapabilities = new Set(approvedImportCapabilities[candidate.type] ?? []);
+                return (
+                  <section
+                    key={candidate.type}
+                    className="rounded-xl border border-[var(--border)] bg-[var(--background)]/45 p-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <h3 className="truncate text-sm font-semibold">{candidate.name}</h3>
+                        <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">
+                          {candidate.description || localizeUi("ui.panels.agentcard.noDescription")}
+                        </p>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-[var(--secondary)] px-2 py-1 text-[0.625rem] text-[var(--muted-foreground)]">
+                        {candidate.phase}
+                      </span>
+                    </div>
+
+                    <div className="mt-3">
+                      <p className="text-xs font-semibold">
+                        {localizeUi("settings.agentImports.review.permissions")}
+                      </p>
+                      {requestedCapabilities.length === 0 ? (
+                        <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+                          {localizeUi("settings.agentImports.review.noPermissions")}
+                        </p>
+                      ) : (
+                        <div className="mt-2 space-y-2">
+                          {requestedCapabilities.map((capability) => {
+                            const checked = selectedCapabilities.has(capability);
+                            return (
+                              <label
+                                key={capability}
+                                className={cn(
+                                  "flex cursor-pointer items-start gap-2 rounded-lg p-2 ring-1 transition-colors",
+                                  checked
+                                    ? "bg-[var(--primary)]/10 ring-[var(--primary)]/30"
+                                    : "bg-[var(--secondary)]/35 ring-[var(--border)]",
+                                )}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  disabled={importAgent.isPending}
+                                  onChange={() => toggleApprovedImportCapability(candidate.type, capability)}
+                                  className="mt-0.5 h-3.5 w-3.5 accent-[var(--primary)]"
+                                />
+                                <span>
+                                  <span className="block text-xs font-medium">
+                                    {localizeUi(`settings.agentImports.capabilities.${capability}.label`)}
+                                  </span>
+                                  <span className="block text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
+                                    {localizeUi(`settings.agentImports.capabilities.${capability}.description`)}
+                                  </span>
+                                </span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                );
+              })}
+            </div>
+
+            <p className="text-xs leading-relaxed text-[var(--muted-foreground)]">
+              {localizeUi("settings.agentImports.review.deniedPermissions")}
+            </p>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                disabled={importAgent.isPending}
+                onClick={() => setPendingAgentImport(null)}
+                className="mari-chrome-control h-10 px-4 text-sm"
+              >
+                {localizeUi("chat.delete.dialog.cancel")}
+              </button>
+              <button
+                type="button"
+                disabled={importAgent.isPending}
+                onClick={() => void handleApproveAgentImport()}
+                className="mari-chrome-control mari-chrome-control--primary h-10 px-4 text-sm"
+              >
+                <ShieldCheck size="0.9rem" />
+                {localizeUi("settings.agentImports.review.approve")}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

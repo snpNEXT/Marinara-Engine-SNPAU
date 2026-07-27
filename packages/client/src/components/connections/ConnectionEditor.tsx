@@ -797,7 +797,9 @@ export function ConnectionEditor() {
     if (
       !(await showConfirmDialog({
         title:localizeUi("ui.connections.connectioneditor.deleteConnection_bb12f0e"),
-        message:localizeUi("ui.connections.connectioneditor.deleteThisConnection"),
+        message: localizeUi("dialog.delete.namedPermanent", {
+          name: conn?.name || localizeUi("ui.connections.connectioneditor.connection"),
+        }),
         confirmLabel:localizeUi("lorebook.editor.batch.delete"),
         tone: "destructive",
       }))
@@ -805,7 +807,7 @@ export function ConnectionEditor() {
       return;
     }
     deleteConnection.mutate(connectionDetailId, { onSuccess: () => closeConnectionDetail() });
-  }, [connectionDetailId, deleteConnection, closeConnectionDetail, localizeUi]);
+  }, [closeConnectionDetail, conn?.name, connectionDetailId, deleteConnection, localizeUi]);
 
   const handleExportConnection = useCallback(async () => {
     if (!conn) return;
@@ -1224,11 +1226,11 @@ export function ConnectionEditor() {
           <div className="flex gap-2">
             <button
               onClick={() => setShowUnsavedWarning(false)}
-              className="rounded-lg px-3 py-1 hover:bg-[var(--accent)]"
+              className="mari-editor-action mari-editor-action--compact inline-flex rounded-lg px-3 py-1"
             >{localizeUi("ui.connections.connectioneditor.keepEditing")}</button>
             <button
               onClick={() => closeConnectionDetail()}
-              className="rounded-lg px-3 py-1 text-[var(--destructive)] hover:bg-[var(--destructive)]/15"
+              className="mari-editor-action mari-editor-action--accent mari-editor-action--compact inline-flex rounded-lg px-3 py-1"
             >{localizeUi("ui.connections.connectioneditor.discard")}</button>
             <button
               onClick={async () => {
@@ -1239,7 +1241,7 @@ export function ConnectionEditor() {
                   // Keep the editor open so the user can fix the failed save.
                 }
               }}
-              className="rounded-lg bg-amber-500/20 px-3 py-1 hover:bg-amber-500/30"
+              className="mari-editor-action mari-editor-action--primary mari-editor-action--compact inline-flex rounded-lg px-3 py-1"
             >{localizeUi("ui.connections.connectioneditor.saveClose")}</button>
           </div>
         </div>
@@ -1684,7 +1686,9 @@ export function ConnectionEditor() {
                       )}
                       {fetchModels.isPending ?localizeUi("ui.connections.connectioneditor.fetching") : modelFetchButtonLabel}
                     </button>
-                    {fetchError && <p className="mari-chrome-text mt-1.5 text-[0.625rem]">{fetchError}</p>}
+                    {fetchError && (
+                      <p className="mt-1.5 text-[0.625rem] text-[var(--marinara-editor-accent)]">{fetchError}</p>
+                    )}
                     {remoteModels.length > 0 && !fetchError && (
                       <p className="mt-1 text-[0.625rem] text-emerald-400">
                         {remoteModels.length} {localizeUi("ui.connections.connectioneditor.model_1d06a0d")}{remoteModels.length !== 1 ?localizeUi("ui.noodle.stageprofileview.s") : ""} {localizeUi("ui.connections.connectioneditor.availableFrom")}{" "}

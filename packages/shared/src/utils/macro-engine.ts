@@ -40,6 +40,8 @@ export interface MacroContext {
   timeZone?: string;
   /** Agent data keyed by agent type (for {{agent::TYPE}}) */
   agentData?: Record<string, string>;
+  /** Activated lorebook Outlet content keyed by its exact, case-sensitive name */
+  outlets?: Record<string, string>;
   /** Current character card fields used by macros like {{description}} */
   characterFields?: {
     phoneticName?: string;
@@ -376,6 +378,11 @@ export const SUPPORTED_MACROS: readonly SupportedMacroDefinition[] = [
   { category: "Context", syntax: "{{lastGenerationType}}", description: "Current generation type label" },
   { category: "Context", syntax: "{{idle_duration}}", description: "Time since the last chat activity" },
   { category: "Context", syntax: "{{agent::TYPE}}", description: "Cached output for an agent or tracker type" },
+  {
+    category: "Lorebooks",
+    syntax: "{{outlet::name}}",
+    description: "Activated lorebook entries assigned to the exact, case-sensitive Outlet name",
+  },
   {
     category: "Game",
     syntax: "{{gameStoryboardKeyframeCount}}",
@@ -1613,6 +1620,7 @@ function formatMacroDateTime(now: Date, requestedTimeZone?: string): MacroDateTi
  *  - {{chatId}} — current chat ID
  *  - {{lastGenerationType}} — current generation type label
  *  - {{idle_duration}} — time since the last chat activity
+ *  - {{outlet::name}} — activated lorebook entries assigned to a named Outlet
  *  - {{gameStoryboardKeyframeCount}} — current Game Mode Keyframes per Turn target
  *  - {{// comment}} — removed (author comments)
  *  - {{trim}} — remove surrounding whitespace
@@ -1848,6 +1856,18 @@ export function resolveMacros(template: string, ctx: MacroContext, options: Reso
   // dice rolls, variable writes, or other macros back into this resolution.
   result = result.replace(/\{\{agent::([\w-]+)\}\}/gi, (_, type) => {
     return ctx.agentData?.[type] ?? "";
+  });
+
+  // Outlet content has already passed through lorebook macro resolution before
+  // it is collected. Insert it after every executable macro pass so Outlet
+  // content cannot recursively invoke another Outlet or introduce side effects.
+  result = replaceBalancedMacros(result, (body) => {
+    const match = body.match(/^outlet::([\s\S]*)$/i);
+    if (!match) return undefined;
+    const name = (match[1] ?? "").trim();
+    return name && ctx.outlets && Object.prototype.hasOwnProperty.call(ctx.outlets, name)
+      ? ctx.outlets[name]!
+      : "";
   });
 
   if (options.trimResult !== false) {

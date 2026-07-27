@@ -13,6 +13,8 @@ import {
   NOODLE_JSON_OUTPUT_HEADING,
   noodleResponseFormat,
 } from "../../packages/server/src/services/noodle/noodle-response-format.js";
+import { supportsAnthropicThinkingDisable } from "../../packages/server/src/services/llm/providers/anthropic.provider.js";
+import { resolveGeminiThinkingConfig } from "../../packages/server/src/services/llm/providers/google.provider.js";
 import {
   normalizeOpenAIChatCompletionsResponseFormat,
   OpenAIProvider,
@@ -242,6 +244,38 @@ assert.deepEqual(
     enabledParameters: { topK: true, reasoningEffort: true, verbosity: true },
   },
 );
+assert.equal(
+  resolveStoredChatOptions(
+    JSON.stringify({ reasoningEffort: null, enabledParameters: { reasoningEffort: true } }),
+    "openrouter",
+    "openai/gpt-5.1",
+  ).reasoningEffort,
+  "none",
+);
+assert.equal(
+  resolveStoredChatOptions(
+    JSON.stringify({ reasoningEffort: null, enabledParameters: { reasoningEffort: false } }),
+    "openrouter",
+    "openai/gpt-5.1",
+  ).reasoningEffort,
+  undefined,
+);
+assert.deepEqual(resolveGeminiThinkingConfig("gemini-2.5-flash", { reasoningEffort: "none" }, 4096), {
+  thinkingBudget: 0,
+  includeThoughts: false,
+});
+assert.equal(
+  resolveGeminiThinkingConfig("gemini-2.5-pro", { reasoningEffort: "none" }, 4096),
+  undefined,
+  "Gemini 2.5 Pro does not support disabling thinking",
+);
+assert.equal(
+  resolveGeminiThinkingConfig("gemini-3.5-flash", { reasoningEffort: "none" }, 4096),
+  undefined,
+  "reasoning-mandatory Gemini 3 models must not receive an unsupported off value",
+);
+assert.equal(supportsAnthropicThinkingDisable("claude-sonnet-5"), true);
+assert.equal(supportsAnthropicThinkingDisable("claude-fable-5"), false);
 
 let openRouterRequestBody: Record<string, unknown> | null = null;
 const openRouterServer = createServer(async (request, response) => {
@@ -293,6 +327,32 @@ try {
   assert.equal(capturedOpenRouterBody.connection_only, "inherited");
   assert.equal(capturedOpenRouterBody.awesomesauce, "enabled");
   assert.deepEqual(capturedOpenRouterBody.nested, { connection: true, shared: "chat", level: 3 });
+
+  openRouterRequestBody = null;
+  await collectProviderOutput(provider, {
+    model: "openai/gpt-5.1",
+    stream: false,
+    reasoningEffort: "none",
+    enabledParameters: { reasoningEffort: true },
+  });
+  const disabledOpenRouterBody = openRouterRequestBody as Record<string, unknown> | null;
+  assert.ok(disabledOpenRouterBody);
+  assert.deepEqual(disabledOpenRouterBody.reasoning, { effort: "none" });
+
+  openRouterRequestBody = null;
+  await collectProviderOutput(provider, {
+    model: "google/gemini-3.5-flash",
+    stream: false,
+    reasoningEffort: "none",
+    enabledParameters: { reasoningEffort: true },
+  });
+  const mandatoryOpenRouterBody = openRouterRequestBody as Record<string, unknown> | null;
+  assert.ok(mandatoryOpenRouterBody);
+  assert.equal(
+    "reasoning" in mandatoryOpenRouterBody,
+    false,
+    "known reasoning-mandatory OpenRouter models must keep their provider default",
+  );
 } finally {
   await new Promise<void>((resolve, reject) =>
     openRouterServer.close((error) => (error ? reject(error) : resolve())),

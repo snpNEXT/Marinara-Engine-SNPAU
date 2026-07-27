@@ -135,6 +135,8 @@ export const lorebookEntries = fileTable("lorebook_entries", {
   additionalMatchingSources: text("additional_matching_sources").notNull().default("[]"),
 
   position: integer("position").notNull().default(0),
+  /** Exact, case-sensitive name used by the {{outlet::name}} prompt macro */
+  outletName: text("outlet_name").notNull().default(""),
   depth: integer("depth").notNull().default(4),
   order: integer("order").notNull().default(100),
   role: text("role", { enum: ["system", "user", "assistant"] })

@@ -43,35 +43,18 @@ export function KaomojiPicker({ open, onClose, onSelect, anchorRef, containerRef
     }
   }, [open]);
 
-  // Close on outside click / Escape (anchored mode only; the embedded host owns dismissal).
+  // Close on Escape (anchored mode only; the embedded host owns dismissal).
+  // Outside pointer presses are handled by the inert backdrop rendered beneath
+  // the panel so native Firefox scrollbar interactions never look like outside
+  // document clicks.
   useEffect(() => {
     if (!open || embedded) return;
-    const onPointerDown = (e: MouseEvent) => {
-      const target = e.target as Node;
-      const panel = panelRef.current;
-      // Firefox can report the document element as the target when a native
-      // scrollbar is pressed. Keep the picker open when the pointer itself is
-      // still inside the panel, so the scrollbar remains draggable.
-      if (panel) {
-        const path = e.composedPath();
-        const rect = panel.getBoundingClientRect();
-        const pointInsidePanel =
-          e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom;
-        if (panel.contains(target) || path.includes(panel) || pointInsidePanel) return;
-      }
-      if (anchorRef?.current?.contains(target)) return;
-      onClose();
-    };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
-    document.addEventListener("mousedown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open, onClose, anchorRef, embedded]);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose, embedded]);
 
   const updatePosition = useCallback(() => {
     if (!anchorRef?.current) return;
@@ -144,7 +127,7 @@ export function KaomojiPicker({ open, onClose, onSelect, anchorRef, containerRef
   const body = (
     <>
       <div className="flex items-center gap-2 border-b border-[var(--border)] px-2.5 py-2">
-        <Search size="0.8125rem" className="shrink-0 text-[var(--marinara-chat-chrome-button-text-active)]" />
+        <Search size="0.8125rem" className="shrink-0 text-[var(--primary)]" />
         <input
           ref={searchInputRef}
           value={search}
@@ -155,7 +138,10 @@ export function KaomojiPicker({ open, onClose, onSelect, anchorRef, containerRef
       </div>
 
       {!search.trim() && (
-        <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-[var(--border)] px-1.5 py-1.5">
+        <div
+          data-kaomoji-categories
+          className="flex shrink-0 flex-wrap gap-1 overflow-x-hidden border-b border-[var(--border)] px-1.5 py-1.5"
+        >
           {KAOMOJI_CATEGORIES.map((category, index) => (
             <button
               key={category.id}
@@ -174,18 +160,18 @@ export function KaomojiPicker({ open, onClose, onSelect, anchorRef, containerRef
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+      <div data-kaomoji-results className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1.5">
         {results.length === 0 ? (
           <p className="px-2 py-6 text-center text-xs text-[var(--muted-foreground)]">{t("chat.kaomoji.empty")}</p>
         ) : (
-          <div className="grid grid-cols-2 gap-1">
+          <div className="grid min-w-0 grid-cols-2 gap-1">
             {results.map((entry) => (
               <button
                 key={entry.value}
                 type="button"
                 onClick={() => onSelect(entry.value)}
                 title={entry.keywords}
-                className="truncate rounded-lg px-2 py-2 text-center text-sm text-[var(--foreground)] transition-colors hover:bg-[var(--secondary)]/60 active:scale-95"
+                className="min-w-0 truncate rounded-lg px-2 py-2 text-center text-sm text-[var(--foreground)] transition-colors hover:bg-[var(--secondary)]/60 active:scale-95"
               >
                 {entry.value}
               </button>
@@ -205,15 +191,23 @@ export function KaomojiPicker({ open, onClose, onSelect, anchorRef, containerRef
   }
 
   return createPortal(
-    <div
-      ref={panelRef}
-      role="dialog"
-      aria-label={t("chat.kaomoji.title")}
-      className="fixed z-[60] flex w-80 max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-2xl"
-      style={{ top: pos.top, left: pos.left, right: pos.right, maxHeight: pos.maxHeight, width: PICKER_WIDTH }}
-    >
-      {body}
-    </div>,
+    <>
+      <div
+        data-kaomoji-picker-backdrop
+        aria-hidden="true"
+        className="fixed inset-0 z-[59]"
+        onPointerDown={onClose}
+      />
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-label={t("chat.kaomoji.title")}
+        className="fixed z-[60] flex w-80 max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-2xl"
+        style={{ top: pos.top, left: pos.left, right: pos.right, maxHeight: pos.maxHeight, width: PICKER_WIDTH }}
+      >
+        {body}
+      </div>
+    </>,
     document.body,
   );
 }

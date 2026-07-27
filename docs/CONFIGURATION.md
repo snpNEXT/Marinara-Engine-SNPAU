@@ -26,9 +26,15 @@ Package lifecycle and storage:
 - **Persistence:** Packages live under `DATA_DIR/capability-packages`. Docker volumes, custom data directories, backups, and normal upgrades preserve them.
 - **Offline resilience:** Existing packages continue working at their installed version when outbound GitHub HTTPS is unavailable, an update is declined, or an update fails verification.
 
+### Custom Agent imports
+
+External Agent files, folders, and custom repositories are locked by default. To allow them, open **Settings → Advanced → Danger Zone** and enable **Allow custom Agent imports**. Unlike External Extensions, this user-controlled gate does not require an environment variable. The import controls remain greyed out until it is enabled.
+
+Every import shows the Agent's requested capabilities before it is stored. Permissions must be approved explicitly, bundled functions and tool selections are not imported, generated CSS is sanitized, and result actions are checked against the approved capability set. Turning the gate off stops externally imported Agents from running. Custom Agents created in Marinara and official packages installed through **Download Agents** remain runnable and do not use this gate.
+
 ### Custom agent repositories
 
-Custom repositories are disabled by default because their prompts and tool selections are unvetted third-party content. Set `ENABLE_CUSTOM_AGENT_REPOS=true`, then open **Agents → Download Agents → Custom Sources** to preview a public GitHub repository. Adding a source and applying any later content change both require explicit confirmation. Synchronization is manual; Marinara does not clone repositories or poll them in the background.
+Custom repositories are disabled by default because their prompts and tool selections are unvetted third-party content. Set `ENABLE_CUSTOM_AGENT_REPOS=true`, enable **Allow custom Agent imports** in the Danger Zone, then open **Agents → Download Agents → Custom Sources** to preview a public GitHub repository. Adding a source and applying any later content change both require explicit confirmation. Synchronization is manual; Marinara does not clone repositories or poll them in the background.
 
 The repository root must contain an `agents.json` array using the same agent-definition format as downloadable agent packages. A minimal file looks like this:
 

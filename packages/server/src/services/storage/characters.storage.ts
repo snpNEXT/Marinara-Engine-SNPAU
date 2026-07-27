@@ -541,6 +541,34 @@ export function createCharactersStorage(db: DB) {
       return true;
     },
 
+    async renameVersion(characterId: string, versionId: string, versionLabel: string) {
+      const version = await this.getVersionById(characterId, versionId);
+      if (!version) return null;
+      const data = { ...version.data, character_version: versionLabel };
+      await db
+        .update(characterCardVersions)
+        .set({ version: versionLabel, data: JSON.stringify(data) })
+        .where(and(eq(characterCardVersions.characterId, characterId), eq(characterCardVersions.id, versionId)));
+      return this.getVersionById(characterId, versionId);
+    },
+
+    async resetVersions(characterId: string) {
+      const reset = await db.transaction(async (tx) => {
+        const rows = await tx.select().from(characters).where(eq(characters.id, characterId));
+        const existing = rows[0];
+        if (!existing) return false;
+        const data = { ...parseCharacterData(existing.data), character_version: "0.0" };
+        await tx.delete(characterCardVersions).where(eq(characterCardVersions.characterId, characterId));
+        await tx
+          .update(characters)
+          .set({ data: JSON.stringify(data), updatedAt: now() })
+          .where(eq(characters.id, characterId));
+        return true;
+      });
+      if (!reset) return null;
+      return this.getById(characterId);
+    },
+
     async remove(id: string) {
       await db.transaction(async (tx) => {
         await tx.delete(characters).where(eq(characters.id, id));
@@ -999,6 +1027,29 @@ export function createCharactersStorage(db: DB) {
         .delete(personaCardVersions)
         .where(and(eq(personaCardVersions.personaId, personaId), eq(personaCardVersions.id, versionId)));
       return true;
+    },
+
+    async renamePersonaVersion(personaId: string, versionId: string, versionLabel: string) {
+      const version = await this.getPersonaVersionById(personaId, versionId);
+      if (!version) return null;
+      const data = { ...version.data, personaVersion: versionLabel };
+      await db
+        .update(personaCardVersions)
+        .set({ version: versionLabel, data: JSON.stringify(data) })
+        .where(and(eq(personaCardVersions.personaId, personaId), eq(personaCardVersions.id, versionId)));
+      return this.getPersonaVersionById(personaId, versionId);
+    },
+
+    async resetPersonaVersions(personaId: string) {
+      const reset = await db.transaction(async (tx) => {
+        const rows = await tx.select().from(personas).where(eq(personas.id, personaId));
+        if (!rows[0]) return false;
+        await tx.delete(personaCardVersions).where(eq(personaCardVersions.personaId, personaId));
+        await tx.update(personas).set({ personaVersion: "0.0", updatedAt: now() }).where(eq(personas.id, personaId));
+        return true;
+      });
+      if (!reset) return null;
+      return this.getPersona(personaId);
     },
 
     // ── Character Groups ──

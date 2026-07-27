@@ -16,6 +16,8 @@ import {
   usePersonaVersions,
   useRestorePersonaVersion,
   useDeletePersonaVersion,
+  useRenamePersonaVersion,
+  useResetPersonaVersions,
   usePersonaGalleryImages,
   usePersonaGalleryClips,
   useUploadPersonaGalleryImage,
@@ -62,9 +64,10 @@ import {
   Crop,
   Library,
   MessageCircle,
+  Pencil,
 } from "lucide-react";
 import { cn, generateClientId, getAvatarCropStyle, type AvatarCrop, type LegacyAvatarCrop } from "../../lib/utils";
-import { showConfirmDialog } from "../../lib/app-dialogs";
+import { showConfirmDialog, showPromptDialog } from "../../lib/app-dialogs";
 import { formatCardVersionTimestamp, getCardVersionTitle } from "../../lib/card-version-history";
 import { extractColorsFromImage } from "../../lib/avatar-color-extraction";
 import { HelpTooltip } from "../ui/HelpTooltip";
@@ -1242,7 +1245,9 @@ export function PersonaEditor() {
     if (
       !(await showConfirmDialog({
         title: localizeUi("ui.personas.personaeditor.deletePersona_0b2415a"),
-        message: localizeUi("ui.personas.personaeditor.areYouSureYouWantToDeleteThisPersona"),
+        message: localizeUi("dialog.delete.namedPermanent", {
+          name: rawPersona?.name || localizeUi("ui.characters.cardlibrarydetailcard.persona"),
+        }),
         confirmLabel: localizeUi("lorebook.editor.batch.delete"),
         tone: "destructive",
       }))
@@ -1578,6 +1583,7 @@ export function PersonaEditor() {
                 onGenerateAvatar={() => setAvatarGeneratorOpen(true)}
                 imageGenerationAvailable={imageGenerationAvailable}
                 avatarUploading={uploadAvatar.isPending}
+                hasUnsavedChanges={dirty}
               />
             )}
             {activeTab === "card" && (
@@ -2468,12 +2474,7 @@ function PersonaColorsTab({
         type="button"
         disabled={!avatarUrl || extracting}
         onClick={handleExtract}
-        className={cn(
-          "flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-xs font-medium transition-all",
-          avatarUrl
-            ? "mari-chrome-accent-surface mari-accent-animated active:scale-[0.98]"
-            : "cursor-not-allowed bg-white/5 text-[var(--muted-foreground)]/50",
-        )}
+        className="mari-editor-action mari-editor-action--accent mari-editor-action--primary flex w-full rounded-xl px-4 py-2.5 text-xs"
       >
         {extracting ? <Loader2 size="0.875rem" className="animate-spin" /> : <Palette size="0.875rem" />}
         {extracting
@@ -2924,6 +2925,7 @@ function PersonaMetadataTab({
   onGenerateAvatar,
   imageGenerationAvailable,
   avatarUploading,
+  hasUnsavedChanges,
 }: {
   personaId: string | null;
   formData: PersonaFormData;
@@ -2933,6 +2935,7 @@ function PersonaMetadataTab({
   onGenerateAvatar: () => void;
   imageGenerationAvailable: boolean;
   avatarUploading: boolean;
+  hasUnsavedChanges: boolean;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const { t } = useTranslation();
@@ -3080,7 +3083,12 @@ function PersonaMetadataTab({
             className="w-full rounded-xl border border-[var(--border)] bg-[var(--secondary)] px-3 py-2 text-sm outline-none focus:border-[var(--primary)]/40 focus:ring-1 focus:ring-[var(--primary)]/20"
             placeholder="1.0"
           />
-          <PersonaVersionHistoryPanel personaId={personaId} currentData={formData} currentAvatarPath={avatarPreview} />
+          <PersonaVersionHistoryPanel
+            personaId={personaId}
+            currentData={formData}
+            currentAvatarPath={avatarPreview}
+            hasUnsavedChanges={hasUnsavedChanges}
+          />
         </label>
       </div>
 
@@ -3227,18 +3235,24 @@ function PersonaVersionHistoryPanel({
   personaId,
   currentData,
   currentAvatarPath,
+  hasUnsavedChanges,
 }: {
   personaId: string | null;
   currentData: PersonaFormData;
   currentAvatarPath: string | null;
+  hasUnsavedChanges: boolean;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const { data: versions = [], isLoading } = usePersonaVersions(personaId);
   const restoreVersion = useRestorePersonaVersion();
   const deleteVersion = useDeletePersonaVersion();
+  const renameVersion = useRenamePersonaVersion();
+  const resetVersions = useResetPersonaVersions();
   const [selectedVersion, setSelectedVersion] = useState<PersonaCardVersion | null>(null);
   const savedVersionCount = versions.filter((version) => !version.isCurrent).length;
   const getPersonaVersionTitle = (version: PersonaCardVersion) => getCardVersionTitle(version, localizeUi);
+  const versionMutationPending =
+    restoreVersion.isPending || deleteVersion.isPending || renameVersion.isPending || resetVersions.isPending;
 
   if (!personaId) return null;
 
@@ -3296,6 +3310,51 @@ function PersonaVersionHistoryPanel({
     }
   };
 
+  const handleRenameVersion = async (version: PersonaCardVersion) => {
+    const nextVersion = await showPromptDialog({
+      title: localizeUi("ui.cardversionhistory.renameVersion"),
+      message: localizeUi("ui.cardversionhistory.renameVersionMessage", {
+        value1: getPersonaVersionTitle(version),
+      }),
+      defaultValue: version.version,
+      placeholder: localizeUi("ui.cardversionhistory.versionPlaceholder"),
+      confirmLabel: localizeUi("ui.cardversionhistory.save"),
+      tone: "accent",
+    });
+    const trimmedVersion = nextVersion?.trim();
+    if (!trimmedVersion || trimmedVersion === version.version) return;
+    try {
+      await renameVersion.mutateAsync({ id: personaId, versionId: version.id, version: trimmedVersion });
+      toast.success(
+        localizeUi("ui.cardversionhistory.renamedVersion", {
+          value1: getPersonaVersionTitle(version),
+          value2: trimmedVersion,
+        }),
+      );
+      setSelectedVersion(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : localizeUi("ui.cardversionhistory.failedToRenameVersion"));
+    }
+  };
+
+  const handleResetVersions = async () => {
+    const personaName = currentData.name || localizeUi("ui.personas.personaversionhistorypanel.thisPersona");
+    const confirmed = await showConfirmDialog({
+      title: localizeUi("ui.cardversionhistory.resetVersioningForValue1", { value1: personaName }),
+      message: localizeUi("ui.cardversionhistory.resetVersioningMessage", { value1: personaName }),
+      confirmLabel: localizeUi("ui.cardversionhistory.reset"),
+      tone: "destructive",
+    });
+    if (!confirmed) return;
+    try {
+      await resetVersions.mutateAsync(personaId);
+      toast.success(localizeUi("ui.cardversionhistory.resetVersioningSuccess", { value1: personaName }));
+      setSelectedVersion(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : localizeUi("ui.cardversionhistory.failedToResetVersioning"));
+    }
+  };
+
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--secondary)]/70 p-2.5">
       <div className="flex items-center justify-between gap-2">
@@ -3303,11 +3362,31 @@ function PersonaVersionHistoryPanel({
           <History size="0.75rem" />
           {localizeUi("ui.personas.personaversionhistorypanel.versionHistory")}
         </span>
-        <span className="rounded-full bg-[var(--accent)] px-2 py-0.5 text-[0.625rem] text-[var(--muted-foreground)]">
-          {isLoading
-            ? localizeUi("ui.personas.personaversionhistorypanel.loading")
-            : localizeUi("ui.personas.personaversionhistorypanel.value1Saved", { value1: savedVersionCount })}
-        </span>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={handleResetVersions}
+            disabled={isLoading || versionMutationPending || hasUnsavedChanges}
+            className="mari-editor-action mari-editor-action--compact inline-flex h-7 px-2 text-[0.625rem]"
+            title={localizeUi(
+              hasUnsavedChanges
+                ? "ui.cardversionhistory.saveOrDiscardEditsBeforeResettingVersioning"
+                : "ui.cardversionhistory.resetVersioning",
+            )}
+          >
+            {resetVersions.isPending ? (
+              <Loader2 size="0.75rem" className="animate-spin" />
+            ) : (
+              <RotateCcw size="0.75rem" />
+            )}
+            {localizeUi("ui.cardversionhistory.reset")}
+          </button>
+          <span className="mari-editor-chip mari-editor-chip--accent px-2 py-0.5 text-[0.625rem]">
+            {isLoading
+              ? localizeUi("ui.personas.personaversionhistorypanel.loading")
+              : localizeUi("ui.personas.personaversionhistorypanel.value1Saved", { value1: savedVersionCount })}
+          </span>
+        </div>
       </div>
 
       {versions.length === 0 ? (
@@ -3348,9 +3427,22 @@ function PersonaVersionHistoryPanel({
                 <>
                   <button
                     type="button"
+                    onClick={() => handleRenameVersion(version)}
+                    disabled={versionMutationPending}
+                    className="mari-editor-action mari-editor-action--compact inline-flex h-7 w-7 rounded-lg p-0"
+                    title={localizeUi("ui.cardversionhistory.renameThisSavedVersion")}
+                  >
+                    {renameVersion.isPending && renameVersion.variables?.versionId === version.id ? (
+                      <Loader2 size="0.75rem" className="animate-spin" />
+                    ) : (
+                      <Pencil size="0.75rem" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => handleRestore(version)}
-                    disabled={restoreVersion.isPending || deleteVersion.isPending}
-                    className="rounded-lg p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-50"
+                    disabled={versionMutationPending}
+                    className="mari-editor-action mari-editor-action--compact inline-flex h-7 w-7 rounded-lg p-0"
                     title={localizeUi("ui.personas.personaversionhistorypanel.restoreThisVersion")}
                   >
                     {restoreVersion.isPending ? (
@@ -3362,8 +3454,8 @@ function PersonaVersionHistoryPanel({
                   <button
                     type="button"
                     onClick={() => handleDeleteVersion(version)}
-                    disabled={restoreVersion.isPending || deleteVersion.isPending}
-                    className="rounded-lg p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-50"
+                    disabled={versionMutationPending}
+                    className="mari-editor-action mari-editor-action--compact mari-editor-action--danger inline-flex h-7 w-7 rounded-lg p-0"
                     title={localizeUi("ui.personas.personaversionhistorypanel.deleteThisSavedVersion")}
                   >
                     {deleteVersion.isPending && deleteVersion.variables?.versionId === version.id ? (

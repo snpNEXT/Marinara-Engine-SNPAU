@@ -295,6 +295,7 @@ function stSelectiveLogic(value: unknown): number {
 
 function stPosition(value: unknown): number {
   const position = Number(value ?? 0);
+  if (position === 7) return 7;
   if (position === 2) return 4;
   if (position === 1) return 1;
   return 0;
@@ -319,6 +320,7 @@ function buildCompatibleLorebookExport(lb: Record<string, any>) {
       selectiveLogic: stSelectiveLogic(entry.selectiveLogic),
       order: Number(entry.order ?? 100),
       position: stPosition(entry.position),
+      outletName: String(entry.outletName ?? ""),
       depth: Number(entry.depth ?? 4),
       probability: entry.probability ?? null,
       scanDepth: entry.scanDepth ?? null,

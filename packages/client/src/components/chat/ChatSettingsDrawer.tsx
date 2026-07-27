@@ -724,6 +724,9 @@ const CHAT_SETTINGS_ORDER = {
   gamePrompt: 0,
 } as const;
 
+const CHAT_RESOURCE_REMOVE_BUTTON_CLASS =
+  "mari-accent-animated flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-accent)] focus-visible:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] focus-visible:text-[var(--marinara-chat-chrome-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)]";
+
 const CHAT_PRESET_UNAPPLIED_SELECT_VALUE = "__chat_preset_unapplied__";
 
 type AvailableAgent = {
@@ -3234,7 +3237,7 @@ export function ChatSettingsDrawer({
   const [spotifyArtistDraft, setSpotifyArtistDraft] = useState(spotifyArtist);
   const [gameSpotifyArtistDraft, setGameSpotifyArtistDraft] = useState(gameSpotifyArtist);
 
-  // ── Chat Settings Presets ──
+  // ── Chat settings profiles (legacy API/type names still use "chat preset") ──
   const presetMode = (chatMode === "visual_novel" ? "roleplay" : chatMode) as ChatMode;
   const { data: chatPresets } = useChatPresets(presetMode);
   const saveChatPreset = useSaveChatPresetSettings();
@@ -3731,8 +3734,8 @@ export function ChatSettingsDrawer({
   const handleSaveAsPreset = async () => {
     if (!selectedChatPreset) return;
     const baseName = await showPromptDialog({
-      title: localizeUi("ui.chat.chatsettingsdrawer.duplicatePreset"),
-      message: localizeUi("ui.chat.chatsettingsdrawer.nameForTheNewPreset"),
+      title: localizeUi("chat.settingsProfile.dialog.createTitle"),
+      message: localizeUi("chat.settingsProfile.dialog.newName"),
       defaultValue: `${selectedChatPreset.name} Copy`,
       confirmLabel: localizeUi("ui.modals.createcharactermodal.create"),
     });
@@ -3743,7 +3746,7 @@ export function ChatSettingsDrawer({
       {
         onSuccess: (created) => {
           if (!created) return;
-          // Save the current chat settings into the new preset, then apply it
+          // Save the current chat settings into the new profile, then apply it
           // (which records appliedChatPresetId on the chat so the dropdown follows).
           saveChatPreset.mutate(
             { id: created.id, settings: snapshotCurrentPresetSettings() },
@@ -3759,9 +3762,9 @@ export function ChatSettingsDrawer({
   const handleDeletePreset = async () => {
     if (!selectedChatPreset || selectedChatPreset.isDefault) return;
     const ok = await showConfirmDialog({
-      title: localizeUi("ui.chat.chatsettingsdrawer.deletePreset"),
-      message: localizeUi("ui.chat.chatsettingsdrawer.deletePresetValue1ThisCannotBeUndone", {
-        value1: selectedChatPreset.name,
+      title: localizeUi("chat.settingsProfile.action.delete"),
+      message: localizeUi("dialog.delete.namedPermanent", {
+        name: selectedChatPreset.name,
       }),
       confirmLabel: localizeUi("lorebook.editor.batch.delete"),
       tone: "destructive",
@@ -3771,9 +3774,9 @@ export function ChatSettingsDrawer({
     const defaultPreset = presetList.find((p) => p.isDefault);
     deleteChatPreset.mutate(selectedChatPreset.id, {
       onSuccess: () => {
-        // If the chat was using the preset we just deleted, fall back to the
-        // Default preset's settings — without this, the chat would visually
-        // show "Default" but keep the deleted preset's actual values.
+        // If the chat was using the profile we just deleted, fall back to the
+        // Default profile's settings: without this, the chat would visually
+        // show "Default" but keep the deleted profile's actual values.
         if (wasApplied && defaultPreset) {
           applyChatPreset.mutate({ presetId: defaultPreset.id, chatId: chat.id });
         }
@@ -3785,7 +3788,7 @@ export function ChatSettingsDrawer({
     if (!selectedChatPreset) return;
     api.download(
       `/chat-presets/${selectedChatPreset.id}/export`,
-      `${selectedChatPreset.name}.marinara-chat-preset.json`,
+      `${selectedChatPreset.name}.marinara-settings-profile.json`,
     );
   };
 
@@ -3804,8 +3807,10 @@ export function ChatSettingsDrawer({
       if (created?.id) applyChatPreset.mutate({ presetId: created.id, chatId: chat.id });
     } catch (err) {
       await showAlertDialog({
-        title: "Import Failed",
-        message: `Failed to import preset: ${err instanceof Error ? err.message : "Invalid file"}`,
+        title: localizeUi("chat.settingsProfile.import.failedTitle"),
+        message: localizeUi("chat.settingsProfile.import.failedWithReason", {
+          reason: err instanceof Error ? err.message : localizeUi("chat.settingsProfile.import.invalidFile"),
+        }),
         tone: "destructive",
       });
     }
@@ -4079,7 +4084,7 @@ export function ChatSettingsDrawer({
             "flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pb-[calc(1rem+env(safe-area-inset-bottom))]",
           )}
         >
-          {/* Chat Settings Preset bar — hidden in Game Mode. Scene chats keep it, but scene instructions stay chat-owned. */}
+          {/* Settings profile bar — hidden in Game Mode. Scene chats keep it, but scene instructions stay chat-owned. */}
           {modeCapabilities.supportsChatSettingsPresets && (
             <div
               style={{ order: CHAT_SETTINGS_ORDER.settingsPresets }}
@@ -4111,7 +4116,8 @@ export function ChatSettingsDrawer({
                   <select
                     value={chatPresetSelectValue}
                     onChange={(e) => handleSelectPreset(e.target.value)}
-                    title={localizeUi("ui.chat.chatsettingsdrawer.applyAChatSettingsPresetToThisChat")}
+                    aria-label={localizeUi("chat.settingsProfile.label")}
+                    title={localizeUi("chat.settingsProfile.action.apply")}
                     className="mari-preset-native-select flex-1 min-w-0 rounded-lg bg-[var(--secondary)] px-3 py-2 text-xs outline-none ring-1 ring-transparent transition-shadow focus:ring-[var(--primary)]/40"
                   >
                     {presetList.length === 0 && (
@@ -4120,8 +4126,8 @@ export function ChatSettingsDrawer({
                     {!appliedChatPreset && presetList.length > 0 && (
                       <option value={CHAT_PRESET_UNAPPLIED_SELECT_VALUE}>
                         {appliedPresetId
-                          ? localizeUi("ui.chat.chatsettingsdrawer.missingPresetChooseAPreset")
-                          : localizeUi("ui.chat.chatsettingsdrawer.customSettingsChooseAPreset")}
+                          ? localizeUi("chat.settingsProfile.option.missing")
+                          : localizeUi("chat.settingsProfile.option.custom")}
                       </option>
                     )}
                     {presetList.map((p) => (
@@ -4136,16 +4142,16 @@ export function ChatSettingsDrawer({
                   disabled={!selectedChatPreset || selectedChatPreset.isActive || setActiveChatPreset.isPending}
                   title={
                     !selectedChatPreset
-                      ? localizeUi("ui.chat.chatsettingsdrawer.selectAPresetToMarkItAsDefault")
+                      ? localizeUi("chat.settingsProfile.default.selectFirst")
                       : selectedChatPreset.isActive
-                        ? localizeUi("ui.chat.chatsettingsdrawer.thisPresetIsTheDefaultForNewChatsIn")
-                        : localizeUi("ui.chat.chatsettingsdrawer.markThisPresetAsDefaultForNewChatsIn")
+                        ? localizeUi("chat.settingsProfile.default.current")
+                        : localizeUi("chat.settingsProfile.default.markForMode")
                   }
                   aria-pressed={!!selectedChatPreset?.isActive}
                   aria-label={
                     selectedChatPreset?.isActive
-                      ? localizeUi("ui.panels.presetspanel.defaultPreset")
-                      : localizeUi("ui.chat.chatsettingsdrawer.markAsDefaultPreset")
+                      ? localizeUi("chat.settingsProfile.default.label")
+                      : localizeUi("chat.settingsProfile.action.markDefault")
                   }
                   className={cn(
                     "shrink-0 flex items-center justify-center rounded-md p-1.5 transition-colors disabled:cursor-not-allowed",
@@ -4164,20 +4170,20 @@ export function ChatSettingsDrawer({
                   side="left"
                   text={
                     isRoleplayMode
-                      ? localizeUi("ui.chat.chatsettingsdrawer.presetsBundleThisChatSConnectionPromptPresetAgents")
-                      : localizeUi("ui.chat.chatsettingsdrawer.presetsBundleThisChatSConnectionPromptSourceAgents")
+                      ? localizeUi("chat.settingsProfile.description.roleplay")
+                      : localizeUi("chat.settingsProfile.description.conversation")
                   }
                 />
               </div>
-              {/* Single row of all preset actions */}
+              {/* Single row of all profile actions */}
               <div className="flex items-center gap-1">
                 <button
                   onClick={handleSaveIntoPreset}
                   disabled={!selectedChatPreset || selectedChatPreset.isDefault}
                   title={
                     selectedChatPreset?.isDefault
-                      ? localizeUi("ui.chat.chatsettingsdrawer.cannotSaveIntoTheDefaultPreset")
-                      : localizeUi("ui.chat.chatsettingsdrawer.saveCurrentChatSettingsIntoThisPreset")
+                      ? localizeUi("chat.settingsProfile.default.cannotSave")
+                      : localizeUi("chat.settingsProfile.action.saveInto")
                   }
                   className="flex-1 flex items-center justify-center rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
@@ -4188,8 +4194,8 @@ export function ChatSettingsDrawer({
                   disabled={!selectedChatPreset || selectedChatPreset.isDefault}
                   title={
                     selectedChatPreset?.isDefault
-                      ? localizeUi("ui.chat.chatsettingsdrawer.cannotRenameTheDefaultPreset")
-                      : localizeUi("ui.chat.chatsettingsdrawer.renamePreset")
+                      ? localizeUi("chat.settingsProfile.default.cannotRename")
+                      : localizeUi("chat.settingsProfile.action.rename")
                   }
                   className="flex-1 flex items-center justify-center rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
@@ -4198,7 +4204,7 @@ export function ChatSettingsDrawer({
                 <button
                   onClick={handleSaveAsPreset}
                   disabled={!selectedChatPreset}
-                  title={localizeUi("ui.chat.chatsettingsdrawer.saveCurrentChatSettingsAsANewPreset")}
+                  title={localizeUi("chat.settingsProfile.action.saveAs")}
                   className="flex-1 flex items-center justify-center rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <FilePlus2 size="0.875rem" />
@@ -4206,7 +4212,7 @@ export function ChatSettingsDrawer({
                 <span className="mx-1 h-4 w-px shrink-0 bg-[var(--border)]" aria-hidden />
                 <button
                   onClick={handleImportClick}
-                  title={localizeUi("ui.chat.chatsettingsdrawer.importPresetJson")}
+                  title={localizeUi("chat.settingsProfile.action.import")}
                   className="flex-1 flex items-center justify-center rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
                 >
                   <Download size="0.875rem" />
@@ -4214,7 +4220,7 @@ export function ChatSettingsDrawer({
                 <button
                   onClick={handleExportPreset}
                   disabled={!selectedChatPreset}
-                  title={localizeUi("ui.chat.chatsettingsdrawer.exportPresetJson")}
+                  title={localizeUi("chat.settingsProfile.action.export")}
                   className="flex-1 flex items-center justify-center rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Upload size="0.875rem" />
@@ -4224,8 +4230,8 @@ export function ChatSettingsDrawer({
                   disabled={!selectedChatPreset || selectedChatPreset.isDefault}
                   title={
                     selectedChatPreset?.isDefault
-                      ? localizeUi("ui.chat.chatsettingsdrawer.cannotDeleteTheDefaultPreset")
-                      : localizeUi("ui.panels.presetspanel.deletePreset")
+                      ? localizeUi("chat.settingsProfile.default.cannotDelete")
+                      : localizeUi("chat.settingsProfile.action.delete")
                   }
                   className="flex-1 flex items-center justify-center rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)]/15 hover:text-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
@@ -4420,7 +4426,8 @@ export function ChatSettingsDrawer({
                         <button
                           type="button"
                           onClick={() => updateChat.mutate({ id: chat.id, personaId: null })}
-                          className="flex h-5 w-5 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)]/15 hover:text-[var(--destructive)]"
+                          className={CHAT_RESOURCE_REMOVE_BUTTON_CLASS}
+                          data-chat-settings-remove-resource="persona"
                           title={localizeUi("ui.chat.chatsettingsdrawer.removePersona")}
                         >
                           <X size="0.75rem" />
@@ -4595,7 +4602,8 @@ export function ChatSettingsDrawer({
                             </button>
                             <button
                               onClick={() => toggleCharacter(c.id)}
-                              className="flex h-5 w-5 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)]/15 hover:text-[var(--destructive)]"
+                              className={CHAT_RESOURCE_REMOVE_BUTTON_CLASS}
+                              data-chat-settings-remove-resource="character"
                               title={localizeUi("ui.chat.chatsettingsdrawer.removeFromParty")}
                             >
                               <Trash2 size="0.6875rem" />
@@ -4715,7 +4723,8 @@ export function ChatSettingsDrawer({
                       <button
                         type="button"
                         onClick={() => updateChat.mutate({ id: chat.id, personaId: null })}
-                        className="flex h-5 w-5 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)]/15 hover:text-[var(--destructive)]"
+                        className={CHAT_RESOURCE_REMOVE_BUTTON_CLASS}
+                        data-chat-settings-remove-resource="persona"
                         title={localizeUi("ui.chat.chatsettingsdrawer.removePersona")}
                       >
                         <X size="0.75rem" />
@@ -4962,7 +4971,8 @@ export function ChatSettingsDrawer({
                           </button>
                           <button
                             onClick={() => toggleCharacter(c.id)}
-                            className="flex h-5 w-5 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)]/15 hover:text-[var(--destructive)]"
+                            className={CHAT_RESOURCE_REMOVE_BUTTON_CLASS}
+                            data-chat-settings-remove-resource="character"
                             title={localizeUi("ui.chat.chatsettingsdrawer.removeFromChat")}
                           >
                             <Trash2 size="0.6875rem" />

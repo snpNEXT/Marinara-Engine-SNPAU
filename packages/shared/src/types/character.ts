@@ -135,7 +135,8 @@ export type CharacterBookEntryPosition =
   | 3
   | 4
   | 5
-  | 6;
+  | 6
+  | 7;
 export type CharacterBookEntryRole = "system" | "user" | "assistant" | 0 | 1 | 2;
 
 /** A single entry in a character book. */

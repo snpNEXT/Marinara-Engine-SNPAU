@@ -644,7 +644,6 @@ interface ChatMessageProps {
   groupChatMode?: string;
   chatCharacterIds?: string[];
   expressionAvatarResolver?: ExpressionAvatarResolver;
-  hasDraftInput?: boolean;
   /** Distance from the latest message (0 = newest). Used for depth-range regex filtering. */
   messageDepth?: number;
   /** 1-based ordinal position in the message list. Shown under avatar when actions visible. */
@@ -1232,7 +1231,6 @@ export const ChatMessage = memo(function ChatMessage({
   groupChatMode,
   chatCharacterIds,
   expressionAvatarResolver,
-  hasDraftInput = false,
   messageDepth,
   messageIndex,
   messageOrderIndex,
@@ -1260,7 +1258,6 @@ export const ChatMessage = memo(function ChatMessage({
     showModelName,
     showTokenUsage,
     showMessageNumbers,
-    guideGenerations,
     boldDialogue,
     editMessageOnDoubleClick,
     quoteFormat,
@@ -1281,7 +1278,6 @@ export const ChatMessage = memo(function ChatMessage({
       showModelName: s.showModelName,
       showTokenUsage: s.showTokenUsage,
       showMessageNumbers: s.showMessageNumbers,
-      guideGenerations: s.guideGenerations,
       boldDialogue: s.boldDialogue ?? true,
       editMessageOnDoubleClick: s.editMessageOnDoubleClick,
       quoteFormat: s.quoteFormat,
@@ -1289,12 +1285,6 @@ export const ChatMessage = memo(function ChatMessage({
       setTTSLineVolume: s.setTTSLineVolume,
     })),
   );
-  const isGuided = guideGenerations && hasDraftInput;
-  const regenerateButtonTitle = isGuided ? "Regenerate (guided)" : "Regenerate";
-  const regenerateGuidedClass = isGuided
-    ? "text-[var(--primary)] bg-[var(--primary)]/15 ring-1 ring-[var(--primary)]/30 hover:text-[var(--primary)]"
-    : undefined;
-
   // Build reusable text style objects (memoized to avoid unnecessary DOM updates)
   const textStrokeStyle = useMemo<React.CSSProperties>(
     () =>
@@ -2779,11 +2769,8 @@ export const ChatMessage = memo(function ChatMessage({
                   dark
                 />
               )}
-              <ActionBtn
-                icon={<RefreshCw size={MESSAGE_ACTION_ICON_SIZE} />}
+              <GuidedRegenerateActionBtn
                 onClick={() => onRegenerate?.(message.id)}
-                title={regenerateButtonTitle}
-                className={regenerateGuidedClass}
                 dark
               />
               <ActionBtn
@@ -3246,11 +3233,8 @@ export const ChatMessage = memo(function ChatMessage({
                 disabled={switchingRewriteVersion}
               />
             )}
-            <ActionBtn
-              icon={<RefreshCw size={MESSAGE_ACTION_ICON_SIZE} />}
+            <GuidedRegenerateActionBtn
               onClick={() => onRegenerate?.(message.id)}
-              title={regenerateButtonTitle}
-              className={regenerateGuidedClass}
             />
             <ActionBtn
               icon={<Flag size={MESSAGE_ACTION_ICON_SIZE} />}
@@ -3486,6 +3470,36 @@ function TTSLineVolumeControl({
 }
 
 // ── Action button ──
+const GuidedRegenerateActionBtn = memo(function GuidedRegenerateActionBtn({
+  onClick,
+  dark,
+}: {
+  onClick: () => void;
+  dark?: boolean;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  const guideGenerations = useUIStore((state) => state.guideGenerations);
+  const hasCurrentInput = useChatStore((state) => state.hasCurrentInput);
+  const isGuided = guideGenerations && hasCurrentInput;
+  return (
+    <ActionBtn
+      icon={<RefreshCw size={MESSAGE_ACTION_ICON_SIZE} />}
+      onClick={onClick}
+      title={
+        isGuided
+          ? localizeUi("ui.chat.chatmessage.regenerateGuided")
+          : localizeUi("ui.chat.chatmessage.regenerate")
+      }
+      className={
+        isGuided
+          ? "bg-[var(--primary)]/15 text-[var(--primary)] ring-1 ring-[var(--primary)]/30 hover:text-[var(--primary)]"
+          : undefined
+      }
+      dark={dark}
+    />
+  );
+});
+
 function ActionBtn({
   icon,
   onClick,

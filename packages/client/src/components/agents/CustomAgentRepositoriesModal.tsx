@@ -1,6 +1,12 @@
 import { useMemo, useState } from "react";
 import { Check, ExternalLink, GitFork, Loader2, Plus, RefreshCw, Trash2, TriangleAlert } from "lucide-react";
-import type { CustomAgentRepositoryChange, CustomAgentRepositoryPreview } from "@marinara-engine/shared";
+import {
+  CUSTOM_AGENT_PERMISSIONS_EXPLICIT_SETTING,
+  normalizeCustomAgentCapabilities,
+  type CustomAgentCapability,
+  type CustomAgentRepositoryChange,
+  type CustomAgentRepositoryPreview,
+} from "@marinara-engine/shared";
 import { toast } from "sonner";
 import {
   useAddCustomAgentRepository,
@@ -14,6 +20,7 @@ import { showConfirmDialog } from "../../lib/app-dialogs";
 import { cn } from "../../lib/utils";
 import { Modal } from "../ui/Modal";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { useAgentImportPolicy } from "../../hooks/use-agents";
 
 const TRUST_WARNING =
   "This repo and its agents are not affiliated with or vetted by PastaDevs. Custom agents can run tools, send prompts to your configured connections, and change behavior on every sync. Only add repos from people or sources you trust.";
@@ -38,9 +45,24 @@ function previewSettings(change: CustomAgentRepositoryChange) {
   return configuration;
 }
 
+function previewPermissions(change: CustomAgentRepositoryChange): CustomAgentCapability[] {
+  const definition = change.definition;
+  if (!definition) return [];
+  const settings = {
+    ...(definition.defaultSettings ?? {}),
+    ...(definition.defaultTools ? { enabledTools: definition.defaultTools } : {}),
+    ...(definition.resultType ? { resultType: definition.resultType } : {}),
+    [CUSTOM_AGENT_PERMISSIONS_EXPLICIT_SETTING]: false,
+  };
+  return Object.entries(normalizeCustomAgentCapabilities(settings))
+    .filter(([, enabled]) => enabled === true)
+    .map(([capability]) => capability as CustomAgentCapability);
+}
+
 export function CustomAgentRepositoriesModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { t: localizeUi } = useUiTranslation();
   const repositories = useCustomAgentRepositories();
+  const { data: agentImportPolicy } = useAgentImportPolicy();
   const previewMutation = usePreviewCustomAgentRepository();
   const addMutation = useAddCustomAgentRepository();
   const syncMutation = useSyncCustomAgentRepository();
@@ -52,9 +74,14 @@ export function CustomAgentRepositoriesModal({ open, onClose }: { open: boolean;
     () => repositories.data?.repositories.find((entry) => entry.id === preview?.repository.id) ?? null,
     [preview?.repository.id, repositories.data?.repositories],
   );
+  const previewPermissionsByAgentId = useMemo(
+    () => new Map((preview?.changes ?? []).map((change) => [change.agentId, previewPermissions(change)])),
+    [preview],
+  );
   const contentChanges = preview?.changes.filter((change) => change.status !== "unchanged") ?? [];
   const pending =
     previewMutation.isPending || addMutation.isPending || syncMutation.isPending || removeMutation.isPending;
+  const agentImportsEnabled = agentImportPolicy?.enabled === true;
 
   const previewUrl = async () => {
     if (!url.trim()) return;
@@ -75,6 +102,10 @@ export function CustomAgentRepositoriesModal({ open, onClose }: { open: boolean;
 
   const applyPreview = async () => {
     if (!preview) return;
+    if (!agentImportsEnabled) {
+      toast.info(localizeUi("settings.agentImports.enableFirst"));
+      return;
+    }
     if (!configuredRepository) {
       const confirmed = await showConfirmDialog({
         title:localizeUi("ui.agents.customagentrepositoriesmodal.addThisCustomRepository"),
@@ -259,7 +290,8 @@ export function CustomAgentRepositoriesModal({ open, onClose }: { open: boolean;
                 type="button"
                 className="mari-chrome-control mari-chrome-control--primary h-10 px-4 text-sm"
                 onClick={() => void applyPreview()}
-                disabled={pending}
+                disabled={pending || !agentImportsEnabled}
+                title={agentImportsEnabled ? undefined : localizeUi("settings.agentImports.enableFirst")}
               >
                 {addMutation.isPending || syncMutation.isPending ? (
                   <Loader2 size="0.9rem" className="animate-spin" />
@@ -298,6 +330,24 @@ export function CustomAgentRepositoriesModal({ open, onClose }: { open: boolean;
                           <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--secondary)] p-3 text-xs leading-5 text-[var(--foreground)]">
                             {change.definition?.defaultPromptTemplate || "(empty prompt)"}
                           </pre>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold text-[var(--muted-foreground)]">
+                            {localizeUi("settings.agentImports.review.permissions")}
+                          </p>
+                          {(previewPermissionsByAgentId.get(change.agentId)?.length ?? 0) > 0 ? (
+                            <ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-[var(--foreground)]">
+                              {(previewPermissionsByAgentId.get(change.agentId) ?? []).map((capability) => (
+                                <li key={capability}>
+                                  {localizeUi(`settings.agentImports.capabilities.${capability}.label`)}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+                              {localizeUi("settings.agentImports.review.noPermissions")}
+                            </p>
+                          )}
                         </div>
                         <div>
                           <p className="text-xs font-semibold text-[var(--muted-foreground)]">{localizeUi("ui.agents.customagentrepositoriesmodal.settingsAndTools")}</p>

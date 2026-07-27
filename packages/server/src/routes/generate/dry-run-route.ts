@@ -42,7 +42,12 @@ import {
 } from "../../services/prompt/index.js";
 import { mergeAdjacentMessages } from "../../services/prompt/merger.js";
 import { wrapContent } from "../../services/prompt/format-engine.js";
-import { yieldToEventLoop, type BaseLLMProvider, type ChatMessage } from "../../services/llm/base-provider.js";
+import {
+  yieldToEventLoop,
+  type BaseLLMProvider,
+  type ChatMessage,
+  type ChatOptions,
+} from "../../services/llm/base-provider.js";
 import {
   fitMessagesForModelAccess,
   mergeModelContextLimit,
@@ -1577,6 +1582,12 @@ export async function registerDryRunRoute(app: FastifyInstance) {
 
     // enableThinking activates provider reasoning mode (separate from showing thoughts).
     const enableThinking = !!resolvedEffort;
+    const providerReasoningEffort: ChatOptions["reasoningEffort"] =
+      enabledParameters?.reasoningEffort === false
+        ? undefined
+        : reasoningEffort === null
+          ? "none"
+          : (resolvedEffort ?? undefined);
 
     // ── Claude 4.5+ sampling parameter restrictions ──
     const modelLc = (conn.model ?? "").toLowerCase();
@@ -1685,7 +1696,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
           frequencyPenalty: suppressModelParameters ? undefined : frequencyPenalty || undefined,
           presencePenalty: suppressModelParameters ? undefined : presencePenalty || undefined,
           enableThinking: suppressModelParameters ? undefined : enableThinking || undefined,
-          reasoningEffort: suppressModelParameters ? undefined : resolvedEffort || undefined,
+          reasoningEffort: suppressModelParameters ? undefined : providerReasoningEffort,
           verbosity: suppressModelParameters ? undefined : verbosity || undefined,
           serviceTier: serviceTier || undefined,
           showThoughts: showThoughts || undefined,
@@ -1750,7 +1761,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
           presencePenalty: presencePenalty || undefined,
           minP: minP || undefined,
           enableThinking,
-          reasoningEffort: resolvedEffort ?? undefined,
+          reasoningEffort: providerReasoningEffort,
           excludePastReasoning,
           verbosity: verbosity ?? undefined,
           serviceTier,
@@ -1815,7 +1826,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
         presencePenalty: presencePenalty || undefined,
         minP: minP || undefined,
         enableThinking,
-        reasoningEffort: resolvedEffort ?? undefined,
+        reasoningEffort: providerReasoningEffort,
         excludePastReasoning,
         verbosity: verbosity ?? undefined,
         serviceTier,

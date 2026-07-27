@@ -241,6 +241,8 @@ export const ChatInput = memo(function ChatInput({
   const inputBarRef = useRef<HTMLDivElement>(null);
   const focusAfterMobileRestoreRef = useRef(false);
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inputPresenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentInputFrameRef = useRef<number | null>(null);
   const pendingCurrentInputRef = useRef("");
   const attachmentsRef = useRef<Attachment[]>([]);
@@ -332,7 +334,6 @@ export const ChatInput = memo(function ChatInput({
   const deleteMessage = useDeleteMessage(activeChatId);
   const updateMessageExtra = useUpdateMessageExtra(activeChatId);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const resizeRafRef = useRef<number>(0);
   const qc = useQueryClient();
   const shouldShowMobileCollapsedComposer =
     isMobileComposerViewport &&
@@ -380,7 +381,16 @@ export const ChatInput = memo(function ChatInput({
   const syncInputState = useCallback(
     (value: string) => {
       const nextHasInput = value.trim().length > 0;
-      setHasInput((current) => (current === nextHasInput ? current : nextHasInput));
+      if (inputPresenceTimerRef.current) clearTimeout(inputPresenceTimerRef.current);
+      if (nextHasInput) {
+        inputPresenceTimerRef.current = setTimeout(() => {
+          inputPresenceTimerRef.current = null;
+          setHasInput(true);
+        }, 150);
+      } else {
+        inputPresenceTimerRef.current = null;
+        setHasInput(false);
+      }
       pendingCurrentInputRef.current = value;
       if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
         setCurrentInput(value);
@@ -510,12 +520,15 @@ export const ChatInput = memo(function ChatInput({
     return () => {
       // Cancel pending debounce timers
       if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
-      // Cancel pending resize rAF
-      if (resizeRafRef.current) cancelAnimationFrame(resizeRafRef.current);
+      if (inputPresenceTimerRef.current) clearTimeout(inputPresenceTimerRef.current);
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
       if (currentInputFrameRef.current !== null) {
         cancelAnimationFrame(currentInputFrameRef.current);
         currentInputFrameRef.current = null;
-        useChatStore.getState().setCurrentInput(pendingCurrentInputRef.current);
+        const chatState = useChatStore.getState();
+        if (chatState.activeChatId === chatId) {
+          chatState.setCurrentInput(pendingCurrentInputRef.current);
+        }
       }
       // Flush draft synchronously
       if (chatId && textarea) {
@@ -1486,9 +1499,16 @@ export const ChatInput = memo(function ChatInput({
       }
     }
 
-    if (enterToSend && e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
+    if (e.key === "Enter") {
+      if (enterToSend && !e.shiftKey) {
+        e.preventDefault();
+        handleSend();
+      } else {
+        const el = textareaRef.current;
+        requestAnimationFrame(() => {
+          if (el && textareaRef.current === el) resizeChatInputTextarea(el);
+        });
+      }
     }
   };
 
@@ -1512,13 +1532,14 @@ export const ChatInput = memo(function ChatInput({
       }, 300);
     }
 
-    // Auto-resize textarea — batched via rAF to avoid layout thrashing on
-    // every keystroke while still responding within the same visual frame.
-    if (resizeRafRef.current) cancelAnimationFrame(resizeRafRef.current);
-    resizeRafRef.current = requestAnimationFrame(() => {
-      if (!el) return;
+    // Roleplay can paint a substantially heavier scene than the other modes.
+    // Wait for a short typing pause before forcing the scrollHeight layout read.
+    if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+    resizeTimerRef.current = setTimeout(() => {
+      resizeTimerRef.current = null;
+      if (textareaRef.current !== el) return;
       resizeChatInputTextarea(el);
-    });
+    }, 150);
 
     // Slash command autocomplete
     const trimmed = fixed.trim();

@@ -399,7 +399,7 @@ export interface ChatMetadata {
    *  user turned off via the chat Lorebooks panel land here; the scope filter
    *  drops them before injection without unbinding the book. */
   excludedLorebookIds?: string[];
-  /** ID of the chat preset most recently applied to this chat (drives the preset bar dropdown). */
+  /** ID of the settings profile most recently applied to this chat (drives the profile dropdown). */
   appliedChatPresetId?: string | null;
   /** Custom prompt prefix used by the /impersonate slash command. */
   impersonatePrompt?: string | null;
@@ -832,6 +832,8 @@ export interface GenerateRequest {
   regenerateMessageId: string | null;
   /** If set, append the generated continuation to this assistant message */
   continueMessageId?: string | null;
+  /** Whether a continued response is separated from the existing message by a blank line. */
+  continueAddsNewline?: boolean;
   /** Override connection for this generation */
   connectionId: string | null;
   /** Background currently displayed on the active chat surface. */

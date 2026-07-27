@@ -37,6 +37,8 @@ import {
   useCharacterVersions,
   useRestoreCharacterVersion,
   useDeleteCharacterVersion,
+  useRenameCharacterVersion,
+  useResetCharacterVersions,
   spriteKeys,
   type CharacterCallVideoGenerationInput,
   type CharacterGalleryClip,
@@ -48,7 +50,7 @@ import { useUIStore } from "../../stores/ui.store";
 import { lorebookKeys, useLorebook } from "../../hooks/use-lorebooks";
 import { useConnections } from "../../hooks/use-connections";
 import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
-import { showConfirmDialog } from "../../lib/app-dialogs";
+import { showConfirmDialog, showPromptDialog } from "../../lib/app-dialogs";
 import { formatCardVersionTimestamp, getCardVersionTitle } from "../../lib/card-version-history";
 import { SpriteGenerationModal } from "../ui/SpriteGenerationModal";
 import { AvatarGenerationModal } from "../ui/AvatarGenerationModal";
@@ -94,6 +96,7 @@ import {
   RotateCcw,
   Scissors,
   MessageCircle,
+  Pencil,
 } from "lucide-react";
 import {
   cn,
@@ -205,6 +208,16 @@ interface ParsedCharacter {
   comment: string;
   avatarPath: string | null;
   spriteFolderPath: string | null;
+}
+
+function getPersistedCharacterName(character: ParsedCharacter | undefined) {
+  if (!character) return null;
+  try {
+    const data = typeof character.data === "string" ? JSON.parse(character.data) : character.data;
+    return typeof data?.name === "string" && data.name.trim() ? data.name.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 function appendNewTags(existingTags: string[], rawInput: string) {
@@ -656,7 +669,11 @@ export function CharacterEditor() {
     if (
       !(await showConfirmDialog({
         title: localizeUi("ui.characters.charactereditor.deleteCharacter_07d0983"),
-        message: localizeUi("ui.characters.charactereditor.areYouSureYouWantToDeleteThisCharacter"),
+        message: localizeUi("dialog.delete.namedPermanent", {
+          name:
+            getPersistedCharacterName(rawCharacter as ParsedCharacter | undefined) ||
+            localizeUi("ui.characters.charactereditor.thisCharacter"),
+        }),
         confirmLabel: localizeUi("lorebook.editor.batch.delete"),
         tone: "destructive",
       }))
@@ -1098,6 +1115,7 @@ export function CharacterEditor() {
                 avatarUploading={avatarUploading}
                 onRemoveAvatar={handleAvatarRemove}
                 removingAvatar={removeAvatar.isPending}
+                hasUnsavedChanges={dirty}
               />
             )}
             {activeTab === "card" && (
@@ -1381,6 +1399,7 @@ function MetadataTab({
   avatarUploading,
   onRemoveAvatar,
   removingAvatar,
+  hasUnsavedChanges,
 }: {
   characterId: string | null;
   formData: CharacterData;
@@ -1400,6 +1419,7 @@ function MetadataTab({
   avatarUploading: boolean;
   onRemoveAvatar: () => void;
   removingAvatar: boolean;
+  hasUnsavedChanges: boolean;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const { t } = useTranslation();
@@ -1533,6 +1553,7 @@ function MetadataTab({
             currentData={formData}
             currentComment={characterComment}
             currentAvatarPath={avatarPreview}
+            hasUnsavedChanges={hasUnsavedChanges}
           />
         </div>
         <label className="space-y-1.5">
@@ -1662,19 +1683,25 @@ function CharacterVersionHistoryPanel({
   currentData,
   currentComment,
   currentAvatarPath,
+  hasUnsavedChanges,
 }: {
   characterId: string | null;
   currentData: CharacterData;
   currentComment: string;
   currentAvatarPath: string | null;
+  hasUnsavedChanges: boolean;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const { data: versions = [], isLoading } = useCharacterVersions(characterId);
   const restoreVersion = useRestoreCharacterVersion();
   const deleteVersion = useDeleteCharacterVersion();
+  const renameVersion = useRenameCharacterVersion();
+  const resetVersions = useResetCharacterVersions();
   const [selectedVersion, setSelectedVersion] = useState<CharacterCardVersion | null>(null);
   const savedVersionCount = versions.filter((version) => !version.isCurrent).length;
   const getVersionTitle = (version: CharacterCardVersion) => getCardVersionTitle(version, localizeUi);
+  const versionMutationPending =
+    restoreVersion.isPending || deleteVersion.isPending || renameVersion.isPending || resetVersions.isPending;
 
   if (!characterId) return null;
 
@@ -1729,6 +1756,51 @@ function CharacterVersionHistoryPanel({
     }
   };
 
+  const handleRenameVersion = async (version: CharacterCardVersion) => {
+    const nextVersion = await showPromptDialog({
+      title: localizeUi("ui.cardversionhistory.renameVersion"),
+      message: localizeUi("ui.cardversionhistory.renameVersionMessage", {
+        value1: getVersionTitle(version),
+      }),
+      defaultValue: version.version,
+      placeholder: localizeUi("ui.cardversionhistory.versionPlaceholder"),
+      confirmLabel: localizeUi("ui.cardversionhistory.save"),
+      tone: "accent",
+    });
+    const trimmedVersion = nextVersion?.trim();
+    if (!trimmedVersion || trimmedVersion === version.version) return;
+    try {
+      await renameVersion.mutateAsync({ id: characterId, versionId: version.id, version: trimmedVersion });
+      toast.success(
+        localizeUi("ui.cardversionhistory.renamedVersion", {
+          value1: getVersionTitle(version),
+          value2: trimmedVersion,
+        }),
+      );
+      setSelectedVersion(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : localizeUi("ui.cardversionhistory.failedToRenameVersion"));
+    }
+  };
+
+  const handleResetVersions = async () => {
+    const characterName = currentData.name || localizeUi("ui.characters.charactereditor.thisCharacter");
+    const confirmed = await showConfirmDialog({
+      title: localizeUi("ui.cardversionhistory.resetVersioningForValue1", { value1: characterName }),
+      message: localizeUi("ui.cardversionhistory.resetVersioningMessage", { value1: characterName }),
+      confirmLabel: localizeUi("ui.cardversionhistory.reset"),
+      tone: "destructive",
+    });
+    if (!confirmed) return;
+    try {
+      await resetVersions.mutateAsync(characterId);
+      toast.success(localizeUi("ui.cardversionhistory.resetVersioningSuccess", { value1: characterName }));
+      setSelectedVersion(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : localizeUi("ui.cardversionhistory.failedToResetVersioning"));
+    }
+  };
+
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--secondary)]/70 p-2.5">
       <div className="flex items-center justify-between gap-2">
@@ -1736,11 +1808,31 @@ function CharacterVersionHistoryPanel({
           <History size="0.75rem" />
           {localizeUi("ui.characters.characterversionhistorypanel.versionHistory")}
         </span>
-        <span className="rounded-full bg-[var(--accent)] px-2 py-0.5 text-[0.625rem] text-[var(--muted-foreground)]">
-          {isLoading
-            ? localizeUi("ui.characters.characterversionhistorypanel.loading")
-            : localizeUi("ui.characters.characterversionhistorypanel.value1Saved", { value1: savedVersionCount })}
-        </span>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={handleResetVersions}
+            disabled={isLoading || versionMutationPending || hasUnsavedChanges}
+            className="mari-editor-action mari-editor-action--compact inline-flex h-7 px-2 text-[0.625rem]"
+            title={localizeUi(
+              hasUnsavedChanges
+                ? "ui.cardversionhistory.saveOrDiscardEditsBeforeResettingVersioning"
+                : "ui.cardversionhistory.resetVersioning",
+            )}
+          >
+            {resetVersions.isPending ? (
+              <Loader2 size="0.75rem" className="animate-spin" />
+            ) : (
+              <RotateCcw size="0.75rem" />
+            )}
+            {localizeUi("ui.cardversionhistory.reset")}
+          </button>
+          <span className="mari-editor-chip mari-editor-chip--accent px-2 py-0.5 text-[0.625rem]">
+            {isLoading
+              ? localizeUi("ui.characters.characterversionhistorypanel.loading")
+              : localizeUi("ui.characters.characterversionhistorypanel.value1Saved", { value1: savedVersionCount })}
+          </span>
+        </div>
       </div>
 
       {versions.length === 0 ? (
@@ -1781,9 +1873,22 @@ function CharacterVersionHistoryPanel({
                 <>
                   <button
                     type="button"
+                    onClick={() => handleRenameVersion(version)}
+                    disabled={versionMutationPending}
+                    className="mari-editor-action mari-editor-action--compact inline-flex h-7 w-7 rounded-lg p-0"
+                    title={localizeUi("ui.cardversionhistory.renameThisSavedVersion")}
+                  >
+                    {renameVersion.isPending && renameVersion.variables?.versionId === version.id ? (
+                      <Loader2 size="0.75rem" className="animate-spin" />
+                    ) : (
+                      <Pencil size="0.75rem" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => handleRestore(version)}
-                    disabled={restoreVersion.isPending || deleteVersion.isPending}
-                    className="rounded-lg p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-50"
+                    disabled={versionMutationPending}
+                    className="mari-editor-action mari-editor-action--compact inline-flex h-7 w-7 rounded-lg p-0"
                     title={localizeUi("ui.characters.characterversionhistorypanel.restoreThisVersion")}
                   >
                     {restoreVersion.isPending ? (
@@ -1795,8 +1900,8 @@ function CharacterVersionHistoryPanel({
                   <button
                     type="button"
                     onClick={() => handleDeleteVersion(version)}
-                    disabled={restoreVersion.isPending || deleteVersion.isPending}
-                    className="rounded-lg p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-50"
+                    disabled={versionMutationPending}
+                    className="mari-editor-action mari-editor-action--compact mari-editor-action--danger inline-flex h-7 w-7 rounded-lg p-0"
                     title={localizeUi("ui.characters.characterversionhistorypanel.deleteThisSavedVersion")}
                   >
                     {deleteVersion.isPending && deleteVersion.variables?.versionId === version.id ? (
@@ -1966,7 +2071,7 @@ function DialogueTab({
   };
 
   const greetingActionButtonClassName =
-    "inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--secondary)] text-[var(--muted-foreground)] transition-all hover:border-[var(--primary)]/40 hover:text-[var(--foreground)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-[var(--border)] disabled:hover:text-[var(--muted-foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]";
+    "mari-editor-action mari-editor-action--compact inline-flex h-8 w-8 rounded-lg p-0 disabled:cursor-not-allowed disabled:opacity-40";
 
   return (
     <div className="space-y-6">
@@ -2005,7 +2110,7 @@ function DialogueTab({
           <button
             type="button"
             onClick={addGreeting}
-            className="rounded-xl bg-[var(--primary)]/15 px-3 py-1 text-xs font-medium text-[var(--primary)] transition-all hover:bg-[var(--primary)]/25"
+            className="mari-editor-action mari-editor-action--accent mari-editor-action--compact inline-flex rounded-lg px-3 py-1 text-xs"
           >
             {localizeUi("ui.characters.dialoguetab.add")}
           </button>
@@ -2046,10 +2151,7 @@ function DialogueTab({
                 <button
                   type="button"
                   onClick={() => removeGreeting(i)}
-                  className={cn(
-                    greetingActionButtonClassName,
-                    "hover:border-[var(--border)] hover:text-[var(--foreground)]",
-                  )}
+                  className={cn(greetingActionButtonClassName, "mari-editor-action--danger")}
                   aria-label={localizeUi("ui.characters.dialoguetab.removeAlternateGreetingValue1", { value1: i + 1 })}
                   title={localizeUi("ui.characters.dialoguetab.removeGreeting")}
                 >
@@ -4429,12 +4531,7 @@ function ColorsTab({
         type="button"
         disabled={!avatarUrl || extracting}
         onClick={handleExtract}
-        className={cn(
-          "flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-xs font-medium transition-all",
-          avatarUrl
-            ? "mari-chrome-accent-surface mari-accent-animated active:scale-[0.98]"
-            : "cursor-not-allowed bg-white/5 text-[var(--muted-foreground)]/50",
-        )}
+        className="mari-editor-action mari-editor-action--accent mari-editor-action--primary flex w-full rounded-xl px-4 py-2.5 text-xs"
       >
         {extracting ? <Loader2 size="0.875rem" className="animate-spin" /> : <Palette size="0.875rem" />}
         {extracting

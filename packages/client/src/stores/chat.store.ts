@@ -22,6 +22,21 @@ const STORAGE_KEY = "marinara-active-chat-id";
 const DRAFTS_KEY = "marinara-input-drafts";
 const SPATIAL_TRANSITIONS_KEY = "marinara-pending-spatial-transitions";
 const NOTIFICATION_AUTODISMISS_MS = 8000;
+const CURRENT_INPUT_PRESENCE_IDLE_MS = 150;
+
+let currentInputSnapshot = "";
+let currentInputPresenceTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Read the exact active composer value without subscribing the UI to every keystroke. */
+export function getCurrentInputSnapshot(): string {
+  return currentInputSnapshot;
+}
+
+function clearCurrentInputPresenceTimer(): void {
+  if (currentInputPresenceTimer === null) return;
+  clearTimeout(currentInputPresenceTimer);
+  currentInputPresenceTimer = null;
+}
 
 type NotificationAvatarCrop = AvatarCropValue | null;
 type ChatNotificationKind = "message" | "call";
@@ -208,8 +223,8 @@ interface ChatState {
   inputDrafts: Map<string, string>;
   /** Per-chat structured movement staged for the next accepted owner turn. */
   pendingSpatialTransitions: Map<string, PendingSpatialTransitionDraft>;
-  /** Current chat input */
-  currentInput: string;
+  /** Whether the active composer contains non-whitespace input. */
+  hasCurrentInput: boolean;
   /** Per-chat unread message count (from autonomous messages). */
   unreadCounts: Map<string, number>;
   /** Floating notification bubbles — tracks character info for each unread chat. */
@@ -356,7 +371,7 @@ export const useChatStore = create<ChatState>()(
     pendingNewChatOrigin: null,
     inputDrafts: loadDrafts(),
     pendingSpatialTransitions: loadPendingSpatialTransitions(),
-    currentInput: "",
+    hasCurrentInput: false,
     unreadCounts: new Map(),
     chatNotifications: new Map(),
     dismissedNotifications: new Set(),
@@ -367,6 +382,10 @@ export const useChatStore = create<ChatState>()(
     setActiveChat: (chat) => set({ activeChat: chat }),
     setActiveChatId: (id) => {
       const prev = get().activeChatId;
+      if (id !== prev) {
+        currentInputSnapshot = "";
+        clearCurrentInputPresenceTimer();
+      }
       // Clear unread for the chat being opened
       if (id) {
         set((state) => {
@@ -390,7 +409,7 @@ export const useChatStore = create<ChatState>()(
       set({
         activeChatId: id,
         swipeIndex: new Map(),
-        ...(id !== prev && { generationPhase: null }),
+        ...(id !== prev && { generationPhase: null, hasCurrentInput: false }),
         ...(!id && { activeChat: null }),
         ...(activeCall ? { conversationCallExpanded: id === activeCall.session.chatId } : {}),
       });
@@ -752,7 +771,20 @@ export const useChatStore = create<ChatState>()(
         return { pendingSpatialTransitions: m };
       }),
 
-    setCurrentInput: (text) => set({ currentInput: text }),
+    setCurrentInput: (text) => {
+      currentInputSnapshot = text;
+      const hasCurrentInput = text.trim().length > 0;
+      clearCurrentInputPresenceTimer();
+      if (!hasCurrentInput) {
+        set((state) => (state.hasCurrentInput ? { hasCurrentInput: false } : state));
+        return;
+      }
+      if (get().hasCurrentInput) return;
+      currentInputPresenceTimer = setTimeout(() => {
+        currentInputPresenceTimer = null;
+        if (currentInputSnapshot.trim().length > 0) set({ hasCurrentInput: true });
+      }, CURRENT_INPUT_PRESENCE_IDLE_MS);
+    },
 
     incrementUnread: (chatId: string) =>
       set((state) => {
@@ -922,6 +954,8 @@ export const useChatStore = create<ChatState>()(
         abortGenerationForChat(chatId, controller);
       }
       clearAllNotificationTimers();
+      currentInputSnapshot = "";
+      clearCurrentInputPresenceTimer();
       set({
         activeChatId: null,
         activeChat: null,
@@ -950,7 +984,7 @@ export const useChatStore = create<ChatState>()(
         pendingNewChatOrigin: null,
         inputDrafts: new Map(),
         pendingSpatialTransitions: new Map(),
-        currentInput: "",
+        hasCurrentInput: false,
         unreadCounts: new Map(),
         chatNotifications: new Map(),
         dismissedNotifications: new Set(),

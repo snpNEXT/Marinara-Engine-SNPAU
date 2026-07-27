@@ -809,6 +809,7 @@ export function createLorebooksStorage(db: DB) {
         generationTriggerFilters: JSON.stringify(input.generationTriggerFilters ?? []),
         additionalMatchingSources: JSON.stringify(input.additionalMatchingSources ?? []),
         position: input.position ?? 0,
+        outletName: input.outletName ?? "",
         depth: input.depth ?? 0,
         order: input.order ?? 100,
         role: input.role ?? "system",
@@ -892,6 +893,7 @@ export function createLorebooksStorage(db: DB) {
       if (input.additionalMatchingSources !== undefined)
         updates.additionalMatchingSources = JSON.stringify(input.additionalMatchingSources);
       if (input.position !== undefined) updates.position = input.position;
+      if (input.outletName !== undefined) updates.outletName = input.outletName;
       if (input.depth !== undefined) updates.depth = input.depth;
       if (input.order !== undefined) updates.order = input.order;
       if (input.role !== undefined) updates.role = input.role;
@@ -960,6 +962,7 @@ export function createLorebooksStorage(db: DB) {
       if (changes.additionalMatchingSources !== undefined)
         updates.additionalMatchingSources = JSON.stringify(changes.additionalMatchingSources);
       if (changes.position !== undefined) updates.position = changes.position;
+      if (changes.outletName !== undefined) updates.outletName = changes.outletName;
       if (changes.depth !== undefined) updates.depth = changes.depth;
       if (changes.order !== undefined) updates.order = changes.order;
       if (changes.role !== undefined) updates.role = changes.role;

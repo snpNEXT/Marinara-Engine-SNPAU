@@ -57,7 +57,7 @@ type GenerationProviderRuntimeArgs = {
     frequencyPenalty: number;
     presencePenalty: number;
     showThoughts: boolean;
-    reasoningEffort: "low" | "medium" | "high" | "minimal" | "xhigh" | "maximum" | null;
+    reasoningEffort: "low" | "medium" | "high" | "xhigh" | "maximum" | null;
     verbosity: "low" | "medium" | "high" | null;
     serviceTier: "flex" | "priority" | null;
     assistantPrefill: string;
@@ -72,7 +72,8 @@ type GenerationProviderRuntimeArgs = {
 export type GenerationProviderRuntime = GenerationProviderRuntimeArgs["initial"] & {
   connectionParams: ReturnType<typeof parseStoredGenerationParameters>;
   chatParams: ReturnType<typeof parseStoredGenerationParameters>;
-  resolvedEffort: "low" | "medium" | "high" | "minimal" | "xhigh" | "max" | null;
+  resolvedEffort: "low" | "medium" | "high" | "xhigh" | "max" | null;
+  providerReasoningEffort: "none" | "low" | "medium" | "high" | "xhigh" | "max" | undefined;
   enableThinking: boolean;
   isClaudeNoSampling: boolean;
   providerTopK: number | undefined;
@@ -171,6 +172,12 @@ export function resolveGenerationProviderRuntime(args: GenerationProviderRuntime
   }
 
   const enableThinking = !!resolvedEffort;
+  const providerReasoningEffort =
+    runtime.enabledParameters?.reasoningEffort === false
+      ? undefined
+      : runtime.reasoningEffort === null
+        ? "none"
+        : (resolvedEffort ?? undefined);
   const isClaudeNoSampling = isClaudeAdaptiveOnlyNoSamplingModel(modelLower);
   if (isClaudeNoSampling) {
     runtime.temperature = undefined;
@@ -219,6 +226,7 @@ export function resolveGenerationProviderRuntime(args: GenerationProviderRuntime
     connectionParams,
     chatParams,
     resolvedEffort,
+    providerReasoningEffort,
     enableThinking,
     isClaudeNoSampling,
     providerTopK,

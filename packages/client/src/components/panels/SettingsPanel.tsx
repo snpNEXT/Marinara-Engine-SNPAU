@@ -139,6 +139,7 @@ import {
   usePersonalExtensionPolicy,
   useSetExternalExtensionsEnabled,
 } from "../../hooks/use-personal-extensions";
+import { useAgentImportPolicy, useSetAgentImportsEnabled } from "../../hooks/use-agents";
 import { DraftNumberInput } from "../ui/DraftNumberInput";
 import { ExportFormatDialog, type ExportFormatChoice } from "../ui/ExportFormatDialog";
 import { inspectCharacterFilesForEmbeddedLorebooks } from "../../lib/character-import";
@@ -628,7 +629,7 @@ const SETTINGS_SEARCHABLE_CONTROLS: readonly SettingsSearchableControlMeta[] = [
   {
     id: "trim-incomplete-output",
     sectionId: "responses",
-    label: "Trim incomplete model endings",
+    label: "Trim incomplete sentences from the response",
     description: "Trim trailing unfinished sentences from AI responses.",
     aliases: ["trim", "unfinished", "sentence"],
     kind: "Toggle",
@@ -2971,6 +2972,8 @@ function GeneralSettings() {
   const setConvertLatexSymbols = useUIStore((s) => s.setConvertLatexSymbols);
   const trimIncompleteModelOutput = useUIStore((s) => s.trimIncompleteModelOutput);
   const setTrimIncompleteModelOutput = useUIStore((s) => s.setTrimIncompleteModelOutput);
+  const continueAddsNewline = useUIStore((s) => s.continueAddsNewline);
+  const setContinueAddsNewline = useUIStore((s) => s.setContinueAddsNewline);
   const speechToTextEnabled = useUIStore((s) => s.speechToTextEnabled);
   const setSpeechToTextEnabled = useUIStore((s) => s.setSpeechToTextEnabled);
   const chibiProfessorMariEnabled = useUIStore((s) => s.chibiProfessorMariEnabled);
@@ -3122,6 +3125,14 @@ function GeneralSettings() {
             checked={trimIncompleteModelOutput}
             onChange={setTrimIncompleteModelOutput}
             help={localizeUi("settings.controls.trimIncomplete.help")}
+          />
+
+          <ToggleSetting
+            anchorId={getSettingsControlAnchorId("continue-adds-newline")}
+            label={localizeUi("settings.controls.continueAddsNewline.label")}
+            checked={continueAddsNewline}
+            onChange={setContinueAddsNewline}
+            help={localizeUi("settings.controls.continueAddsNewline.help")}
           />
 
           <label
@@ -6594,6 +6605,8 @@ function AdvancedSettings() {
   const [isSavingChubApiKey, setIsSavingChubApiKey] = useState(false);
   const { data: extensionPolicy, isLoading: extensionPolicyLoading } = usePersonalExtensionPolicy();
   const setExternalExtensionsEnabled = useSetExternalExtensionsEnabled();
+  const { data: agentImportPolicy, isLoading: agentImportPolicyLoading } = useAgentImportPolicy();
+  const setAgentImportsEnabled = useSetAgentImportsEnabled();
   const nativeConsoleBridge = getMarinaraAndroidBridge();
   const canOpenNativeConsole = typeof nativeConsoleBridge?.openConsole === "function";
   const nativeConsoleHelp = getNativeConsoleShortcutHelp();
@@ -6665,6 +6678,28 @@ function AdvancedSettings() {
       }
     },
     [setExternalExtensionsEnabled, t],
+  );
+
+  const handleAgentImportsToggle = useCallback(
+    async (enabled: boolean) => {
+      if (enabled) {
+        const confirmed = await showConfirmDialog({
+          title: t("settings.agentImports.confirm.title"),
+          message: t("settings.agentImports.warning"),
+          confirmLabel: t("settings.agentImports.confirm.action"),
+          cancelLabel: t("settings.agentImports.confirm.cancel"),
+          tone: "destructive",
+        });
+        if (!confirmed) return;
+      }
+      try {
+        await setAgentImportsEnabled.mutateAsync(enabled);
+        toast.success(enabled ? t("settings.agentImports.enabled") : t("settings.agentImports.disabled"));
+      } catch (toggleError) {
+        toast.error(getPrivilegedActionErrorMessage(toggleError, t("settings.agentImports.error")));
+      }
+    },
+    [setAgentImportsEnabled, t],
   );
 
   type ProfileExportFormat = "native" | "compatible" | "zip";
@@ -7274,6 +7309,7 @@ function AdvancedSettings() {
       <SettingsSection
         title={localizeUi("settings.customGenerationParameters.title")}
         description={localizeUi("settings.customGenerationParameters.sectionDescription")}
+        help={localizeUi("settings.customGenerationParameters.help")}
         icon={<SlidersHorizontal size="0.875rem" />}
         {...getSettingsSectionAnchorProps("parameters")}
       >
@@ -7403,6 +7439,10 @@ function AdvancedSettings() {
                       ? localizeUi("ui.panels.advancedsettings.automaticBackupWillBeCreatedShortly")
                       : localizeUi("ui.panels.advancedsettings.automaticBackupsAreOff")}
               </p>
+              <div className="mt-2 flex items-start gap-1.5 rounded-md bg-[var(--background)]/45 px-2 py-1.5 text-[0.625rem] leading-relaxed text-[var(--muted-foreground)] ring-1 ring-[var(--border)]/60">
+                <FolderOpen size="0.75rem" className="mt-0.5 shrink-0 text-[var(--primary)]" aria-hidden="true" />
+                <p>{localizeUi("settings.transfer.automaticBackup.location")}</p>
+              </div>
             </div>
           )}
           <button onClick={handleCreateBackup} disabled={creatingBackup} className={SETTINGS_PRIMARY_BUTTON_CLASS}>
@@ -7547,6 +7587,18 @@ function AdvancedSettings() {
             </div>
           )}
           <div className="mt-2 flex flex-col gap-2 rounded-lg border border-[var(--border)] bg-[var(--background)]/45 p-2.5">
+            <ToggleSetting
+              label={t("settings.agentImports.toggle.label")}
+              checked={agentImportPolicy?.enabled ?? false}
+              onChange={(enabled) => void handleAgentImportsToggle(enabled)}
+              disabled={agentImportPolicyLoading || setAgentImportsEnabled.isPending}
+              help={t("settings.agentImports.toggle.help")}
+            />
+            <div className="flex items-start gap-2 text-[0.6875rem] leading-relaxed text-[var(--primary)]">
+              <ShieldAlert size="0.875rem" className="mt-0.5 shrink-0" />
+              <p>{t("settings.agentImports.warning")}</p>
+            </div>
+            <div className="my-1 border-t border-[var(--border)]" />
             <ToggleSetting
               label={t("settings.externalExtensions.toggle.label")}
               checked={extensionPolicy?.externalExtensionsEnabled ?? false}

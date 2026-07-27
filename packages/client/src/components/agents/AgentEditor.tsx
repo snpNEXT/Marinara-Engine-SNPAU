@@ -79,6 +79,8 @@ import {
   DEFAULT_AGENT_MAX_TOKENS,
   DEFAULT_AGENT_AUTHOR,
   CUSTOM_AGENT_CAPABILITY_IDS,
+  CUSTOM_AGENT_IMPORT_SOURCE_SETTING,
+  CUSTOM_AGENT_PERMISSIONS_EXPLICIT_SETTING,
   DEFAULT_CUSTOM_AGENT_ACTIVATION_SCAN_DEPTH,
   LOCAL_SIDECAR_CONNECTION_ID,
   MAX_CUSTOM_AGENT_ACTIVATION_SCAN_DEPTH,
@@ -220,6 +222,14 @@ type CustomAgentResultType = Extract<
   | "image_prompt"
   | "prompt_patch"
   | "frontend_theme_update"
+  | "background_change"
+  | "sprite_change"
+  | "spotify_control"
+  | "youtube_control"
+  | "local_music_control"
+  | "haptic_command"
+  | "about_me_update"
+  | "cyoa_choices"
 >;
 
 const CUSTOM_AGENT_CAPABILITY_META: Array<{
@@ -251,6 +261,31 @@ const CUSTOM_AGENT_CAPABILITY_META: Array<{
     id: "change_frontend_styling",
     label: "Frontend styling",
     description: "Allow temporary CSS effects from this agent during generation.",
+  },
+  {
+    id: "change_backgrounds",
+    label: "settings.agentImports.capabilities.change_backgrounds.label",
+    description: "settings.agentImports.capabilities.change_backgrounds.description",
+  },
+  {
+    id: "change_sprites",
+    label: "settings.agentImports.capabilities.change_sprites.label",
+    description: "settings.agentImports.capabilities.change_sprites.description",
+  },
+  {
+    id: "control_media",
+    label: "settings.agentImports.capabilities.control_media.label",
+    description: "settings.agentImports.capabilities.control_media.description",
+  },
+  {
+    id: "control_haptics",
+    label: "settings.agentImports.capabilities.control_haptics.label",
+    description: "settings.agentImports.capabilities.control_haptics.description",
+  },
+  {
+    id: "edit_about_me",
+    label: "settings.agentImports.capabilities.edit_about_me.label",
+    description: "settings.agentImports.capabilities.edit_about_me.description",
   },
   {
     id: "trigger_image_generation",
@@ -334,6 +369,54 @@ const CUSTOM_AGENT_RESULT_TYPE_OPTIONS: Array<{
     label: "Frontend Style",
     description: 'Expects JSON with "css" for a temporary frontend styling effect.',
     requiredCapability: "change_frontend_styling",
+  },
+  {
+    id: "background_change",
+    label: "settings.agentImports.results.background_change.label",
+    description: "settings.agentImports.results.background_change.description",
+    requiredCapability: "change_backgrounds",
+  },
+  {
+    id: "sprite_change",
+    label: "settings.agentImports.results.sprite_change.label",
+    description: "settings.agentImports.results.sprite_change.description",
+    requiredCapability: "change_sprites",
+  },
+  {
+    id: "spotify_control",
+    label: "settings.agentImports.results.spotify_control.label",
+    description: "settings.agentImports.results.spotify_control.description",
+    requiredCapability: "control_media",
+  },
+  {
+    id: "youtube_control",
+    label: "settings.agentImports.results.youtube_control.label",
+    description: "settings.agentImports.results.youtube_control.description",
+    requiredCapability: "control_media",
+  },
+  {
+    id: "local_music_control",
+    label: "settings.agentImports.results.local_music_control.label",
+    description: "settings.agentImports.results.local_music_control.description",
+    requiredCapability: "control_media",
+  },
+  {
+    id: "haptic_command",
+    label: "settings.agentImports.results.haptic_command.label",
+    description: "settings.agentImports.results.haptic_command.description",
+    requiredCapability: "control_haptics",
+  },
+  {
+    id: "about_me_update",
+    label: "settings.agentImports.results.about_me_update.label",
+    description: "settings.agentImports.results.about_me_update.description",
+    requiredCapability: "edit_about_me",
+  },
+  {
+    id: "cyoa_choices",
+    label: "settings.agentImports.results.cyoa_choices.label",
+    description: "settings.agentImports.results.cyoa_choices.description",
+    requiredCapability: "edit_messages",
   },
 ];
 
@@ -1000,6 +1083,9 @@ export function AgentEditor() {
       // YouTube key is encrypted server-side and not exposed by the form — preserve it
       // so a normal agent Save doesn't wipe the stored key.
       "youtubeApiKey",
+      "customAgentRepositorySource",
+      CUSTOM_AGENT_IMPORT_SOURCE_SETTING,
+      CUSTOM_AGENT_PERMISSIONS_EXPLICIT_SETTING,
     ]) {
       if (currentSettings[key] !== undefined) preservedSpotifyFields[key] = currentSettings[key];
     }
@@ -1452,7 +1538,9 @@ export function AgentEditor() {
     if (
       !(await showConfirmDialog({
         title:localizeUi("ui.agents.agenteditor.deleteAgent_09b378f"),
-        message:localizeUi("ui.agents.agenteditor.deleteThisCustomAgentThisCannotBeUndone"),
+        message: localizeUi("dialog.delete.namedPermanent", {
+          name: dbConfig.name,
+        }),
         confirmLabel:localizeUi("lorebook.editor.batch.delete"),
         tone: "destructive",
       }))
@@ -1656,8 +1744,8 @@ export function AgentEditor() {
                   return (
                     <EditorSwitchRow
                       key={capability.id}
-                      label={capability.label}
-                      description={capability.description}
+                      label={localizeUi(capability.label)}
+                      description={localizeUi(capability.description)}
                       checked={enabled}
                       onChange={() => toggleCustomCapability(capability.id)}
                     />
@@ -1712,8 +1800,8 @@ export function AgentEditor() {
                             : "cursor-not-allowed ring-[var(--border)] text-[var(--muted-foreground)] opacity-45",
                       )}
                     >
-                      <span className="font-semibold">{option.label}</span>
-                      <span className="text-[0.625rem] leading-tight">{option.description}</span>
+                      <span className="font-semibold">{localizeUi(option.label)}</span>
+                      <span className="text-[0.625rem] leading-tight">{localizeUi(option.description)}</span>
                     </button>
                   );
                 })}

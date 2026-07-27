@@ -12,10 +12,10 @@ const MIN_SUMMARY_CONTEXT_SIZE = 5;
 const MAX_SUMMARY_CONTEXT_SIZE = 500;
 
 export const CONTINUE_ASSISTANT_MESSAGE_PROMPT = "Your last message got cut off! Please, continue!";
+export const CONTINUE_ASSISTANT_MESSAGE_DIRECT_PROMPT =
+  "Your last message got cut off. Continue it exactly from where it stopped. Your output will be appended directly to the final character of that message with no newline or separator. Do not restart, repeat, or add leading whitespace.";
 
-export function formatRoleplaySummaryChatLog(
-  messages: readonly { role: string; content: string }[],
-): string {
+export function formatRoleplaySummaryChatLog(messages: readonly { role: string; content: string }[]): string {
   return messages.map((message) => `[${message.role}]: ${message.content}`).join("\n\n");
 }
 
@@ -34,16 +34,20 @@ export function clampRoleplaySummaryContextSize(value: unknown): number {
 export function clampRoleplaySummaryMaxTokens(value: unknown): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return CHAT_SUMMARY_OUTPUT_TOKENS.DEFAULT;
-  return Math.max(
-    CHAT_SUMMARY_OUTPUT_TOKENS.MIN,
-    Math.min(CHAT_SUMMARY_OUTPUT_TOKENS.MAX, Math.trunc(parsed)),
-  );
+  return Math.max(CHAT_SUMMARY_OUTPUT_TOKENS.MIN, Math.min(CHAT_SUMMARY_OUTPUT_TOKENS.MAX, Math.trunc(parsed)));
 }
 
-export function appendContinuationMessageContent(existingContent: unknown, continuation: string): string {
+export function appendContinuationMessageContent(
+  existingContent: unknown,
+  continuation: string,
+  addNewline = true,
+): string {
   const existing = typeof existingContent === "string" ? existingContent : "";
   if (!existing) return continuation;
   if (!continuation) return existing;
+  if (!addNewline) {
+    return `${existing}${continuation.replace(/^(?:\r?\n)+/, "")}`;
+  }
   const normalizedExisting = existing.replace(/\s+$/, "");
   const normalizedContinuation = continuation.replace(/^\s+/, "");
   return `${normalizedExisting}\n\n${normalizedContinuation}`;

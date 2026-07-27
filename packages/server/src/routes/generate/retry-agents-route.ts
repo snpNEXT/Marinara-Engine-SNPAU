@@ -8,10 +8,12 @@ import {
   applyQuestUpdatesToPlayerStats,
   applyTrackerFieldLocksToGameStatePatch,
   getDefaultBuiltInAgentSettings,
+  getCustomAgentResultCapability,
   NARRATIVE_DIRECTOR_SECRET_PLOT_PROMPT,
   customAgentHasCapability,
   isAgentAvailableInChatMode,
   isAgentConfigDeleted,
+  isExternallyImportedAgent,
   isBuiltInAgentRuntimeDisabled,
   isRetiredBuiltInAgentId,
   normalizeWorldCustomFields,
@@ -57,6 +59,7 @@ import {
 } from "../../services/prompt/index.js";
 import { getAssetManifest } from "../../services/game/asset-manifest.service.js";
 import { createAgentsStorage } from "../../services/storage/agents.storage.js";
+import { getCustomAgentImportPolicy } from "../../services/agents/custom-agent-import-policy.service.js";
 import { createCharactersStorage } from "../../services/storage/characters.storage.js";
 import { createChatsStorage } from "../../services/storage/chats.storage.js";
 import { createConnectionsStorage } from "../../services/storage/connections.storage.js";
@@ -221,29 +224,14 @@ function customAgentCanApplyRetryResult(
 
 function customAgentCanEmitRetryResult(result: AgentResult, agents: ResolvedRetryAgent[]): boolean {
   if (isBuiltInAgentType(result.agentType)) return true;
-  switch (result.type) {
-    case "text_rewrite":
-      return customAgentCanApplyRetryResult(result, agents, "edit_messages");
-    case "lorebook_update":
-      return (
-        customAgentCanApplyRetryResult(result, agents, "edit_lorebooks") ||
-        customAgentCanApplyRetryResult(result, agents, "create_lorebooks")
-      );
-    case "game_state_update":
-    case "character_tracker_update":
-    case "persona_stats_update":
-    case "custom_tracker_update":
-    case "quest_update":
-      return customAgentCanApplyRetryResult(result, agents, "edit_trackers");
-    case "image_prompt":
-      return customAgentCanApplyRetryResult(result, agents, "trigger_image_generation");
-    case "prompt_patch":
-      return customAgentCanApplyRetryResult(result, agents, "edit_main_prompt");
-    case "frontend_theme_update":
-      return customAgentCanApplyRetryResult(result, agents, "change_frontend_styling");
-    default:
-      return true;
+  if (result.type === "lorebook_update") {
+    return (
+      customAgentCanApplyRetryResult(result, agents, "edit_lorebooks") ||
+      customAgentCanApplyRetryResult(result, agents, "create_lorebooks")
+    );
   }
+  const capability = getCustomAgentResultCapability(result.type);
+  return capability ? customAgentCanApplyRetryResult(result, agents, capability) : true;
 }
 
 function applyDefaultBuiltInAgentTools(agentType: string, settings: unknown): Record<string, unknown> {
@@ -1127,6 +1115,7 @@ async function resolveRetryAgents(args: {
   agentsStore: ReturnType<typeof createAgentsStorage>;
   agentPromptTemplateIds?: unknown;
   activeMusicPlayerSource?: "spotify" | "youtube" | "custom" | null;
+  allowExternalAgentImports: boolean;
   onFallback?: GenerationFallbackNotifier;
 }): Promise<ResolvedRetryAgents> {
   const { agentTypes, chat, conns, agentsStore, agentPromptTemplateIds, activeMusicPlayerSource, onFallback } = args;
@@ -1143,7 +1132,9 @@ async function resolveRetryAgents(args: {
       .filter((agentType) => isAgentAvailableInChatMode(chatMode, agentType))
       .filter((agentType) => activeAgentTypeSet.has(agentType)),
   );
-  const configs = await agentsStore.list();
+  const configs = (await agentsStore.list()).filter(
+    (config) => args.allowExternalAgentImports || !isExternallyImportedAgent(config.type, config.settings),
+  );
   const deletedBuiltInTypes = new Set(
     configs
       .filter((config: any) => BUILT_IN_AGENTS.some((agent) => agent.id === config.type))
@@ -3840,6 +3831,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
             : musicPlayerSource === "youtube" || musicPlayerSource === "custom"
               ? musicPlayerSource
               : "spotify",
+        allowExternalAgentImports: (await getCustomAgentImportPolicy(app.db)).enabled,
         onFallback,
       });
       const chatMode = ((chat as { mode?: ChatMode }).mode ?? "conversation") as ChatMode;
@@ -4146,7 +4138,8 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
 
       const retryMessageId = lastAssistant?.id ?? "";
       const retrySwipeIndex = lastAssistant?.activeSwipeIndex ?? 0;
-      await persistRetryResults(agentsStore, chatId, retryMessageId, results);
+      const permittedResults = results.filter((result) => customAgentCanEmitRetryResult(result, resolvedAgents));
+      await persistRetryResults(agentsStore, chatId, retryMessageId, permittedResults);
       for (const entry of lorebookKeeperRunEntries) {
         try {
           await agentsStore.saveRun({
@@ -4166,7 +4159,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
         chat,
         retryMessageId,
         retrySwipeIndex,
-        results,
+        results: permittedResults,
         agentContext,
         mainResponseRaw: (lastAssistant?.content as string) ?? "",
         lorebooksStore,

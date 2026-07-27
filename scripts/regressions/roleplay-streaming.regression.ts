@@ -51,6 +51,14 @@ const chatInputSource = readFileSync(
   new URL("../../packages/client/src/components/chat/ChatInput.tsx", import.meta.url),
   "utf8",
 );
+const chatMessageSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/ChatMessage.tsx", import.meta.url),
+  "utf8",
+);
+const chatRoleplaySurfaceSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/ChatRoleplaySurface.tsx", import.meta.url),
+  "utf8",
+);
 const conversationInputSource = readFileSync(
   new URL("../../packages/client/src/components/chat/ConversationInput.tsx", import.meta.url),
   "utf8",
@@ -208,11 +216,65 @@ assert.match(
   "an Illustrator-only retry should expose the same background handoff",
 );
 const chatTextareaSource = chatInputSource.match(/<textarea[\s\S]*?\/>/u)?.[0] ?? "";
+const chatHandleInputSource =
+  chatInputSource.match(
+    /const handleInput = \(event\?: FormEvent<HTMLTextAreaElement>\) => \{[\s\S]*?\n  \};\n\n  \/\/ Dismiss feedback/u,
+  )?.[0] ?? "";
 assert.match(chatTextareaSource, /disabled=\{!activeChatId\}/u);
 assert.doesNotMatch(
   chatTextareaSource,
   /disabled=\{[^}]*isInputBusy/u,
   "agent work should guard sending without disabling preparation of the next draft",
+);
+assert.match(
+  chatHandleInputSource,
+  /resizeTimerRef\.current = setTimeout\(\(\) => \{[\s\S]*?resizeChatInputTextarea\(el\);[\s\S]*?\}, 150\);/u,
+  "Roleplay textarea measurement should wait for a typing pause instead of forcing layout on each keystroke",
+);
+assert.match(
+  chatInputSource,
+  /if \(e\.key === "Enter"\) \{[\s\S]*?requestAnimationFrame\(\(\) => \{[\s\S]*?resizeChatInputTextarea\(el\);/u,
+  "Roleplay line breaks should resize before paint so the existing draft does not briefly disappear",
+);
+assert.doesNotMatch(
+  chatHandleInputSource,
+  /requestAnimationFrame\(\(\) => \{[\s\S]*?resizeChatInputTextarea\(el\);/u,
+  "Roleplay textarea resizing must not schedule a layout read for every ordinary keystroke",
+);
+assert.match(
+  chatInputSource,
+  /inputPresenceTimerRef\.current = setTimeout\(\(\) => \{[\s\S]*?setHasInput\(true\);[\s\S]*?\}, 150\);/u,
+  "Roleplay composer controls should update after a typing pause instead of rerendering on the first character",
+);
+assert.match(
+  chatStoreSource,
+  /currentInputPresenceTimer = setTimeout\(\(\) => \{[\s\S]*?\}, CURRENT_INPUT_PRESENCE_IDLE_MS\);/u,
+  "draft presence should update transcript controls only after the input idle boundary",
+);
+assert.match(
+  chatStoreSource,
+  /currentInputSnapshot = text;[\s\S]*?if \(get\(\)\.hasCurrentInput\) return;/u,
+  "ordinary draft characters should not notify mounted chat-store subscribers",
+);
+assert.match(
+  chatStoreSource,
+  /export function getCurrentInputSnapshot\(\): string/u,
+  "guided regeneration should read the exact draft without subscribing the UI to every character",
+);
+assert.match(
+  chatInputSource,
+  /if \(chatState\.activeChatId === chatId\) \{[\s\S]*?chatState\.setCurrentInput\(pendingCurrentInputRef\.current\);/u,
+  "Roleplay input should publish its final raw draft snapshot only while its chat remains active",
+);
+assert.doesNotMatch(
+  chatRoleplaySurfaceSource,
+  /hasDraftInput=\{hasDraftInput\}/u,
+  "Roleplay draft presence should not rerender every heavyweight transcript message",
+);
+assert.match(
+  chatMessageSource,
+  /const GuidedRegenerateActionBtn = memo[\s\S]*?state\.hasCurrentInput/u,
+  "only the guided Regenerate control should react to draft presence",
 );
 const conversationTextareaSource = conversationInputSource.match(/<textarea[\s\S]*?\/>/u)?.[0] ?? "";
 assert.doesNotMatch(

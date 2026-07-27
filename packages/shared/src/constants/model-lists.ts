@@ -19,6 +19,7 @@ export function isClaudeAdaptiveOnlyNoSamplingModel(model: string): boolean {
   const normalized = model.toLowerCase();
   return (
     CLAUDE_ADAPTIVE_ONLY_OPUS_RE.test(normalized) ||
+    /claude-(?:opus|sonnet)-5(?:$|[-.])/u.test(normalized) ||
     normalized.includes("claude-fable-5") ||
     normalized.includes("claude-mythos-5")
   );
@@ -47,15 +48,15 @@ export function resolveOpenAIGpt56ModelForRequest(model: string): string {
   return isOpenAIGpt56SolProAlias(model) ? "gpt-5.6-sol" : model;
 }
 
-export type StoredReasoningEffort = "low" | "medium" | "high" | "minimal" | "xhigh" | "maximum" | "max" | null;
-export type ProviderReasoningEffort = "low" | "medium" | "high" | "minimal" | "xhigh" | "max" | null;
+export type StoredReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "maximum" | "max" | null;
+export type ProviderReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | null;
 
 export function resolveProviderReasoningEffort(args: {
   provider: string;
   model: string;
   reasoningEffort: StoredReasoningEffort | undefined;
 }): ProviderReasoningEffort {
-  if (!args.reasoningEffort) return null;
+  if (!args.reasoningEffort || args.reasoningEffort === "none") return null;
   const modelLower = args.model.toLowerCase();
   const providerLower = args.provider.toLowerCase();
 
@@ -78,9 +79,6 @@ export function resolveProviderReasoningEffort(args: {
   }
   if (args.reasoningEffort === "xhigh") {
     return supportsXhigh ? "xhigh" : "high";
-  }
-  if (args.reasoningEffort === "minimal") {
-    return providerLower === "custom" ? "minimal" : "low";
   }
   return args.reasoningEffort;
 }
@@ -204,6 +202,8 @@ export const OPENAI_MODELS: KnownModel[] = [
 // ── Anthropic / Claude (from #model_claude_select) ──
 
 export const ANTHROPIC_MODELS: KnownModel[] = [
+  { id: "claude-opus-5", name: "claude-opus-5", context: 1000000, maxOutput: 128000 },
+  { id: "claude-sonnet-5", name: "claude-sonnet-5", context: 1000000, maxOutput: 128000 },
   { id: "claude-fable-5", name: "claude-fable-5", context: 1000000, maxOutput: 128000 },
   { id: "claude-mythos-5", name: "claude-mythos-5 (limited access)", context: 1000000, maxOutput: 128000 },
   { id: "claude-opus-4-8", name: "claude-opus-4-8", context: 1000000, maxOutput: 128000 },
@@ -240,6 +240,8 @@ export const ANTHROPIC_MODELS: KnownModel[] = [
 // to the current tool-eligible families to avoid offering retired aliases that
 // the subscription path no longer accepts.
 export const CLAUDE_SUBSCRIPTION_MODELS: KnownModel[] = [
+  { id: "claude-opus-5", name: "Claude Opus 5", context: 1000000, maxOutput: 128000 },
+  { id: "claude-sonnet-5", name: "Claude Sonnet 5", context: 1000000, maxOutput: 128000 },
   { id: "claude-fable-5", name: "Claude Fable 5", context: 1000000, maxOutput: 128000 },
   { id: "claude-opus-4-8", name: "Claude Opus 4.8", context: 1000000, maxOutput: 128000 },
   { id: "claude-opus-4-7", name: "Claude Opus 4.7", context: 1000000, maxOutput: 128000 },

@@ -738,6 +738,36 @@ export class OpenAIProvider extends BaseLLMProvider {
     return !!reasoningEffort && reasoningEffort !== "none";
   }
 
+  private hasExplicitReasoningDisable(reasoningEffort?: string | null): boolean {
+    return reasoningEffort === "none";
+  }
+
+  private supportsOpenAIReasoningDisable(model: string): boolean {
+    const normalized = model.toLowerCase().replace(/^openai\//, "");
+    if (normalized.includes("-pro")) return false;
+    const version = normalized.match(/^gpt-5\.(\d+)/)?.[1];
+    return version !== undefined && Number(version) >= 1;
+  }
+
+  private supportsXAIReasoningDisable(model: string): boolean {
+    return model
+      .toLowerCase()
+      .replace(/^x-ai\//, "")
+      .startsWith("grok-4.3");
+  }
+
+  private supportsOpenRouterReasoningDisable(model: string): boolean {
+    const normalized = model.toLowerCase();
+    return (
+      this.supportsOpenAIReasoningDisable(normalized) ||
+      this.supportsXAIReasoningDisable(normalized) ||
+      normalized.startsWith("z-ai/glm-") ||
+      normalized.startsWith("thudm/glm-") ||
+      /^google\/gemini-2\.5-flash(?:-lite)?(?:$|-preview|-latest|:)/u.test(normalized) ||
+      /^anthropic\/claude-(?:opus|sonnet)-5(?:$|[-.])/u.test(normalized)
+    );
+  }
+
   private requestReasoningLogValue(body: Record<string, unknown>): string {
     if (typeof body.reasoning_effort === "string") return body.reasoning_effort;
     if (!body.reasoning || typeof body.reasoning !== "object" || Array.isArray(body.reasoning)) return "none";
@@ -780,7 +810,9 @@ export class OpenAIProvider extends BaseLLMProvider {
   private applyChatCompletionsReasoning(body: Record<string, unknown>, options: ChatOptions): void {
     if (this.isNativeXAIConfigurableReasoningModel(options.model)) {
       const effort = this.resolveXAIReasoningEffort(options.reasoningEffort);
-      if (effort) body.reasoning_effort = effort;
+      if (effort && (effort !== "none" || this.supportsXAIReasoningDisable(options.model))) {
+        body.reasoning_effort = effort;
+      }
       return;
     }
 
@@ -799,10 +831,35 @@ export class OpenAIProvider extends BaseLLMProvider {
     )
       return;
 
+    if (this.providerKind === "local-sidecar" && this.hasExplicitReasoningDisable(options.reasoningEffort)) {
+      const templateOptions =
+        body.chat_template_kwargs &&
+        typeof body.chat_template_kwargs === "object" &&
+        !Array.isArray(body.chat_template_kwargs)
+          ? (body.chat_template_kwargs as Record<string, unknown>)
+          : {};
+      body.reasoning_format = "none";
+      body.chat_template_kwargs = { ...templateOptions, enable_thinking: false };
+      return;
+    }
+
     if (this.isGenericCustomProvider()) {
       if (this.hasActiveReasoningEffort(options.reasoningEffort)) {
         body.reasoning_effort = options.reasoningEffort;
       }
+      return;
+    }
+
+    if (
+      this.isOpenRouterEndpoint() &&
+      this.hasExplicitReasoningDisable(options.reasoningEffort) &&
+      this.supportsOpenRouterReasoningDisable(options.model)
+    ) {
+      const existingReasoning =
+        body.reasoning && typeof body.reasoning === "object" && !Array.isArray(body.reasoning)
+          ? (body.reasoning as Record<string, unknown>)
+          : {};
+      body.reasoning = { ...existingReasoning, effort: "none" };
       return;
     }
 
@@ -812,6 +869,14 @@ export class OpenAIProvider extends BaseLLMProvider {
           ? (body.reasoning as Record<string, unknown>)
           : {};
       body.reasoning = { ...existingReasoning, effort: options.reasoningEffort };
+      return;
+    }
+
+    if (
+      this.hasExplicitReasoningDisable(options.reasoningEffort) &&
+      this.supportsOpenAIReasoningDisable(options.model)
+    ) {
+      body.reasoning_effort = "none";
       return;
     }
 
@@ -830,7 +895,9 @@ export class OpenAIProvider extends BaseLLMProvider {
 
     if (this.isNativeXAIConfigurableReasoningModel(options.model)) {
       const effort = this.resolveXAIReasoningEffort(options.reasoningEffort);
-      if (effort) body.reasoning = { effort };
+      if (effort && (effort !== "none" || this.supportsXAIReasoningDisable(options.model))) {
+        body.reasoning = { effort };
+      }
       return;
     }
 
@@ -854,6 +921,12 @@ export class OpenAIProvider extends BaseLLMProvider {
     }
 
     const reasoning: Record<string, unknown> = {};
+    if (
+      this.hasExplicitReasoningDisable(options.reasoningEffort) &&
+      this.supportsOpenAIReasoningDisable(options.model)
+    ) {
+      reasoning.effort = "none";
+    }
     if (
       this.shouldSendParameter(options, "reasoningEffort") &&
       this.hasActiveReasoningEffort(options.reasoningEffort)
@@ -1823,7 +1896,7 @@ export class OpenAIProvider extends BaseLLMProvider {
 
     // Replay encrypted reasoning items from the previous turn so the model
     // retains its reasoning context and avoids re-deriving (and re-narrating) the same conclusions.
-    if (!isOpenAIChatGPT && options.encryptedReasoningItems?.length) {
+    if (!isOpenAIChatGPT && options.reasoningEffort !== "none" && options.encryptedReasoningItems?.length) {
       let lastAssistantIdx = -1;
       for (let i = input.length - 1; i >= 0; i--) {
         if ((input[i] as Record<string, unknown>).role === "assistant") {
@@ -1850,7 +1923,7 @@ export class OpenAIProvider extends BaseLLMProvider {
       body.stream = false;
     }
 
-    if (!isOpenAIChatGPT && !suppressModelParameters) {
+    if (!isOpenAIChatGPT && !suppressModelParameters && options.reasoningEffort !== "none") {
       // Request encrypted reasoning items so we can replay them on the next turn.
       body.include = ["reasoning.encrypted_content"];
     }

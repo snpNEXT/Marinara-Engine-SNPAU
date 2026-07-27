@@ -176,7 +176,14 @@ export const createLorebookEntrySchema = z.object({
   generationTriggerFilterMode: lorebookFilterModeSchema.default("any"),
   generationTriggerFilters: z.array(z.string()).default([]),
   additionalMatchingSources: z.array(lorebookMatchingSourceSchema).default([]),
-  position: z.number().int().min(0).max(2).default(0),
+  position: z
+    .number()
+    .int()
+    .refine((value) => value === 0 || value === 1 || value === 2 || value === 7, {
+      message: "Position must be Before, After, At Depth, or Outlet",
+    })
+    .default(0),
+  outletName: z.string().trim().max(200).default(""),
   depth: z.number().int().min(0).default(4),
   order: z.number().int().default(100),
   role: z.enum(["system", "user", "assistant"]).default("system"),
@@ -221,6 +228,7 @@ const bulkUpdateLorebookEntryChangesSchema = updateLorebookEntrySchema
     generationTriggerFilters: true,
     additionalMatchingSources: true,
     position: true,
+    outletName: true,
     depth: true,
     order: true,
     role: true,

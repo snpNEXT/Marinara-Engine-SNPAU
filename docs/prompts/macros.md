@@ -115,6 +115,14 @@ The value of `{{lastGenerationType}}` is a plain label. Example values seen in t
 
 The `{{agent::TYPE}}` macro inserts the saved output of an agent (a background helper that fills in things like a scene tracker). The easiest way to add it is inside the **Preset Editor**: click **Add Section**, open the **Agent Sections** group, and pick an agent. Marinara creates a section that already contains the right `{{agent::TYPE}}` tag. This macro is resolved last, so agent text cannot inject more macros into your prompt.
 
+## Lorebook Outlet macros
+
+`{{outlet::name}}` inserts content from lorebook entries whose **Position** is **Outlet** and whose **Outlet name** exactly matches `name`. Outlet names are case-sensitive. For example, `{{outlet::character_rules}}` does not match an Outlet named `Character_Rules`.
+
+Outlet entries still use normal lorebook activation. Keywords, Constant mode, probability, filters, timing, entry limits, and token budgets decide whether an entry is active for the current generation. Active entries with the same Outlet name are joined in their **Order**, separated by new lines. They are inserted only at the macro; they are not also added at a normal lorebook position.
+
+Use Outlet macros in prompt sections in Conversation, Roleplay, or Game mode. The macro works even when it appears before the preset's lorebook marker, and a preset does not need a lorebook marker when it uses only Outlet entries. An unknown or inactive Outlet resolves to nothing. An Outlet entry cannot expand another Outlet macro, so nested Outlets do not recurse.
+
 ## Time macros
 
 All time macros read one shared moment per resolution, so they always agree with each other. The timezone comes from your browser.

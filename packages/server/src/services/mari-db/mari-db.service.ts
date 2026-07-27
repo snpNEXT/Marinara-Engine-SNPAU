@@ -823,6 +823,7 @@ export function buildLorebookEntryCreateRow(
     generationTriggerFilters: [],
     additionalMatchingSources: [],
     position: firstNumber(data, ["position"]) ?? 0,
+    outletName: firstString(data, ["outletName", "outlet_name"]) ?? "",
     depth: firstNumber(data, ["depth"]) ?? 4,
     order: firstNumber(data, ["order"]) ?? defaultOrder,
     role: firstString(data, ["role"]) ?? "system",
@@ -2083,6 +2084,13 @@ export class MariDbService {
     changed = assignBooleanTextField(target, source, ["constant"], "constant") || changed;
     changed = assignNumberField(target, source, ["order"], "order") || changed;
     changed = assignNumberField(target, source, ["position"], "position") || changed;
+    for (const key of ["outletName", "outlet_name"]) {
+      const value = source[key];
+      if (typeof value !== "string") continue;
+      target.outletName = value.trim();
+      changed = true;
+      break;
+    }
     changed = assignNumberField(target, source, ["depth"], "depth") || changed;
     changed = assignStringField(target, source, ["role"], "role") || changed;
     changed = assignStringField(target, source, ["group"], "group") || changed;
@@ -2275,6 +2283,7 @@ export class MariDbService {
           "constant",
           "order",
           "position",
+          "outletName",
           "depth",
           "role",
           "group",
@@ -2316,6 +2325,7 @@ export class MariDbService {
           "constant",
           "order",
           "position",
+          "outletName",
           "depth",
           "role",
           "group",
@@ -3714,7 +3724,7 @@ export class MariDbService {
         const lorebookId = parsed.positionals[0];
         if (!lorebookId) {
           throw new Error(
-            "Usage: mari lorebooks add-entry <lorebook-id> --name <name> [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--folder-id <folder-id>] [--apply] [--reason <text>]",
+            "Usage: mari lorebooks add-entry <lorebook-id> --name <name> [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--outlet-name <name>] [--folder-id <folder-id>] [--apply] [--reason <text>]",
           );
         }
         const entryName = flagString(flags, "name")?.trim();
@@ -3735,6 +3745,7 @@ export class MariDbService {
               .map((k) => k.trim())
               .filter(Boolean)
           : [];
+        const addOutletName = flagString(flags, "outlet-name")?.trim() ?? "";
         const timestamp = now();
         const entryRow: Row = {
           id: flagString(flags, "id") ?? newId(),
@@ -3760,7 +3771,8 @@ export class MariDbService {
           generationTriggerFilterMode: "any",
           generationTriggerFilters: [],
           additionalMatchingSources: [],
-          position: 0,
+          position: addOutletName ? 7 : 0,
+          outletName: addOutletName,
           depth: 4,
           order: 100,
           role: "system",
@@ -3792,7 +3804,7 @@ export class MariDbService {
         const entryId = parsed.positionals[0];
         if (!entryId) {
           throw new Error(
-            "Usage: mari lorebooks update-entry <entry-id> [--name <name>] [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--enable] [--disable] [--constant] [--no-constant] [--order <n>] [--folder-id <folder-id>|none] [--apply] [--reason <text>]",
+            "Usage: mari lorebooks update-entry <entry-id> [--name <name>] [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--outlet-name <name>] [--enable] [--disable] [--constant] [--no-constant] [--order <n>] [--folder-id <folder-id>|none] [--apply] [--reason <text>]",
           );
         }
         const entryExists = await this.getRawById(getMeta("lorebook_entries"), entryId);
@@ -3803,11 +3815,13 @@ export class MariDbService {
           ["content", "content"],
           ["description", "description"],
           ["tag", "tag"],
+          ["outlet-name", "outletName"],
         ];
         for (const [flagName, fieldName] of entryFieldMap) {
           const val = flagString(flags, flagName);
-          if (val !== undefined) entryPatch[fieldName] = val;
+          if (val !== undefined) entryPatch[fieldName] = fieldName === "outletName" ? val.trim() : val;
         }
+        if (typeof entryPatch.outletName === "string" && entryPatch.outletName) entryPatch.position = 7;
         const keysRaw = flagString(flags, "keys");
         if (keysRaw !== undefined) {
           entryPatch.keys = keysRaw
@@ -3838,7 +3852,7 @@ export class MariDbService {
         }
         if (Object.keys(entryPatch).length <= 1) {
           throw new Error(
-            "Provide at least one field to update (--name, --content, --keys, --description, --tag, --enable, --disable, --constant, --no-constant, --order, --folder-id)",
+            "Provide at least one field to update (--name, --content, --keys, --description, --tag, --outlet-name, --enable, --disable, --constant, --no-constant, --order, --folder-id)",
           );
         }
         const updateEntryRequest: ParsedMutationRequest = {
@@ -5010,8 +5024,8 @@ export class MariDbService {
       "Read:  search <query> [--limit <n>]",
       "Write: create --name <name> [--description <text>] [--category <text>] [--global] [--apply] [--reason <text>]",
       "Write: update <id> [--name <name>] [--description <text>] [--category <text>] [--tags <t1,t2,...>] [--global] [--enable] [--disable] [--apply] [--reason <text>]",
-      "Write: add-entry <lorebook-id> --name <name> [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--folder-id <folder-id>] [--apply] [--reason <text>]",
-      "Write: update-entry <entry-id> [--name <name>] [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--enable] [--disable] [--constant] [--no-constant] [--order <n>] [--folder-id <folder-id>|none] [--apply] [--reason <text>]",
+      "Write: add-entry <lorebook-id> --name <name> [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--outlet-name <name>] [--folder-id <folder-id>] [--apply] [--reason <text>]",
+      "Write: update-entry <entry-id> [--name <name>] [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--outlet-name <name>] [--enable] [--disable] [--constant] [--no-constant] [--order <n>] [--folder-id <folder-id>|none] [--apply] [--reason <text>]",
       "Write: delete-entry <entry-id> [--apply] [--reason <text>]",
       "Write: link-character <lorebook-id> --character <character-id> [--apply] [--reason <text>]",
       "Write: unlink-character <lorebook-id> --character <character-id> [--apply] [--reason <text>]",
