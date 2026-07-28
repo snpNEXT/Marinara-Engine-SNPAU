@@ -43,6 +43,7 @@ export const chatKeys = {
   detail: (id: string) => [...chatKeys.all, "detail", id] as const,
   messages: (chatId: string) => [...chatKeys.all, "messages", chatId] as const,
   messageCount: (chatId: string) => [...chatKeys.all, "messageCount", chatId] as const,
+  messagePeek: (chatId: string) => [...chatKeys.all, "messagePeek", chatId] as const,
   memories: (chatId: string) => [...chatKeys.all, "memories", chatId] as const,
   notes: (chatId: string) => [...chatKeys.all, "notes", chatId] as const,
   group: (groupId: string) => [...chatKeys.all, "group", groupId] as const,
@@ -216,6 +217,22 @@ export function useChatMessages(chatId: string | null, pageSize: number = 0, ena
         : oldestLoaded.createdAt;
     },
     enabled: !!chatId && enabled,
+  });
+}
+
+/**
+ * Last few messages of a chat, for read-only previews (sidebar hover peek).
+ *
+ * Deliberately does NOT share `chatKeys.messages` — that key ignores page size, so writing
+ * a short slice into it would leave ChatArea's paginated view starting from a truncated
+ * cache the next time that chat is opened.
+ */
+export function useChatMessagePeek(chatId: string | null, limit = 4, enabled = false) {
+  return useQuery({
+    queryKey: [...chatKeys.messagePeek(chatId ?? ""), limit],
+    queryFn: ({ signal }) => api.get<Message[]>(`/chats/${chatId}/messages?limit=${limit}`, { signal }),
+    enabled: !!chatId && enabled,
+    staleTime: 15_000,
   });
 }
 

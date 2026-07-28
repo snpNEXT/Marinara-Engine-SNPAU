@@ -930,11 +930,11 @@ export function RegexScriptEditor() {
                 <strong className="text-[var(--foreground)]">{localizeUi("ui.agents.regexscripteditor.examples")}</strong>
               </p>
               <ul className="ml-4 list-disc space-y-0.5">
-                <li>{localizeUi("ui.agents.regexscripteditor.removeAsterisks")} <code className="rounded bg-[var(--secondary)] px-1">\\*([^*]+)\\*</code> →{" "}
+                <li>{localizeUi("ui.agents.regexscripteditor.removeAsterisks")} <code className="rounded bg-[var(--secondary)] px-1">{"\\*([^*]+)\\*"}</code> →{" "}
                   <code className="rounded bg-[var(--secondary)] px-1">$1</code>
                 </li>
-                <li>{localizeUi("ui.agents.regexscripteditor.removeOoc")} <code className="rounded bg-[var(--secondary)] px-1">{"\\\\(OOC:.*?\\\\)"}</code> {localizeUi("ui.agents.regexscripteditor.empty")}</li>
-                <li>{localizeUi("ui.agents.regexscripteditor.censorWords")} <code className="rounded bg-[var(--secondary)] px-1">{"\\\\bbadword\\\\b"}</code> →{" "}
+                <li>{localizeUi("ui.agents.regexscripteditor.removeOoc")} <code className="rounded bg-[var(--secondary)] px-1">{"\\(OOC:.*?\\)"}</code> {localizeUi("ui.agents.regexscripteditor.empty")}</li>
+                <li>{localizeUi("ui.agents.regexscripteditor.censorWords")} <code className="rounded bg-[var(--secondary)] px-1">{"\\bbadword\\b"}</code> →{" "}
                   <code className="rounded bg-[var(--secondary)] px-1">***</code>
                 </li>
                 <li>{localizeUi("ui.agents.regexscripteditor.capitalizeReplacement")} <code className="rounded bg-[var(--secondary)] px-1">{"\\U$1"}</code>

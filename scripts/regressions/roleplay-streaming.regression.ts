@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  getRoleplayTypewriterRevealCharsPerSecond,
   getTypewriterRevealCharsPerSecond,
   isGenerationSendBlocked,
   isGenerationStartBlocked,
@@ -39,6 +40,26 @@ import {
 import type { AgentCallDebugEvent, AgentContext } from "../../packages/shared/src/types/agent.js";
 import { CSRF_HEADER, CSRF_HEADER_VALUE } from "../../packages/shared/src/constants/security.js";
 
+function extractCssBlock(source: string, prelude: string): string {
+  const preludeIndex = source.indexOf(prelude);
+  assert.notEqual(preludeIndex, -1, `Expected CSS prelude: ${prelude}`);
+
+  const openingBraceIndex = source.indexOf("{", preludeIndex + prelude.length);
+  assert.notEqual(openingBraceIndex, -1, `Expected CSS block for: ${prelude}`);
+
+  let depth = 0;
+  for (let index = openingBraceIndex; index < source.length; index += 1) {
+    if (source[index] === "{") {
+      depth += 1;
+    } else if (source[index] === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(openingBraceIndex + 1, index);
+    }
+  }
+
+  assert.fail(`Unclosed CSS block for: ${prelude}`);
+}
+
 const retryAgentRouteSource = readFileSync(
   new URL("../../packages/server/src/routes/generate/retry-agents-route.ts", import.meta.url),
   "utf8",
@@ -59,6 +80,39 @@ const chatRoleplaySurfaceSource = readFileSync(
   new URL("../../packages/client/src/components/chat/ChatRoleplaySurface.tsx", import.meta.url),
   "utf8",
 );
+const chatAreaSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/ChatArea.tsx", import.meta.url),
+  "utf8",
+);
+const generateHookSource = readFileSync(
+  new URL("../../packages/client/src/hooks/use-generate.ts", import.meta.url),
+  "utf8",
+);
+const weatherEffectsSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/WeatherEffects.tsx", import.meta.url),
+  "utf8",
+);
+const weatherWorkerSource = readFileSync(
+  new URL("../../packages/client/src/workers/weather-effects.worker.ts", import.meta.url),
+  "utf8",
+);
+const gameSurfaceSource = readFileSync(
+  new URL("../../packages/client/src/components/game/GameSurface.tsx", import.meta.url),
+  "utf8",
+);
+const echoChamberPanelSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/EchoChamberPanel.tsx", import.meta.url),
+  "utf8",
+);
+const uiStoreSource = readFileSync(
+  new URL("../../packages/client/src/stores/ui.store.ts", import.meta.url),
+  "utf8",
+);
+const globalStylesSource = readFileSync(
+  new URL("../../packages/client/src/styles/globals.css", import.meta.url),
+  "utf8",
+);
+const firefoxSupportsSource = extractCssBlock(globalStylesSource, "@supports (-moz-appearance: none)");
 const conversationInputSource = readFileSync(
   new URL("../../packages/client/src/components/chat/ConversationInput.tsx", import.meta.url),
   "utf8",
@@ -82,6 +136,31 @@ const chatStoreSource = readFileSync(
 const summaryPopoverSource = readFileSync(
   new URL("../../packages/client/src/components/chat/SummaryPopover.tsx", import.meta.url),
   "utf8",
+);
+assert.match(
+  echoChamberPanelSource,
+  /activeChatId \? \(s\.echoChamberSizeByChatId\[activeChatId\] \?\? null\) : null/u,
+  "Echo Chamber should restore the dimensions remembered for the active chat",
+);
+assert.match(
+  echoChamberPanelSource,
+  /if \(activeChatId\) setEchoChamberSizeForChat\(activeChatId, nextSize\);/u,
+  "Echo Chamber should persist a completed resize against the active chat",
+);
+assert.match(
+  echoChamberPanelSource,
+  /onPointerCancel=\{handleResizeCancel\}/u,
+  "a canceled Echo Chamber resize should use its rollback path",
+);
+assert.doesNotMatch(
+  echoChamberPanelSource,
+  /onPointerCancel=\{handleResizeEnd\}/u,
+  "pointer cancellation must not persist an incomplete Echo Chamber resize",
+);
+assert.match(
+  uiStoreSource,
+  /echoChamberSizeByChatId: state\.echoChamberSizeByChatId/u,
+  "per-chat Echo Chamber dimensions should survive UI-store rehydration",
 );
 assert.match(
   summaryPopoverSource,
@@ -215,12 +294,52 @@ assert.match(
   /type: "illustration_queued"/u,
   "an Illustrator-only retry should expose the same background handoff",
 );
+assert.match(
+  generateHookSource,
+  /const isIllustratorOnlyRetry =[\s\S]{0,180}agentTypes\.every\(\(agentType\) => agentType === "illustrator"\)/u,
+  "retry handoff should identify Illustrator-only work without exempting mixed agent retries",
+);
+assert.match(
+  generateHookSource,
+  /case "illustration_queued": \{[\s\S]{0,180}if \(isIllustratorOnlyRetry\) \{[\s\S]{0,120}setBackgroundIllustration\(chatId, true\);/u,
+  "only an Illustrator-only retry should hand off from text streaming to background image work",
+);
+assert.match(
+  chatAreaSource,
+  /const isTextStreaming = isStreaming && !isBackgroundIllustration;/u,
+  "finished assistant text must stop being treated as streaming while Illustrator continues",
+);
+assert.match(
+  chatAreaSource,
+  /isStreaming=\{isTextStreaming\}[\s\S]{0,120}generationVisualsPaused=\{isStreaming \|\| agentProcessing\}/u,
+  "Roleplay messages should remain editable while ambient rendering stays suspended for background work",
+);
+const galleryCreateIndex = generateRouteSource.indexOf("const galleryEntry = await galleryStore.create");
+const illustrationMessageLookupIndex = generateRouteSource.indexOf(
+  "const msgRow = await chats.getMessage(messageId)",
+  galleryCreateIndex,
+);
+assert.notEqual(galleryCreateIndex, -1, "Illustrator must persist generated images to Gallery");
+assert.ok(
+  illustrationMessageLookupIndex > galleryCreateIndex,
+  "Illustrator must save to Gallery before checking whether the source message still exists",
+);
 const chatTextareaSource = chatInputSource.match(/<textarea[\s\S]*?\/>/u)?.[0] ?? "";
 const chatHandleInputSource =
   chatInputSource.match(
     /const handleInput = \(event\?: FormEvent<HTMLTextAreaElement>\) => \{[\s\S]*?\n  \};\n\n  \/\/ Dismiss feedback/u,
   )?.[0] ?? "";
 assert.match(chatTextareaSource, /disabled=\{!activeChatId\}/u);
+assert.match(
+  chatTextareaSource,
+  /onInput=\{handleInput\}/u,
+  "Roleplay should use the direct input event path used by Conversation",
+);
+assert.doesNotMatch(
+  chatTextareaSource,
+  /onChange=\{handleInput\}/u,
+  "Roleplay typing should not route through React's normalized change event",
+);
 assert.doesNotMatch(
   chatTextareaSource,
   /disabled=\{[^}]*isInputBusy/u,
@@ -228,8 +347,8 @@ assert.doesNotMatch(
 );
 assert.match(
   chatHandleInputSource,
-  /resizeTimerRef\.current = setTimeout\(\(\) => \{[\s\S]*?resizeChatInputTextarea\(el\);[\s\S]*?\}, 150\);/u,
-  "Roleplay textarea measurement should wait for a typing pause instead of forcing layout on each keystroke",
+  /const isDeleting = inputEvent\?\.inputType\?\.startsWith\("delete"\) === true;[\s\S]*?isDeleting \? ROLEPLAY_INPUT_DELETE_RESIZE_IDLE_MS : ROLEPLAY_INPUT_RESIZE_IDLE_MS/u,
+  "Roleplay deletion should use a longer resize idle window than ordinary typing",
 );
 assert.match(
   chatInputSource,
@@ -243,8 +362,83 @@ assert.doesNotMatch(
 );
 assert.match(
   chatInputSource,
-  /inputPresenceTimerRef\.current = setTimeout\(\(\) => \{[\s\S]*?setHasInput\(true\);[\s\S]*?\}, 150\);/u,
-  "Roleplay composer controls should update after a typing pause instead of rerendering on the first character",
+  /if \(hasInputRef\.current === nextHasInput\) return;[\s\S]*?setHasInput\(nextHasInput\);[\s\S]*?setCurrentInputPresence\(nextHasInput\);/u,
+  "Roleplay composer presence should change only when the draft crosses the empty boundary",
+);
+assert.doesNotMatch(
+  chatInputSource,
+  /currentInputFrameRef/u,
+  "Roleplay typing and deletion should not publish draft snapshots on an animation-frame cadence",
+);
+assert.match(
+  chatInputSource,
+  /updateCurrentInputSnapshot\(value\);/u,
+  "Roleplay should update its raw guided-regeneration snapshot without notifying Zustand subscribers",
+);
+assert.match(
+  chatMessageSource,
+  /const isGuided = useChatStore\(\(state\) => guideGenerations && state\.hasCurrentInput\);/u,
+  "Roleplay message actions should not subscribe to draft presence when guided regeneration is disabled",
+);
+assert.match(
+  globalStylesSource,
+  /\[data-chat-mode="roleplay"\] \.mari-chat-input-textarea \{\s+contain: paint;/u,
+  "Roleplay textarea paint should stay isolated from the live scene behind it",
+);
+assert.match(
+  firefoxSupportsSource,
+  /\[data-chat-mode="roleplay"\] \.marinara-chat-input-shell\s*\{[^{}]*contain:\s*layout paint;[^{}]*isolation:\s*isolate;/u,
+  "Firefox should contain composer layout and paint while text is edited",
+);
+assert.match(
+  chatRoleplaySurfaceSource,
+  /generationVisualsPaused && "mari-generation-render-paused"/u,
+  "Roleplay should pause ambient rendering while generation is active",
+);
+assert.match(
+  gameSurfaceSource,
+  /\(isStreaming \|\| scenePreparing \|\| sceneAnalysis\.isPending \|\| agentsProcessing\) &&[\s\S]{0,80}"mari-generation-render-paused"/u,
+  "Game should pause ambient rendering during GM, scene-model, and agent generation",
+);
+assert.match(
+  gameSurfaceSource,
+  /paused=\{isStreaming \|\| scenePreparing \|\| sceneAnalysis\.isPending \|\| agentsProcessing\}/u,
+  "Game weather should remain paused through background agent work",
+);
+assert.match(
+  weatherEffectsSource,
+  /workerRef\.current\?\.postMessage\(\{ type: "visibility", hidden: document\.hidden \|\| paused \}\)/u,
+  "weather workers should receive generation suspension state",
+);
+assert.match(
+  weatherEffectsSource,
+  /if \(document\.hidden \|\| pausedRef\.current\) \{[\s\S]{0,180}frameRef\.current = 0;/u,
+  "fallback weather rendering should stop scheduling frames while suspended",
+);
+assert.match(
+  weatherWorkerSource,
+  /function setSuspended\(suspended: boolean\)[\s\S]{0,220}clearTimeout\(timer\);[\s\S]{0,120}scheduleFrame\(\);/u,
+  "offscreen weather rendering should stop its timer rather than polling while suspended",
+);
+assert.match(
+  globalStylesSource,
+  /\.mari-generation-render-paused[\s\S]{0,500}animation-play-state: paused !important;/u,
+  "decorative CSS animations should yield GPU time during generation",
+);
+assert.match(
+  firefoxSupportsSource,
+  /(?:^|\})[^{}]*\[data-chat-mode="roleplay"\] \.marinara-chat-input-shell\s*\{[^{}]*backdrop-filter:\s*none !important;[^{}]*\}/u,
+  "Firefox should not repaint the Roleplay scene through a blurred composer while typing",
+);
+assert.match(
+  firefoxSupportsSource,
+  /(?:^|\})\s*\[data-chat-mode="roleplay"\] \.marinara-chat-input-shell\s*\{[^{}]*background:\s*linear-gradient\(var\(--card\), var\(--card\)\),\s*var\(--background\) !important;[^{}]*\}/u,
+  "Firefox should use an opaque Roleplay composer surface after disabling backdrop blur",
+);
+assert.doesNotMatch(
+  chatInputSource,
+  /inputPresenceTimerRef/u,
+  "Roleplay typing should not create and cancel a redundant presence timer on every keystroke",
 );
 assert.match(
   chatStoreSource,
@@ -253,7 +447,7 @@ assert.match(
 );
 assert.match(
   chatStoreSource,
-  /currentInputSnapshot = text;[\s\S]*?if \(get\(\)\.hasCurrentInput\) return;/u,
+  /setCurrentInputPresence: \(hasInput\) => \{[\s\S]*?state\.hasCurrentInput === hasInput/u,
   "ordinary draft characters should not notify mounted chat-store subscribers",
 );
 assert.match(
@@ -262,14 +456,29 @@ assert.match(
   "guided regeneration should read the exact draft without subscribing the UI to every character",
 );
 assert.match(
-  chatInputSource,
-  /if \(chatState\.activeChatId === chatId\) \{[\s\S]*?chatState\.setCurrentInput\(pendingCurrentInputRef\.current\);/u,
-  "Roleplay input should publish its final raw draft snapshot only while its chat remains active",
+  chatStoreSource,
+  /export function updateCurrentInputSnapshot\(text: string\): void \{[\s\S]*?currentInputSnapshot = text;/u,
+  "Roleplay input should publish its exact draft through the non-reactive snapshot path",
 );
 assert.doesNotMatch(
   chatRoleplaySurfaceSource,
   /hasDraftInput=\{hasDraftInput\}/u,
   "Roleplay draft presence should not rerender every heavyweight transcript message",
+);
+assert.doesNotMatch(
+  chatRoleplaySurfaceSource,
+  /setChromeHeights/u,
+  "Roleplay composer growth should not rerender the heavyweight transcript through React state",
+);
+assert.match(
+  chatRoleplaySurfaceSource,
+  /scrollElement\.style\.setProperty\("--mari-roleplay-content-padding-bottom"/u,
+  "Roleplay composer growth should update the transcript inset directly",
+);
+assert.match(
+  chatRoleplaySurfaceSource,
+  /paddingBottom: "var\(--mari-roleplay-content-padding-bottom, 16px\)"/u,
+  "Roleplay transcript padding should consume the imperatively measured composer inset",
 );
 assert.match(
   chatMessageSource,
@@ -389,6 +598,63 @@ assert.equal(
   }),
   90,
   "a completed stream should drain at the user's selected speed",
+);
+
+assert.ok(
+  Math.abs(
+    getRoleplayTypewriterRevealCharsPerSecond({
+      selectedCharsPerSecond: 90,
+      pendingCharacters: 45,
+      previousCharsPerSecond: null,
+      elapsedMs: 16,
+      streamComplete: false,
+    }) - 50,
+  ) < 0.001,
+  "Roleplay should turn the first provider burst into a buffered reveal rate",
+);
+const roleplayAcceleratedRate = getRoleplayTypewriterRevealCharsPerSecond({
+  selectedCharsPerSecond: 90,
+  pendingCharacters: 90,
+  previousCharsPerSecond: 20,
+  elapsedMs: 16,
+  streamComplete: false,
+});
+assert.ok(
+  roleplayAcceleratedRate > 20 && roleplayAcceleratedRate < 23,
+  "Roleplay should ease into a faster reveal instead of copying a newly arrived provider burst",
+);
+const roleplayDeceleratedRate = getRoleplayTypewriterRevealCharsPerSecond({
+  selectedCharsPerSecond: 90,
+  pendingCharacters: 5,
+  previousCharsPerSecond: 60,
+  elapsedMs: 16,
+  streamComplete: false,
+});
+assert.ok(
+  roleplayDeceleratedRate > 52 && roleplayDeceleratedRate < 54,
+  "Roleplay should slow promptly as its buffered reserve shrinks",
+);
+const roleplayCompletionRate = getRoleplayTypewriterRevealCharsPerSecond({
+  selectedCharsPerSecond: 90,
+  pendingCharacters: 200,
+  previousCharsPerSecond: 30,
+  elapsedMs: 16,
+  streamComplete: true,
+});
+assert.ok(
+  roleplayCompletionRate > 31 && roleplayCompletionRate < 33,
+  "Roleplay completion should ease toward the selected speed instead of jumping to it",
+);
+assert.equal(
+  getRoleplayTypewriterRevealCharsPerSecond({
+    selectedCharsPerSecond: Infinity,
+    pendingCharacters: 200,
+    previousCharsPerSecond: 30,
+    elapsedMs: 16,
+    streamComplete: false,
+  }),
+  Infinity,
+  "the instant streaming-speed setting should still flush Roleplay immediately",
 );
 
 assert.equal(

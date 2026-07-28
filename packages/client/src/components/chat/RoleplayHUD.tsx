@@ -25,7 +25,7 @@ import { TrackerPanelIcon } from "../ui/TrackerPanelIcon";
 import { WorldCalendarIcon } from "../ui/WorldCalendarIcon";
 import { WorldClockIcon, WorldThermometerIcon } from "../ui/WorldStateInstruments";
 import { useGameStateStore } from "../../stores/game-state.store";
-import { useAgentStore } from "../../stores/agent.store";
+import { useAgentStore, EMPTY_AGENT_TYPES, EMPTY_AGENT_FAILURES } from "../../stores/agent.store";
 import { useAgentConfigs, useCustomAgentRuns, type AgentConfigRow } from "../../hooks/use-agents";
 import { discardPendingGameStatePatch, useGameStatePatcher } from "../../hooks/use-game-state-patcher";
 import { useUIStore } from "../../stores/ui.store";
@@ -133,10 +133,10 @@ export function RoleplayHUD({
   const thoughtBubbles = useAgentStore((s) => s.thoughtBubbles);
   const isAgentProcessing = useAgentStore((s) => s.processingChatIds.includes(chatId));
   const failedAgentTypes = useAgentStore((s) =>
-    s.failedAgentChatId && s.failedAgentChatId !== chatId ? [] : s.failedAgentTypes,
+    s.failedAgentChatId && s.failedAgentChatId !== chatId ? EMPTY_AGENT_TYPES : s.failedAgentTypes,
   );
   const failedAgentFailures = useAgentStore((s) =>
-    s.failedAgentChatId && s.failedAgentChatId !== chatId ? [] : s.failedAgentFailures,
+    s.failedAgentChatId && s.failedAgentChatId !== chatId ? EMPTY_AGENT_FAILURES : s.failedAgentFailures,
   );
   const dismissThoughtBubble = useAgentStore((s) => s.dismissThoughtBubble);
   const clearThoughtBubbles = useAgentStore((s) => s.clearThoughtBubbles);

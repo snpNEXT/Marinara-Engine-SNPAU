@@ -2495,7 +2495,7 @@ export function ConnectionEditor() {
                     {msgResult.response}
                   </div>
                 ) : (
-                  <span className="text-[var(--destructive)]">{msgResult.error || "No response received"}</span>
+                  <span className="text-[var(--marinara-editor-accent)]">{msgResult.error || "No response received"}</span>
                 )}
               </TestResultCard>
             )}

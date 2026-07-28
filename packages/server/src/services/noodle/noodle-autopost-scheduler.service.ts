@@ -1,13 +1,13 @@
 // ──────────────────────────────────────────────
 // NoodleR per-creator automatic-posting scheduler.
 // Polls enabled creator accounts, claims a due run by advancing its server-owned
-// nextRunAt before provider work, then drives the same private-post application
+// nextRunAt before provider work, then drives the same NoodleR-post application
 // operation as user-triggered generation. Text-only, subscriber access.
 // ──────────────────────────────────────────────
 import type { FastifyInstance } from "fastify";
 import { logger } from "../../lib/logger.js";
 import { createNoodleStorage } from "../storage/noodle.storage.js";
-import { generateNoodlePrivatePost } from "./noodle-private-post.operation.js";
+import { generateAndApplyNoodlerPost } from "./noodle-noodler-post.operation.js";
 
 const AUTOPOST_INITIAL_DELAY_MS = 20_000;
 const AUTOPOST_POLL_MS = 60_000;
@@ -38,8 +38,8 @@ export function startNoodleAutoPostScheduler(app: FastifyInstance) {
     // interval before the next attempt. That advance is the anti-hot-loop guarantee;
     // no extra backoff map is needed.
     try {
-      const result = await generateNoodlePrivatePost(app.db, {
-        mode: "private",
+      const result = await generateAndApplyNoodlerPost(app.db, {
+        mode: "noodler",
         targetAccountId: accountId,
         access: "subscriber",
       });

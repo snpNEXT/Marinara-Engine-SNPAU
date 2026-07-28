@@ -30,13 +30,14 @@ import {
   type NoodleInteractionType,
   type NoodleCarryoverMode,
   type NoodleCarryoverTarget,
+  type NoodlePlatform,
   type NoodlePost,
   type NoodlePostAccess,
   type NoodlePollInput,
   type NoodlePostUnlock,
   type NoodlePostUpdateInput,
   type NoodlePostSource,
-  type NoodlePrivatePostUpdateInput,
+  type NoodlerPostUpdateInput,
   type NoodleStageProfileInput,
   type NoodlerManagedPost,
   type NoodlerManagedStageProfile,
@@ -89,10 +90,10 @@ type PublicCreateInteractionCommand = Omit<NoodleCreateInteractionInput, "actorK
 type PublicRemoveInteractionCommand = Omit<NoodleRemoveInteractionInput, "actorKind" | "actorEntityId"> & {
   actorAccountId: string;
 };
-type PrivateCreateInteractionCommand = Omit<NoodlerCreateInteractionInput, "personaId"> & {
+type NoodlerCreateInteractionCommand = Omit<NoodlerCreateInteractionInput, "personaId"> & {
   actorAccountId: string;
 };
-type PrivateRemoveInteractionCommand = Omit<NoodlerRemoveInteractionInput, "personaId"> & {
+type NoodlerRemoveInteractionCommand = Omit<NoodlerRemoveInteractionInput, "personaId"> & {
   actorAccountId: string;
 };
 type DeleteStoredInteractionCommand = {
@@ -107,8 +108,7 @@ type InsertInteractionCommand = {
   imageUrl?: string | null;
   parentInteractionId: string | null;
 };
-type PollVoteAuthorVisibility = "public" | "private";
-type PrivatePostPersistenceInput = {
+type NoodlerPostPersistenceInput = {
   /** Optional caller-supplied id so a serving URL can be derived before the row is inserted. */
   id?: string;
   authorAccountId: string;
@@ -408,10 +408,17 @@ export function normalizeNoodleSettings(raw: unknown): NoodleSettings {
   const rawRecord = parseRecord(raw);
   const migratedMaxImagesPerRefresh =
     rawRecord.maxImagesPerRefresh ?? rawRecord.maxImagePromptsPerDay ?? DEFAULT_NOODLE_SETTINGS.maxImagesPerRefresh;
+  // Renamed from privateGenerationGuidance; without the alias an existing user's
+  // customized guidance would silently revert to the shipped default.
+  const migratedNoodlerGenerationGuidance =
+    rawRecord.noodlerGenerationGuidance ??
+    rawRecord.privateGenerationGuidance ??
+    DEFAULT_NOODLE_SETTINGS.noodlerGenerationGuidance;
   const candidate: Record<string, unknown> = {
     ...DEFAULT_NOODLE_SETTINGS,
     ...rawRecord,
     maxImagesPerRefresh: migratedMaxImagesPerRefresh,
+    noodlerGenerationGuidance: migratedNoodlerGenerationGuidance,
   };
   let parsed = noodleSettingsSchema.safeParse(candidate);
   if (!parsed.success) {
@@ -464,8 +471,8 @@ function mapAccount(row: AccountRow): NoodleAccount {
     avatarCrop: settings.profile.avatarCrop ?? null,
     invited: normalizeBool(row.invited),
     settings,
-    visibility: row.visibility === "private" ? "private" : "public",
-    publicAccountId: row.publicAccountId ?? null,
+    platform: row.platform === "noodler" ? "noodler" : "noodle",
+    noodleAccountId: row.noodleAccountId ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -639,7 +646,7 @@ export function createNoodleStorage(db: DB) {
     if (publicHandleReconciliation) return publicHandleReconciliation;
     publicHandleReconciliation = db
       .transaction(async (tx) => {
-        const rows = await tx.select().from(noodleAccounts).where(eq(noodleAccounts.visibility, "public"));
+        const rows = await tx.select().from(noodleAccounts).where(eq(noodleAccounts.platform, "noodle"));
         const groups = new Map<string, AccountRow[]>();
         for (const row of rows) {
           const normalized = normalizeHandle(row.handle, row.entityId);
@@ -736,7 +743,7 @@ export function createNoodleStorage(db: DB) {
     postId: string,
     actorAccountId: string,
     optionId: string,
-    authorVisibility: PollVoteAuthorVisibility,
+    authorPlatform: NoodlePlatform,
     imageUrl: string | null,
   ): Promise<NoodleInteraction | null> => {
     return db.transaction(async (tx) => {
@@ -745,23 +752,23 @@ export function createNoodleStorage(db: DB) {
         tx
           .select()
           .from(noodleAccounts)
-          .where(and(eq(noodleAccounts.id, actorAccountId), eq(noodleAccounts.visibility, "public"))),
+          .where(and(eq(noodleAccounts.id, actorAccountId), eq(noodleAccounts.platform, "noodle"))),
       ]);
       const currentPost = postRows[0];
       if (!currentPost || !actorRows[0]) return null;
       const authorRows = await tx
         .select()
         .from(noodleAccounts)
-        .where(and(eq(noodleAccounts.id, currentPost.authorAccountId), eq(noodleAccounts.visibility, authorVisibility)));
+        .where(and(eq(noodleAccounts.id, currentPost.authorAccountId), eq(noodleAccounts.platform, authorPlatform)));
       const currentPoll = readNoodlePollFromMetadata(parseRecord(currentPost.metadata));
       if (!authorRows[0] || !currentPoll?.options.some((option) => option.id === optionId)) return null;
 
       const currentActor = mapAccount(actorRows[0]);
-      if (authorVisibility === "private") {
+      if (authorPlatform === "noodler") {
         const currentAuthor = mapAccount(authorRows[0]);
         if (
           currentActor.kind !== "persona" ||
-          currentAuthor.publicAccountId === currentActor.id ||
+          currentAuthor.noodleAccountId === currentActor.id ||
           isNoodlerHiddenFromViewer(currentAuthor, currentActor.id)
         ) {
           return null;
@@ -877,12 +884,12 @@ export function createNoodleStorage(db: DB) {
       .select()
       .from(noodleActivityDigests)
       .where(eq(noodleActivityDigests.sourceInteractionId, existing.id));
-    const publicAccountIds = new Set(
-      (await db.select().from(noodleAccounts).where(eq(noodleAccounts.visibility, "public"))).map((row) => row.id),
+    const noodleAccountIds = new Set(
+      (await db.select().from(noodleAccounts).where(eq(noodleAccounts.platform, "noodle"))).map((row) => row.id),
     );
     if (
       relatedDigests.some(
-        (digest) => !parseStringArray(digest.accountIds).every((accountId) => publicAccountIds.has(accountId)),
+        (digest) => !parseStringArray(digest.accountIds).every((accountId) => noodleAccountIds.has(accountId)),
       )
     ) {
       return null;
@@ -903,7 +910,13 @@ export function createNoodleStorage(db: DB) {
     async updateSettings(input: NoodleSettingsUpdateInput): Promise<NoodleSettings> {
       const current = await this.getSettings();
       const next = normalizeNoodleSettings({ ...current, ...input });
-      await settingsStore.set(NOODLE_SETTINGS_KEY, JSON.stringify(next));
+      // Write-only rollback mirror: a pre-rename build reads only the old key, so dropping it
+      // here would silently reset a customized guidance string on downgrade. Drop once no
+      // supported version reads `privateGenerationGuidance`.
+      await settingsStore.set(
+        NOODLE_SETTINGS_KEY,
+        JSON.stringify({ ...next, privateGenerationGuidance: next.noodlerGenerationGuidance }),
+      );
       const currentSchedule = await this.getRefreshSchedule();
       const reconciled = reconcileNoodleRefreshSchedule(currentSchedule, next.refreshesPerDay, new Date());
       await this.saveRefreshSchedule(clearNoodleRefreshFailure(reconciled));
@@ -942,7 +955,7 @@ export function createNoodleStorage(db: DB) {
       const rows = await db
         .select()
         .from(noodleAccounts)
-        .where(eq(noodleAccounts.visibility, "public"))
+        .where(eq(noodleAccounts.platform, "noodle"))
         .orderBy(desc(noodleAccounts.updatedAt));
       return rows.map(mapAccount);
     },
@@ -951,7 +964,7 @@ export function createNoodleStorage(db: DB) {
       const rows = await db
         .select()
         .from(noodleAccounts)
-        .where(and(eq(noodleAccounts.id, id), eq(noodleAccounts.visibility, "public")));
+        .where(and(eq(noodleAccounts.id, id), eq(noodleAccounts.platform, "noodle")));
       return rows[0] ? mapAccount(rows[0]) : null;
     },
 
@@ -963,7 +976,7 @@ export function createNoodleStorage(db: DB) {
           and(
             eq(noodleAccounts.kind, kind),
             eq(noodleAccounts.entityId, entityId),
-            eq(noodleAccounts.visibility, "public"),
+            eq(noodleAccounts.platform, "noodle"),
           ),
         );
       return rows[0] ? mapAccount(rows[0]) : null;
@@ -978,39 +991,39 @@ export function createNoodleStorage(db: DB) {
           and(
             eq(noodleAccounts.kind, kind),
             inArray(noodleAccounts.entityId, entityIds),
-            eq(noodleAccounts.visibility, "public"),
+            eq(noodleAccounts.platform, "noodle"),
           ),
         );
       return rows.map(mapAccount);
     },
 
-    async listPrivateAccounts(): Promise<NoodleAccount[]> {
+    async listNoodlerAccounts(): Promise<NoodleAccount[]> {
       const rows = await db
         .select()
         .from(noodleAccounts)
-        .where(eq(noodleAccounts.visibility, "private"))
+        .where(eq(noodleAccounts.platform, "noodler"))
         .orderBy(desc(noodleAccounts.updatedAt));
       return rows.map(mapAccount);
     },
 
-    async getPrivateAccountById(id: string): Promise<NoodleAccount | null> {
+    async getNoodlerAccountById(id: string): Promise<NoodleAccount | null> {
       const rows = await db
         .select()
         .from(noodleAccounts)
-        .where(and(eq(noodleAccounts.id, id), eq(noodleAccounts.visibility, "private")));
+        .where(and(eq(noodleAccounts.id, id), eq(noodleAccounts.platform, "noodler")));
       return rows[0] ? mapAccount(rows[0]) : null;
     },
 
-    async getPrivateAccountForPublicAccount(publicAccountId: string): Promise<NoodleAccount | null> {
+    async getNoodlerAccountForNoodleAccount(noodleAccountId: string): Promise<NoodleAccount | null> {
       const rows = await db
         .select()
         .from(noodleAccounts)
-        .where(and(eq(noodleAccounts.visibility, "private"), eq(noodleAccounts.publicAccountId, publicAccountId)));
+        .where(and(eq(noodleAccounts.platform, "noodler"), eq(noodleAccounts.noodleAccountId, noodleAccountId)));
       return rows[0] ? mapAccount(rows[0]) : null;
     },
 
-    async deletePrivateAccount(id: string): Promise<NoodleAccount | null> {
-      const existing = await this.getPrivateAccountById(id);
+    async deleteNoodlerAccount(id: string): Promise<NoodleAccount | null> {
+      const existing = await this.getNoodlerAccountById(id);
       if (!existing) return null;
       const postRows = await db.select().from(noodlePosts).where(eq(noodlePosts.authorAccountId, id));
       const postIds = postRows.map((post) => post.id);
@@ -1030,24 +1043,24 @@ export function createNoodleStorage(db: DB) {
         }
         await tx
           .delete(noodleAccounts)
-          .where(and(eq(noodleAccounts.id, id), eq(noodleAccounts.visibility, "private")));
+          .where(and(eq(noodleAccounts.id, id), eq(noodleAccounts.platform, "noodler")));
         await tx._fileStore.flush();
       });
       return existing;
     },
 
     async listNoodlerStageProfiles(): Promise<NoodlerManagedStageProfile[]> {
-      const accounts = await this.listPrivateAccounts();
+      const accounts = await this.listNoodlerAccounts();
       return Promise.all(
         accounts.map(async (account) => {
           const disclosureMode = account.settings.privacy.identityDisclosure ?? null;
           const publicAccount =
-            (disclosureMode === "open" || disclosureMode === "hinted") && account.publicAccountId
-              ? await this.getAccountById(account.publicAccountId)
+            (disclosureMode === "open" || disclosureMode === "hinted") && account.noodleAccountId
+              ? await this.getAccountById(account.noodleAccountId)
               : null;
           return {
             id: account.id,
-            publicAccountId: account.publicAccountId,
+            noodleAccountId: account.noodleAccountId,
             handle: account.handle,
             displayName: account.displayName,
             bio: account.bio,
@@ -1067,12 +1080,12 @@ export function createNoodleStorage(db: DB) {
       );
     },
 
-    async createPrivateAccount(
-      publicAccountId: string,
+    async createNoodlerAccount(
+      noodleAccountId: string,
       stageProfile: NoodleStageProfileInput,
       defaultIntensity: NoodleAutoPostingIntensity = 1,
     ): Promise<NoodleAccount | null> {
-      const publicAccount = await this.getAccountById(publicAccountId);
+      const publicAccount = await this.getAccountById(noodleAccountId);
       if (!publicAccount || (publicAccount.kind !== "persona" && publicAccount.kind !== "character")) return null;
       const timestamp = now();
       const id = newId();
@@ -1098,12 +1111,15 @@ export function createNoodleStorage(db: DB) {
         avatarUrl: null,
         invited: "false",
         settings: JSON.stringify(accountSettings),
+        platform: "noodler",
+        noodleAccountId,
+        // Rollback mirrors; see schema/noodle.ts.
         visibility: "private",
-        publicAccountId,
+        publicAccountId: noodleAccountId,
         createdAt: timestamp,
         updatedAt: timestamp,
       });
-      return this.getPrivateAccountById(id);
+      return this.getNoodlerAccountById(id);
     },
 
     async updateNoodlerStageProfile(id: string, stageProfile: NoodleStageProfileInput): Promise<NoodleAccount | null> {
@@ -1111,7 +1127,7 @@ export function createNoodleStorage(db: DB) {
         const rows = await tx
           .select()
           .from(noodleAccounts)
-          .where(and(eq(noodleAccounts.id, id), eq(noodleAccounts.visibility, "private")));
+          .where(and(eq(noodleAccounts.id, id), eq(noodleAccounts.platform, "noodler")));
         const row = rows[0];
         if (!row) return null;
         const settings = normalizeNoodleAccountSettings(row.settings);
@@ -1183,7 +1199,7 @@ export function createNoodleStorage(db: DB) {
         const timestamp = now();
         const accountId = newId();
         const displayName = input.displayName.trim() || (input.kind === "persona" ? "User" : "Character");
-        const publicRows = await tx.select().from(noodleAccounts).where(eq(noodleAccounts.visibility, "public"));
+        const publicRows = await tx.select().from(noodleAccounts).where(eq(noodleAccounts.platform, "noodle"));
         const reserved = new Set(publicRows.map((row) => normalizeHandle(row.handle, row.entityId)));
         const handle = nextAvailablePublicHandle(normalizeHandle(displayName, input.entityId), reserved);
         await tx.insert(noodleAccounts).values({
@@ -1199,6 +1215,9 @@ export function createNoodleStorage(db: DB) {
             ...emptyNoodleAccountSettings(),
             profile: input.avatarCrop !== undefined ? { avatarCrop: input.avatarCrop } : {},
           }),
+          platform: "noodle",
+          noodleAccountId: null,
+          // Rollback mirrors; see schema/noodle.ts.
           visibility: "public",
           publicAccountId: null,
           createdAt: timestamp,
@@ -1215,7 +1234,7 @@ export function createNoodleStorage(db: DB) {
         const rows = await tx
           .select()
           .from(noodleAccounts)
-          .where(and(eq(noodleAccounts.id, id), eq(noodleAccounts.visibility, "public")));
+          .where(and(eq(noodleAccounts.id, id), eq(noodleAccounts.platform, "noodle")));
         const row = rows[0];
         if (!row) return null;
         await tx
@@ -1240,7 +1259,7 @@ export function createNoodleStorage(db: DB) {
         const rows = await tx
           .select()
           .from(noodleAccounts)
-          .where(and(eq(noodleAccounts.id, id), eq(noodleAccounts.visibility, "public")));
+          .where(and(eq(noodleAccounts.id, id), eq(noodleAccounts.platform, "noodle")));
         const row = rows[0];
         if (!row) return null;
         const settings = normalizeNoodleAccountSettings(row.settings);
@@ -1269,12 +1288,12 @@ export function createNoodleStorage(db: DB) {
         const rows = await tx.select().from(noodleAccounts).where(eq(noodleAccounts.id, id));
         const row = rows[0];
         if (!row) return null;
-        if (row.visibility === "private" && input.subtree !== "privacy" && input.subtree !== "scheduler") return null;
-        if (row.visibility !== "private" && input.subtree === "scheduler") return null;
-        if (row.visibility !== "private" && input.subtree === "privacy" && input.patch.access !== undefined)
+        if (row.platform === "noodler" && input.subtree !== "privacy" && input.subtree !== "scheduler") return null;
+        if (row.platform !== "noodler" && input.subtree === "scheduler") return null;
+        if (row.platform !== "noodler" && input.subtree === "privacy" && input.patch.access !== undefined)
           return null;
         if (
-          row.visibility === "private" &&
+          row.platform === "noodler" &&
           input.subtree === "privacy" &&
           (input.patch.identityDisclosure !== undefined || input.patch.stagePersonality !== undefined)
         ) {
@@ -1323,9 +1342,9 @@ export function createNoodleStorage(db: DB) {
       });
     },
 
-    /** Every private (creator) account with automatic posting enabled, settings attached. */
+    /** Every NoodleR creator account with automatic posting enabled, settings attached. */
     async listAutoPostEnabledAccounts(): Promise<NoodleAccount[]> {
-      const rows = await db.select().from(noodleAccounts).where(eq(noodleAccounts.visibility, "private"));
+      const rows = await db.select().from(noodleAccounts).where(eq(noodleAccounts.platform, "noodler"));
       return rows.map(mapAccount).filter((account) => account.settings.scheduler.autoPosting?.enabled === true);
     },
 
@@ -1338,7 +1357,7 @@ export function createNoodleStorage(db: DB) {
     async advanceAutoPostRun(id: string, nowIso: string): Promise<"seeded" | "claimed" | "skipped"> {
       return db.transaction(async (tx) => {
         const row = (await tx.select().from(noodleAccounts).where(eq(noodleAccounts.id, id)))[0];
-        if (!row || row.visibility !== "private") return "skipped";
+        if (!row || row.platform !== "noodler") return "skipped";
         const current = normalizeNoodleAccountSettings(row.settings);
         const auto = current.scheduler.autoPosting;
         if (!auto?.enabled) return "skipped";
@@ -1370,7 +1389,7 @@ export function createNoodleStorage(db: DB) {
     async claimAutoPostRunNow(id: string, nowIso: string): Promise<"claimed" | "skipped"> {
       return db.transaction(async (tx) => {
         const row = (await tx.select().from(noodleAccounts).where(eq(noodleAccounts.id, id)))[0];
-        if (!row || row.visibility !== "private") return "skipped";
+        if (!row || row.platform !== "noodler") return "skipped";
         const current = normalizeNoodleAccountSettings(row.settings);
         const auto = current.scheduler.autoPosting;
         if (!auto?.enabled) return "skipped";
@@ -1391,7 +1410,7 @@ export function createNoodleStorage(db: DB) {
     async rescheduleAutoPostRun(id: string, nextRunAt: string): Promise<NoodleAccount | null> {
       return db.transaction(async (tx) => {
         const row = (await tx.select().from(noodleAccounts).where(eq(noodleAccounts.id, id)))[0];
-        if (!row || row.visibility !== "private") return null;
+        if (!row || row.platform !== "noodler") return null;
         const current = normalizeNoodleAccountSettings(row.settings);
         const auto = current.scheduler.autoPosting ?? defaultAutoPostingSettings();
         const nextSettings: NoodleAccountSettings = {
@@ -1417,7 +1436,7 @@ export function createNoodleStorage(db: DB) {
         const rows = await tx
           .select()
           .from(noodleAccounts)
-          .where(and(eq(noodleAccounts.id, id), eq(noodleAccounts.visibility, "public")));
+          .where(and(eq(noodleAccounts.id, id), eq(noodleAccounts.platform, "noodle")));
         const row = rows[0];
         if (!row) return null;
         const current = normalizeNoodleAccountSettings(row.settings);
@@ -1464,46 +1483,46 @@ export function createNoodleStorage(db: DB) {
           and(
             eq(noodleAccounts.kind, "character"),
             eq(noodleAccounts.invited, "true"),
-            eq(noodleAccounts.visibility, "public"),
+            eq(noodleAccounts.platform, "noodle"),
           ),
         );
     },
 
     async listPosts(options: { limit?: number; since?: string } = {}): Promise<NoodlePost[]> {
       const limit = Math.max(1, Math.min(300, Math.floor(options.limit ?? 120)));
-      const publicAccountIds = (await this.listAccounts()).map((account) => account.id);
-      if (publicAccountIds.length === 0) return [];
+      const noodleAccountIds = (await this.listAccounts()).map((account) => account.id);
+      if (noodleAccountIds.length === 0) return [];
       const rows = options.since
         ? await db
             .select()
             .from(noodlePosts)
             .where(
-              and(gt(noodlePosts.createdAt, options.since), inArray(noodlePosts.authorAccountId, publicAccountIds)),
+              and(gt(noodlePosts.createdAt, options.since), inArray(noodlePosts.authorAccountId, noodleAccountIds)),
             )
             .orderBy(desc(noodlePosts.createdAt))
             .limit(limit)
         : await db
             .select()
             .from(noodlePosts)
-            .where(inArray(noodlePosts.authorAccountId, publicAccountIds))
+            .where(inArray(noodlePosts.authorAccountId, noodleAccountIds))
             .orderBy(desc(noodlePosts.createdAt))
             .limit(limit);
       return rows.map((row) => mapPost(row));
     },
 
     async listPostsBefore(before: string): Promise<NoodlePost[]> {
-      const publicAccountIds = (await this.listAccounts()).map((account) => account.id);
-      if (publicAccountIds.length === 0) return [];
+      const noodleAccountIds = (await this.listAccounts()).map((account) => account.id);
+      if (noodleAccountIds.length === 0) return [];
       const rows = await db
         .select()
         .from(noodlePosts)
-        .where(and(lt(noodlePosts.createdAt, before), inArray(noodlePosts.authorAccountId, publicAccountIds)))
+        .where(and(lt(noodlePosts.createdAt, before), inArray(noodlePosts.authorAccountId, noodleAccountIds)))
         .orderBy(desc(noodlePosts.createdAt));
       return rows.map((row) => mapPost(row));
     },
 
-    async listPrivatePostsByAccount(accountId: string, limit = 8): Promise<NoodlerManagedPost[]> {
-      const account = await this.getPrivateAccountById(accountId);
+    async listNoodlerPostsByAccount(accountId: string, limit = 8): Promise<NoodlerManagedPost[]> {
+      const account = await this.getNoodlerAccountById(accountId);
       if (!account) return [];
       const rows = await db
         .select()
@@ -1514,7 +1533,7 @@ export function createNoodleStorage(db: DB) {
       return rows.map(mapManagedPost);
     },
 
-    async listPrivatePostsByAccounts(accountIds: string[], limit = 8): Promise<Map<string, NoodlerManagedPost[]>> {
+    async listNoodlerPostsByAccounts(accountIds: string[], limit = 8): Promise<Map<string, NoodlerManagedPost[]>> {
       const boundedLimit = Math.max(1, Math.min(50, Math.floor(limit)));
       const result = new Map<string, NoodlerManagedPost[]>();
       if (accountIds.length === 0) return result;
@@ -1535,15 +1554,15 @@ export function createNoodleStorage(db: DB) {
       return result;
     },
 
-    async getPrivatePostById(id: string): Promise<NoodlerManagedPost | null> {
+    async getNoodlerPostById(id: string): Promise<NoodlerManagedPost | null> {
       const rows = await db.select().from(noodlePosts).where(eq(noodlePosts.id, id));
       const row = rows[0];
-      if (!row || !(await this.getPrivateAccountById(row.authorAccountId))) return null;
+      if (!row || !(await this.getNoodlerAccountById(row.authorAccountId))) return null;
       return mapManagedPost(row);
     },
 
-    async createPrivatePost(input: PrivatePostPersistenceInput): Promise<NoodlerManagedPost | null> {
-      const account = await this.getPrivateAccountById(input.authorAccountId);
+    async createNoodlerPost(input: NoodlerPostPersistenceInput): Promise<NoodlerManagedPost | null> {
+      const account = await this.getNoodlerAccountById(input.authorAccountId);
       if (!account) return null;
       const timestamp = now();
       const id = input.id ?? newId();
@@ -1725,7 +1744,7 @@ export function createNoodleStorage(db: DB) {
         const authorRows = await tx
           .select()
           .from(noodleAccounts)
-          .where(and(eq(noodleAccounts.id, existing.authorAccountId), eq(noodleAccounts.visibility, "public")));
+          .where(and(eq(noodleAccounts.id, existing.authorAccountId), eq(noodleAccounts.platform, "noodle")));
         if (!authorRows[0]) return false;
         const nextMetadata = updatePollMetadata(mapPost(existing).metadata, input.poll);
         if (input.imageCrop === null) delete nextMetadata.imageCrop;
@@ -1756,8 +1775,8 @@ export function createNoodleStorage(db: DB) {
       const existing = await this.getPostById(id);
       if (!existing) return null;
       const interactions = await db.select().from(noodleInteractions).where(eq(noodleInteractions.postId, id));
-      const publicAccountIds = new Set((await this.listAccounts()).map((account) => account.id));
-      if (interactions.some((interaction) => !publicAccountIds.has(interaction.actorAccountId))) return null;
+      const noodleAccountIds = new Set((await this.listAccounts()).map((account) => account.id));
+      if (interactions.some((interaction) => !noodleAccountIds.has(interaction.actorAccountId))) return null;
       const interactionIds = interactions.map((interaction) => interaction.id);
       const digests = await db.select().from(noodleActivityDigests);
       const relatedDigests = digests.filter(
@@ -1767,7 +1786,7 @@ export function createNoodleStorage(db: DB) {
       );
       if (
         relatedDigests.some(
-          (digest) => !parseStringArray(digest.accountIds).every((accountId) => publicAccountIds.has(accountId)),
+          (digest) => !parseStringArray(digest.accountIds).every((accountId) => noodleAccountIds.has(accountId)),
         )
       ) {
         return null;
@@ -1781,10 +1800,10 @@ export function createNoodleStorage(db: DB) {
       return existing;
     },
 
-    async updatePrivatePost(
+    async updateNoodlerPost(
       id: string,
-      input: NoodlePrivatePostUpdateInput,
-      media?: { imageUrl: string; privateMediaPath: string },
+      input: NoodlerPostUpdateInput,
+      media?: { imageUrl: string; noodlerMediaPath: string },
     ): Promise<NoodlerManagedPost | null> {
       const imageChanged = Boolean(media || input.removeImage);
       const updated = await db.transaction(async (tx) => {
@@ -1794,12 +1813,12 @@ export function createNoodleStorage(db: DB) {
         const authorRows = await tx
           .select()
           .from(noodleAccounts)
-          .where(and(eq(noodleAccounts.id, existing.authorAccountId), eq(noodleAccounts.visibility, "private")));
+          .where(and(eq(noodleAccounts.id, existing.authorAccountId), eq(noodleAccounts.platform, "noodler")));
         if (!authorRows[0]) return false;
         const nextMetadata = updatePollMetadata(mapManagedPost(existing).metadata, input.poll);
         if (imageChanged) {
           for (const key of [
-            "privateMediaPath",
+            "noodlerMediaPath",
             "imageGenerated",
             "imageProvider",
             "imageModel",
@@ -1811,7 +1830,7 @@ export function createNoodleStorage(db: DB) {
             delete nextMetadata[key];
           }
         }
-        if (media) nextMetadata.privateMediaPath = media.privateMediaPath;
+        if (media) nextMetadata.noodlerMediaPath = media.noodlerMediaPath;
         if (input.removeImage || input.imageCrop === null) delete nextMetadata.imageCrop;
         else if (input.imageCrop !== undefined) nextMetadata.imageCrop = input.imageCrop;
         await tx
@@ -1834,11 +1853,11 @@ export function createNoodleStorage(db: DB) {
         return true;
       });
       if (!updated) return null;
-      return this.getPrivatePostById(id);
+      return this.getNoodlerPostById(id);
     },
 
-    async deletePrivatePost(id: string): Promise<NoodlerManagedPost | null> {
-      const existing = await this.getPrivatePostById(id);
+    async deleteNoodlerPost(id: string): Promise<NoodlerManagedPost | null> {
+      const existing = await this.getNoodlerPostById(id);
       if (!existing) return null;
       const interactionRows = await db.select().from(noodleInteractions).where(eq(noodleInteractions.postId, id));
       const interactionIds = interactionRows.map((interaction) => interaction.id);
@@ -1856,20 +1875,20 @@ export function createNoodleStorage(db: DB) {
     },
 
     async resetTimeline(): Promise<void> {
-      const publicAccountIds = (await this.listAccounts()).map((account) => account.id);
+      const noodleAccountIds = (await this.listAccounts()).map((account) => account.id);
       const publicPosts =
-        publicAccountIds.length > 0
-          ? await db.select().from(noodlePosts).where(inArray(noodlePosts.authorAccountId, publicAccountIds))
+        noodleAccountIds.length > 0
+          ? await db.select().from(noodlePosts).where(inArray(noodlePosts.authorAccountId, noodleAccountIds))
           : [];
       const publicPostIds = publicPosts.map((post) => post.id);
       const publicInteractions = await db
         .select()
         .from(noodleInteractions)
         .where(inArray(noodleInteractions.postId, publicPostIds));
-      const publicAccountIdSet = new Set(publicAccountIds);
+      const noodleAccountIdSet = new Set(noodleAccountIds);
       const protectedPostIds = new Set(
         publicInteractions
-          .filter((interaction) => !publicAccountIdSet.has(interaction.actorAccountId))
+          .filter((interaction) => !noodleAccountIdSet.has(interaction.actorAccountId))
           .map((interaction) => interaction.postId),
       );
       const interactionPostById = new Map(
@@ -1877,7 +1896,7 @@ export function createNoodleStorage(db: DB) {
       );
       const digests = await db.select().from(noodleActivityDigests);
       for (const digest of digests) {
-        if (parseStringArray(digest.accountIds).every((accountId) => publicAccountIdSet.has(accountId))) continue;
+        if (parseStringArray(digest.accountIds).every((accountId) => noodleAccountIdSet.has(accountId))) continue;
         if (digest.sourcePostId && publicPostIds.includes(digest.sourcePostId)) {
           protectedPostIds.add(digest.sourcePostId);
         }
@@ -1913,25 +1932,25 @@ export function createNoodleStorage(db: DB) {
           .map((post) => post.id),
       );
       if (publicPostIds.size === 0) return [];
-      const publicAccountIds = new Set((await this.listAccounts()).map((account) => account.id));
+      const noodleAccountIds = new Set((await this.listAccounts()).map((account) => account.id));
       const rows = await db
         .select()
         .from(noodleInteractions)
         .where(inArray(noodleInteractions.postId, [...publicPostIds]))
         .orderBy(noodleInteractions.createdAt);
-      return rows.filter((row) => publicAccountIds.has(row.actorAccountId)).map(mapInteraction);
+      return rows.filter((row) => noodleAccountIds.has(row.actorAccountId)).map(mapInteraction);
     },
 
     async listRepliesByActorSince(actorAccountId: string, since: string, limit = 100): Promise<NoodleInteraction[]> {
       if (!(await this.getAccountById(actorAccountId))) return [];
-      const publicAccountIds = (await this.listAccounts()).map((account) => account.id);
-      if (publicAccountIds.length === 0) return [];
+      const noodleAccountIds = (await this.listAccounts()).map((account) => account.id);
+      if (noodleAccountIds.length === 0) return [];
       const publicPostIds = new Set(
         (
           await db
             .select({ id: noodlePosts.id })
             .from(noodlePosts)
-            .where(inArray(noodlePosts.authorAccountId, publicAccountIds))
+            .where(inArray(noodlePosts.authorAccountId, noodleAccountIds))
         ).map((post) => post.id),
       );
       const rows = await db
@@ -1988,15 +2007,15 @@ export function createNoodleStorage(db: DB) {
         }
       }
       const deletedRows = rows.filter((row) => deletedIds.has(row.id));
-      const publicAccountIds = new Set((await this.listAccounts()).map((account) => account.id));
-      if (deletedRows.some((row) => !publicAccountIds.has(row.actorAccountId))) return [];
+      const noodleAccountIds = new Set((await this.listAccounts()).map((account) => account.id));
+      if (deletedRows.some((row) => !noodleAccountIds.has(row.actorAccountId))) return [];
       const relatedDigests = await db
         .select()
         .from(noodleActivityDigests)
         .where(inArray(noodleActivityDigests.sourceInteractionId, [...deletedIds]));
       if (
         relatedDigests.some(
-          (digest) => !parseStringArray(digest.accountIds).every((accountId) => publicAccountIds.has(accountId)),
+          (digest) => !parseStringArray(digest.accountIds).every((accountId) => noodleAccountIds.has(accountId)),
         )
       ) {
         return [];
@@ -2018,7 +2037,7 @@ export function createNoodleStorage(db: DB) {
           postId,
           input.actorAccountId,
           input.content?.trim() ?? "",
-          "public",
+          "noodle",
           input.imageUrl?.trim() || null,
         );
       }
@@ -2046,31 +2065,31 @@ export function createNoodleStorage(db: DB) {
       return deleteStoredInteraction(postId, input, "protect-public-digests");
     },
 
-    // Callers pass post IDs already resolved from private-account queries
-    // (listPrivatePostsByAccounts), so this trusts them and issues a single bulk
-    // read instead of re-validating each ID with getPrivatePostById (2N reads).
-    async listPrivateInteractions(privatePostIds: string[] = []): Promise<NoodleInteraction[]> {
-      if (privatePostIds.length === 0) return [];
+    // Callers pass post IDs already resolved from NoodleR-account queries
+    // (listNoodlerPostsByAccounts), so this trusts them and issues a single bulk
+    // read instead of re-validating each ID with getNoodlerPostById (2N reads).
+    async listNoodlerInteractions(noodlerPostIds: string[] = []): Promise<NoodleInteraction[]> {
+      if (noodlerPostIds.length === 0) return [];
       const rows = await db
         .select()
         .from(noodleInteractions)
-        .where(inArray(noodleInteractions.postId, privatePostIds))
+        .where(inArray(noodleInteractions.postId, noodlerPostIds))
         .orderBy(noodleInteractions.createdAt);
       return rows.map(mapInteraction);
     },
 
-    async createPrivateInteraction(
+    async createNoodlerInteraction(
       postId: string,
-      input: PrivateCreateInteractionCommand,
+      input: NoodlerCreateInteractionCommand,
     ): Promise<NoodleInteraction | null> {
       const parentInteractionId = input.parentInteractionId ?? null;
       if (input.type === "vote") {
         if (parentInteractionId) return null;
-        return upsertPollVote(postId, input.actorAccountId, input.content?.trim() ?? "", "private", null);
+        return upsertPollVote(postId, input.actorAccountId, input.content?.trim() ?? "", "noodler", null);
       }
 
       const [post, actor] = await Promise.all([
-        this.getPrivatePostById(postId),
+        this.getNoodlerPostById(postId),
         this.getAccountById(input.actorAccountId),
       ]);
       if (!post || !actor) return null;
@@ -2092,11 +2111,11 @@ export function createNoodleStorage(db: DB) {
       });
     },
 
-    async deletePrivateInteraction(
+    async deleteNoodlerInteraction(
       postId: string,
-      input: PrivateRemoveInteractionCommand,
+      input: NoodlerRemoveInteractionCommand,
     ): Promise<NoodleInteraction | null> {
-      const post = await this.getPrivatePostById(postId);
+      const post = await this.getNoodlerPostById(postId);
       if (!post) return null;
       return deleteStoredInteraction(postId, input, "delete-directly");
     },
@@ -2110,9 +2129,9 @@ export function createNoodleStorage(db: DB) {
     }): Promise<NoodleDigestEntry> {
       const id = newId();
       const uniqueAccountIds = Array.from(new Set(input.accountIds.filter(Boolean)));
-      const publicAccountIds = new Set((await this.listAccounts()).map((account) => account.id));
-      if (!uniqueAccountIds.every((accountId) => publicAccountIds.has(accountId))) {
-        throw new Error("Public Noodle digests cannot reference private accounts.");
+      const noodleAccountIds = new Set((await this.listAccounts()).map((account) => account.id));
+      if (!uniqueAccountIds.every((accountId) => noodleAccountIds.has(accountId))) {
+        throw new Error("Public Noodle digests cannot reference NoodleR accounts.");
       }
       await db.transaction(async (tx) => {
         if (input.sourceInteractionId) {
@@ -2122,7 +2141,7 @@ export function createNoodleStorage(db: DB) {
             .where(eq(noodleActivityDigests.sourceInteractionId, input.sourceInteractionId));
           const publicDigestIds = existingDigests
             .filter((digest) =>
-              parseStringArray(digest.accountIds).every((accountId) => publicAccountIds.has(accountId)),
+              parseStringArray(digest.accountIds).every((accountId) => noodleAccountIds.has(accountId)),
             )
             .map((digest) => digest.id);
           if (publicDigestIds.length > 0) {
@@ -2151,10 +2170,10 @@ export function createNoodleStorage(db: DB) {
       const existingRows = await db.select().from(noodleActivityDigests).where(eq(noodleActivityDigests.id, id));
       const existing = existingRows[0];
       if (!existing) return null;
-      const publicAccountIds = new Set((await this.listAccounts()).map((account) => account.id));
+      const noodleAccountIds = new Set((await this.listAccounts()).map((account) => account.id));
       if (
-        !parseStringArray(existing.accountIds).every((accountId) => publicAccountIds.has(accountId)) ||
-        !uniqueAccountIds.every((accountId) => publicAccountIds.has(accountId))
+        !parseStringArray(existing.accountIds).every((accountId) => noodleAccountIds.has(accountId)) ||
+        !uniqueAccountIds.every((accountId) => noodleAccountIds.has(accountId))
       ) {
         return null;
       }
@@ -2199,17 +2218,17 @@ export function createNoodleStorage(db: DB) {
       ]);
       const sourcePostById = new Map(sourcePosts.map((post) => [post.id, post]));
       const sourceInteractionById = new Map(sourceInteractions.map((interaction) => [interaction.id, interaction]));
-      const publicAccountIds = new Set((await this.listAccounts()).map((account) => account.id));
+      const noodleAccountIds = new Set((await this.listAccounts()).map((account) => account.id));
 
       return rows
         .filter((row) => {
           const digest = mapDigest(row);
-          if (!digest.accountIds.every((accountId) => publicAccountIds.has(accountId))) return false;
+          if (!digest.accountIds.every((accountId) => noodleAccountIds.has(accountId))) return false;
           if (row.sourceInteractionId) {
             const interaction = sourceInteractionById.get(row.sourceInteractionId);
-            if (!interaction || !publicAccountIds.has(interaction.actorAccountId)) return false;
+            if (!interaction || !noodleAccountIds.has(interaction.actorAccountId)) return false;
             const sourcePost = sourcePostById.get(interaction.postId);
-            return Boolean(sourcePost && publicAccountIds.has(sourcePost.authorAccountId));
+            return Boolean(sourcePost && noodleAccountIds.has(sourcePost.authorAccountId));
           }
           // Older model-authored summaries had only a refresh-run reference,
           // so there is no way to invalidate them when their source post or
@@ -2217,7 +2236,7 @@ export function createNoodleStorage(db: DB) {
           if (row.sourceRunId && !row.sourcePostId) return false;
           if (!row.sourcePostId) return true;
           const sourcePost = sourcePostById.get(row.sourcePostId);
-          if (!sourcePost || !publicAccountIds.has(sourcePost.authorAccountId)) return false;
+          if (!sourcePost || !noodleAccountIds.has(sourcePost.authorAccountId)) return false;
           // Digests created before source_interaction_id existed cannot be tied
           // safely to a still-live comment. Keep only the post's canonical digest;
           // stale legacy comment digests must never re-enter generation context.
@@ -2297,16 +2316,16 @@ export function createNoodleStorage(db: DB) {
           tx
             .select()
             .from(noodleAccounts)
-            .where(and(eq(noodleAccounts.id, creatorAccountId), eq(noodleAccounts.visibility, "private"))),
+            .where(and(eq(noodleAccounts.id, creatorAccountId), eq(noodleAccounts.platform, "noodler"))),
         ]);
         const viewer = viewerRows[0] ? mapAccount(viewerRows[0]) : null;
         const creator = creatorRows[0] ? mapAccount(creatorRows[0]) : null;
         if (
           !viewer ||
           viewer.kind !== "persona" ||
-          viewer.visibility !== "public" ||
+          viewer.platform !== "noodle" ||
           !creator ||
-          creator.publicAccountId === viewerAccountId ||
+          creator.noodleAccountId === viewerAccountId ||
           isNoodlerHiddenFromViewer(creator, viewerAccountId)
         )
           return null;
@@ -2383,17 +2402,17 @@ export function createNoodleStorage(db: DB) {
         ]);
         const viewer = viewerRows[0] ? mapAccount(viewerRows[0]) : null;
         const postRow = postRows[0];
-        if (!viewer || viewer.kind !== "persona" || viewer.visibility !== "public" || postRow?.access !== "ppv") {
+        if (!viewer || viewer.kind !== "persona" || viewer.platform !== "noodle" || postRow?.access !== "ppv") {
           return null;
         }
         const authorRows = await tx
           .select()
           .from(noodleAccounts)
-          .where(and(eq(noodleAccounts.id, postRow.authorAccountId), eq(noodleAccounts.visibility, "private")));
+          .where(and(eq(noodleAccounts.id, postRow.authorAccountId), eq(noodleAccounts.platform, "noodler")));
         const author = authorRows[0] ? mapAccount(authorRows[0]) : null;
         if (
           !author ||
-          author.publicAccountId === viewerAccountId ||
+          author.noodleAccountId === viewerAccountId ||
           isNoodlerHiddenFromViewer(author, viewerAccountId)
         ) {
           return null;

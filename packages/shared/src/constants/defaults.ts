@@ -15,6 +15,9 @@ export const PROFESSOR_MARI_ID = "__professor_mari__";
 /** Stable ID for the default OpenRouter free‑tier connection. */
 export const DEFAULT_CONNECTION_ID = "__default_openrouter__";
 
+/** Shared width for cached background thumbnails used by compact client surfaces. */
+export const BACKGROUND_THUMBNAIL_WIDTH = 320;
+
 /** Default system prompt for AI-backed translation. */
 export const DEFAULT_TRANSLATION_SYSTEM_PROMPT =
   "You are a translator. Translate the given text accurately into {{targetLanguage}}, preserving formatting, markdown, and any special characters like *asterisks* for actions. Output ONLY the translated text, nothing else -- no explanations, no extra commentary.";
@@ -50,9 +53,10 @@ export const DEFAULT_GENERATION_PARAMS: GenerationParameters = {
   singleUserMessage: false,
 };
 
-/** Maximum file sizes for uploads. */
+/** Maximum file sizes for uploads and imported assets. */
 export const MAX_FILE_SIZES = {
   AVATAR: 10 * 1024 * 1024, // 10 MB
+  CHARACTER_CARD: 32 * 1024 * 1024, // 32 MB
   BACKGROUND: 20 * 1024 * 1024, // 20 MB
   SPRITE: 10 * 1024 * 1024, // 10 MB
   CHARACTER_JSON: 5 * 1024 * 1024, // 5 MB

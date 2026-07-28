@@ -3479,8 +3479,7 @@ const GuidedRegenerateActionBtn = memo(function GuidedRegenerateActionBtn({
 }) {
   const { t: localizeUi } = useUiTranslation();
   const guideGenerations = useUIStore((state) => state.guideGenerations);
-  const hasCurrentInput = useChatStore((state) => state.hasCurrentInput);
-  const isGuided = guideGenerations && hasCurrentInput;
+  const isGuided = useChatStore((state) => guideGenerations && state.hasCurrentInput);
   return (
     <ActionBtn
       icon={<RefreshCw size={MESSAGE_ACTION_ICON_SIZE} />}

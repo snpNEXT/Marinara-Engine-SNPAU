@@ -72,7 +72,7 @@ import {
 } from "@marinara-engine/shared";
 import { resolveLiveConversationStatus } from "../../lib/conversation-presence-status";
 import { useUIStore } from "../../stores/ui.store";
-import { useAgentStore } from "../../stores/agent.store";
+import { useAgentStore, EMPTY_AGENT_TYPES } from "../../stores/agent.store";
 import { illustratorRetryTargetsForFailures } from "../../lib/agent-failures";
 import { cn, parseAvatarCropJson } from "../../lib/utils";
 import { Modal } from "../ui/Modal";
@@ -510,6 +510,10 @@ export function ChatArea() {
   const streamingChatId = useChatStore((s) => s.streamingChatId);
   const isStreamingGlobal = useChatStore((s) => s.isStreaming);
   const isStreaming = isStreamingGlobal && streamingChatId === activeChatId;
+  const isBackgroundIllustration = useChatStore((s) =>
+    activeChatId ? s.backgroundIllustrationChatIds.has(activeChatId) : false,
+  );
+  const isTextStreaming = isStreaming && !isBackgroundIllustration;
   const isPageActive = usePageActivity();
   const regenerateMessageId = useChatStore((s) => s.regenerateMessageId);
   const chatBackground = useUIStore((s) => s.chatBackground);
@@ -765,7 +769,7 @@ export function ChatArea() {
   const setActiveChatId = useChatStore((s) => s.setActiveChatId);
   const pendingNewChatMode = useChatStore((s) => s.pendingNewChatMode);
   const failedAgentTypes = useAgentStore((s) =>
-    activeChatId && s.failedAgentChatId && s.failedAgentChatId !== activeChatId ? [] : s.failedAgentTypes,
+    activeChatId && s.failedAgentChatId && s.failedAgentChatId !== activeChatId ? EMPTY_AGENT_TYPES : s.failedAgentTypes,
   );
   const agentProcessing = useAgentStore((s) =>
     activeChatId ? s.processingChatIds.includes(activeChatId) : s.isProcessing,
@@ -2290,7 +2294,7 @@ export function ChatArea() {
       if (event.repeat || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
       if (!latestMessageForEdit) return;
       // Don't try to edit a message that's currently streaming/regenerating.
-      if (isStreaming || agentProcessing) return;
+      if (isTextStreaming || (agentProcessing && !isBackgroundIllustration)) return;
 
       const target = event.target;
       if (target instanceof Element) {
@@ -2322,9 +2326,10 @@ export function ChatArea() {
     agentProcessing,
     chatMode,
     editLastMessageOnArrowUp,
+    isBackgroundIllustration,
     intuitiveSwipeBlocked,
     isRoleplay,
-    isStreaming,
+    isTextStreaming,
     latestMessageForEdit,
   ]);
 
@@ -3311,7 +3316,8 @@ export function ChatArea() {
           isLoading={isLoading}
           hasNextPage={!!hasNextPage}
           isFetchingNextPage={isFetchingNextPage}
-          isStreaming={isStreaming}
+          isStreaming={isTextStreaming}
+          generationVisualsPaused={isStreaming || agentProcessing}
           agentProcessing={agentProcessing}
           regenerateMessageId={regenerateMessageId}
           shouldAnimateMessages={shouldAnimateMessages}

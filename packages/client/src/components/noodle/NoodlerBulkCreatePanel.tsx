@@ -58,7 +58,7 @@ function NoodlerBulkCreatePanel() {
 
   const create = () => {
     bulkCreate.mutate(
-      { publicAccountIds: Array.from(selected), disclosureMode },
+      { noodleAccountIds: Array.from(selected), disclosureMode },
       {
         // Keep the selection on failure so the user can retry.
         onSuccess: () => setSelected(new Set()),

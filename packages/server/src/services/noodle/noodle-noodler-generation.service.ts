@@ -1,12 +1,12 @@
 import {
-  NOODLE_PRIVATE_POST_CONTENT_MAX_LENGTH,
-  NOODLE_PRIVATE_POST_TITLE_MAX_LENGTH,
+  NOODLER_POST_CONTENT_MAX_LENGTH,
+  NOODLER_POST_TITLE_MAX_LENGTH,
   createNoodlePoll,
-  noodleGeneratedPrivatePostSchema,
+  noodleGeneratedNoodlerPostSchema,
   type APIProvider,
   type NoodleAccount,
   type NoodleIdentityDisclosure,
-  type NoodlePrivateGenerationRequest,
+  type NoodlerGenerationRequest,
   type NoodleStageProfileInput,
   type NoodlerManagedPost,
 } from "@marinara-engine/shared";
@@ -26,31 +26,31 @@ import { createConnectionsStorage } from "../storage/connections.storage.js";
 import { createNoodleStorage } from "../storage/noodle.storage.js";
 import { createPromptOverridesStorage } from "../storage/prompt-overrides.storage.js";
 import { formatNoodleMessagesForLog } from "./noodle-generation-log.js";
-import { generatePrivatePostImage } from "./noodle-private-images.service.js";
+import { generateNoodlerPostImage } from "./noodle-noodler-images.service.js";
 import {
-  persistPrivatePostWithUploadedMedia,
-  privatePostMediaUrl,
-  type NoodlerPrivatePostMediaUpload,
-} from "./noodle-private-media.js";
+  persistNoodlerPostWithUploadedMedia,
+  noodlerPostMediaUrl,
+  type NoodlerPostMediaUpload,
+} from "./noodle-noodler-media.js";
 import type { NoodleImagePromptReviewItem } from "./noodle-public-images.service.js";
 import { getErrorMessage } from "./noodle-public-support.js";
 import { noodleResponseFormat } from "./noodle-response-format.js";
 
-export type GeneratedPrivatePostResult = {
+export type GeneratedNoodlerPostResult = {
   post: NoodlerManagedPost;
   imagePromptReview: NoodleImagePromptReviewItem | null;
 };
 
 type GenerationConnection = NonNullable<Awaited<ReturnType<ReturnType<typeof createConnectionsStorage>["getWithKey"]>>>;
 
-export type PrivatePostGenerationInput = {
+export type NoodlerPostGenerationInput = {
   account: NoodleAccount;
-  request: NoodlePrivateGenerationRequest;
+  request: NoodlerGenerationRequest;
   connection: GenerationConnection;
-  media?: NoodlerPrivatePostMediaUpload;
+  media?: NoodlerPostMediaUpload;
 };
 
-const PRIVATE_POST_MAX_TOKENS = 2048;
+const NOODLER_POST_MAX_TOKENS = 2048;
 
 type PublicIdentity = { displayName: string; handle: string };
 
@@ -84,7 +84,7 @@ export function stageProfileContainsPublicIdentity(
   );
 }
 
-export function protectPrivateGeneratedIdentity(
+export function protectNoodlerGeneratedIdentity(
   value: string | null | undefined,
   mode: NoodleIdentityDisclosure,
   publicIdentity: PublicIdentity | null,
@@ -108,21 +108,21 @@ export function protectPrivateGeneratedIdentity(
     .trim();
 }
 
-function protectBoundedPrivateGeneratedText(
+function protectBoundedNoodlerGeneratedText(
   value: string | null | undefined,
   mode: NoodleIdentityDisclosure,
   publicIdentity: PublicIdentity | null,
   maxLength: number,
 ): string | null {
-  const protectedValue = protectPrivateGeneratedIdentity(value, mode, publicIdentity);
+  const protectedValue = protectNoodlerGeneratedIdentity(value, mode, publicIdentity);
   if (!protectedValue || protectedValue.length <= maxLength) return protectedValue;
   const lastCodeUnit = protectedValue.charCodeAt(maxLength - 1);
   const safeEnd = lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff ? maxLength - 1 : maxLength;
   return protectedValue.slice(0, safeEnd).trimEnd();
 }
 
-function formatPrivatePostHistory(posts: NoodlerManagedPost[], protect: (value: string) => string): string {
-  if (posts.length === 0) return "No previous posts on this private page.";
+function formatNoodlerPostHistory(posts: NoodlerManagedPost[], protect: (value: string) => string): string {
+  if (posts.length === 0) return "No previous posts on this NoodleR page.";
   return posts
     .slice()
     .reverse()
@@ -130,23 +130,23 @@ function formatPrivatePostHistory(posts: NoodlerManagedPost[], protect: (value: 
     .join("\n");
 }
 
-export function buildPrivatePostMessages(input: {
+export function buildNoodlerPostMessages(input: {
   account: Pick<NoodleAccount, "displayName" | "handle" | "bio">;
   stagePersonality: string;
   disclosureMode: NoodleIdentityDisclosure;
   publicIdentity: PublicIdentity | null;
   recentPosts: NoodlerManagedPost[];
-  request: Pick<NoodlePrivateGenerationRequest, "privatePostGuide" | "privateProjectWork">;
+  request: Pick<NoodlerGenerationRequest, "noodlerPostGuide" | "noodlerProjectWork">;
   allowImagePrompt: boolean;
   generationGuidance: string;
 }): ChatMessage[] {
   const protect = (value: string) =>
-    protectPrivateGeneratedIdentity(value, input.disclosureMode, input.publicIdentity) ?? "";
+    protectNoodlerGeneratedIdentity(value, input.disclosureMode, input.publicIdentity) ?? "";
   const guidance = input.generationGuidance.trim();
   const system = [
-    "You write exactly one post for one private NoodleR creator page in Marinara Engine.",
-    "Write only as the supplied private account. Do not create other accounts, interactions, follows, or public timeline activity.",
-    "Use the private stage profile as supplied.",
+    "You write exactly one post for one NoodleR creator page in Marinara Engine.",
+    "Write only as the supplied NoodleR account. Do not create other accounts, interactions, follows, or public timeline activity.",
+    "Use the NoodleR stage profile as supplied.",
     ...(guidance ? [guidance] : []),
     identityInstruction(input.disclosureMode, input.publicIdentity),
     "Write a concise title and a body for the post.",
@@ -156,17 +156,17 @@ export function buildPrivatePostMessages(input: {
     "Return JSON only. No prose outside the JSON object.",
   ].join("\n");
   const user = [
-    "# Private account",
+    "# NoodleR account",
     `Display name: ${protect(input.account.displayName)}`,
     `Handle: @${protect(input.account.handle)}`,
     `Bio: ${protect(input.account.bio) || "No bio provided."}`,
     `Stage voice: ${protect(input.stagePersonality) || "No additional stage voice provided."}`,
     "",
-    "# Recent private posts",
-    formatPrivatePostHistory(input.recentPosts, protect),
-    ...(input.request.privatePostGuide ? ["", "# Post direction", protect(input.request.privatePostGuide)] : []),
-    ...(input.request.privateProjectWork
-      ? ["", "# Project work direction", protect(input.request.privateProjectWork)]
+    "# Recent NoodleR posts",
+    formatNoodlerPostHistory(input.recentPosts, protect),
+    ...(input.request.noodlerPostGuide ? ["", "# Post direction", protect(input.request.noodlerPostGuide)] : []),
+    ...(input.request.noodlerProjectWork
+      ? ["", "# Project work direction", protect(input.request.noodlerProjectWork)]
       : []),
   ].join("\n");
   return [
@@ -175,14 +175,14 @@ export function buildPrivatePostMessages(input: {
   ];
 }
 
-function parsePrivatePost(content: string) {
-  return noodleGeneratedPrivatePostSchema.parse(parseGameJsonish(content));
+function parseNoodlerPost(content: string) {
+  return noodleGeneratedNoodlerPostSchema.parse(parseGameJsonish(content));
 }
 
-export async function generatePrivatePost(
+export async function generateNoodlerPost(
   db: DB,
-  input: PrivatePostGenerationInput,
-): Promise<GeneratedPrivatePostResult> {
+  input: NoodlerPostGenerationInput,
+): Promise<GeneratedNoodlerPostResult> {
   const noodle = createNoodleStorage(db);
   const { account } = input;
   const settings = await noodle.getSettings();
@@ -208,13 +208,13 @@ export async function generatePrivatePost(
     fallbackBaseUrl: fallbackConnection ? resolveBaseUrl(fallbackConnection) : "",
     category: "main",
   });
-  const recentPosts = await noodle.listPrivatePostsByAccount(account.id, 8);
+  const recentPosts = await noodle.listNoodlerPostsByAccount(account.id, 8);
   const disclosureMode = account.settings.privacy.identityDisclosure ?? "secret";
-  const linkedPublicAccount = account.publicAccountId ? await noodle.getAccountById(account.publicAccountId) : null;
+  const linkedPublicAccount = account.noodleAccountId ? await noodle.getAccountById(account.noodleAccountId) : null;
   const publicIdentity = linkedPublicAccount
     ? { displayName: linkedPublicAccount.displayName, handle: linkedPublicAccount.handle }
     : null;
-  const messages = buildPrivatePostMessages({
+  const messages = buildNoodlerPostMessages({
     account,
     stagePersonality: account.settings.privacy.stagePersonality ?? "",
     disclosureMode,
@@ -222,7 +222,7 @@ export async function generatePrivatePost(
     recentPosts,
     request: input.request,
     allowImagePrompt: imagesEnabled,
-    generationGuidance: settings.privateGenerationGuidance,
+    generationGuidance: settings.noodlerGenerationGuidance,
   });
   const debugMode = input.request.debugMode === true || isDebugAgentsEnabled();
   logDebugOverride(debugMode, "[debug/noodler] Prompt sent to model:\n%s", formatNoodleMessagesForLog(messages));
@@ -231,7 +231,7 @@ export async function generatePrivatePost(
     maxTokens: clampGenerationMaxOutputTokens({
       provider: input.connection.provider as APIProvider,
       model: input.connection.model,
-      maxTokens: resolveStoredMaxTokens(input.connection.defaultParameters, PRIVATE_POST_MAX_TOKENS),
+      maxTokens: resolveStoredMaxTokens(input.connection.defaultParameters, NOODLER_POST_MAX_TOKENS),
       maxTokensOverride: input.connection.maxTokensOverride,
     }),
     temperature: 0.9,
@@ -243,7 +243,7 @@ export async function generatePrivatePost(
     ),
     stream: false,
     debugMode,
-    responseFormat: noodleResponseFormat(input.connection.model, "private_post"),
+    responseFormat: noodleResponseFormat(input.connection.model, "noodler_post"),
   } as const;
 
   let response = await provider.chatComplete(messages, completionOptions);
@@ -251,7 +251,7 @@ export async function generatePrivatePost(
   logDebugOverride(debugMode, "[debug/noodler] Raw model response (attempt 1):\n%s", content);
   let generated;
   try {
-    generated = parsePrivatePost(content);
+    generated = parseNoodlerPost(content);
   } catch (error) {
     const correctionMessages: ChatMessage[] = [
       ...messages,
@@ -259,7 +259,7 @@ export async function generatePrivatePost(
       {
         role: "user",
         content:
-          "The response was not one valid private-post JSON object. Return exactly one object with title and content only. Do not include a poll or image prompt. Return JSON only.",
+          "The response was not one valid NoodleR-post JSON object. Return exactly one object with title and content only. Do not include a poll or image prompt. Return JSON only.",
       },
     ];
     logDebugOverride(
@@ -270,28 +270,28 @@ export async function generatePrivatePost(
     response = await provider.chatComplete(correctionMessages, completionOptions);
     content = response.content ?? "";
     logDebugOverride(debugMode, "[debug/noodler] Raw model response (attempt 2):\n%s", content);
-    generated = parsePrivatePost(content);
+    generated = parseNoodlerPost(content);
   }
 
   const protectedGenerated = {
-    title: protectBoundedPrivateGeneratedText(
+    title: protectBoundedNoodlerGeneratedText(
       generated.title,
       disclosureMode,
       publicIdentity,
-      NOODLE_PRIVATE_POST_TITLE_MAX_LENGTH,
+      NOODLER_POST_TITLE_MAX_LENGTH,
     ),
-    content: protectBoundedPrivateGeneratedText(
+    content: protectBoundedNoodlerGeneratedText(
       generated.content,
       disclosureMode,
       publicIdentity,
-      NOODLE_PRIVATE_POST_CONTENT_MAX_LENGTH,
+      NOODLER_POST_CONTENT_MAX_LENGTH,
     ),
   };
-  if (!protectedGenerated.content) throw new Error("Private generation returned no usable post content.");
+  if (!protectedGenerated.content) throw new Error("NoodleR generation returned no usable post content.");
 
   // Identity protection applies to the image prompt too, not only post text.
   const draftImagePrompt = imagesEnabled
-    ? protectPrivateGeneratedIdentity(generated.imagePrompt, disclosureMode, publicIdentity)
+    ? protectNoodlerGeneratedIdentity(generated.imagePrompt, disclosureMode, publicIdentity)
     : null;
 
   const baseInput = {
@@ -310,25 +310,25 @@ export async function generatePrivatePost(
   const persist = async (
     extra: { id?: string; imagePrompt?: string | null; imageUrl?: string | null; metadata?: Record<string, unknown> } = {},
   ): Promise<NoodlerManagedPost> => {
-    const post = await noodle.createPrivatePost({
+    const post = await noodle.createNoodlerPost({
       ...baseInput,
       ...extra,
       metadata: { ...baseInput.metadata, ...extra.metadata },
     });
-    if (!post) throw new Error("Failed to persist the generated private NoodleR post.");
+    if (!post) throw new Error("Failed to persist the generated NoodleR post.");
     return post;
   };
 
   if (input.media) {
     const postId = newId();
-    const post = await persistPrivatePostWithUploadedMedia(account.id, postId, input.media, (persistedMedia) =>
+    const post = await persistNoodlerPostWithUploadedMedia(account.id, postId, input.media, (persistedMedia) =>
       persist({
         id: postId,
         imageUrl: persistedMedia.imageUrl,
-        metadata: { privateMediaPath: persistedMedia.privateMediaPath },
+        metadata: { noodlerMediaPath: persistedMedia.noodlerMediaPath },
       }),
     );
-    if (!post) throw new Error("Failed to persist the generated private NoodleR post.");
+    if (!post) throw new Error("Failed to persist the generated NoodleR post.");
     return { post, imagePromptReview: null };
   }
 
@@ -365,7 +365,7 @@ export async function generatePrivatePost(
   // reviewed-image confirmation route to claim and finalize later.
   if (input.request.reviewImagePromptsBeforeSend === true) {
     try {
-      const preview = await generatePrivatePostImage({ ...imageInput, previewOnly: true });
+      const preview = await generateNoodlerPostImage({ ...imageInput, previewOnly: true });
       const post = await persist({ imagePrompt: draftImagePrompt, metadata: { imagePendingReview: true } });
       return {
         post,
@@ -384,11 +384,11 @@ export async function generatePrivatePost(
 
   // Immediate generation: only a provider failure falls back to a text-only post. Persistence
   // failures propagate so a single run can never both persist an image post and a text fallback.
-  let image: Awaited<ReturnType<typeof generatePrivatePostImage>>;
+  let image: Awaited<ReturnType<typeof generateNoodlerPostImage>>;
   try {
-    image = await generatePrivatePostImage({ ...imageInput, previewOnly: false });
+    image = await generateNoodlerPostImage({ ...imageInput, previewOnly: false });
   } catch (err) {
-    logger.warn(err, "[noodler] Failed to generate private image for %s", account.displayName);
+    logger.warn(err, "[noodler] Failed to generate image for %s", account.displayName);
     return {
       post: await persist({
         metadata: { imageGenerationFailed: true, imageGenerationError: getErrorMessage(err).slice(0, 500) },
@@ -405,7 +405,7 @@ export async function generatePrivatePost(
     const post = await persist({
       id: postId,
       imagePrompt: draftImagePrompt,
-      imageUrl: privatePostMediaUrl(postId),
+      imageUrl: noodlerPostMediaUrl(postId),
       metadata: image.metadata,
     });
     return { post, imagePromptReview: null };

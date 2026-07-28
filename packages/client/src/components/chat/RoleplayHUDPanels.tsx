@@ -159,7 +159,7 @@ function HudFieldLockButton({
       type="button"
       onClick={onToggle}
       title={locked ?localizeUi("ui.chat.hudfieldlockbutton.unlockField") :localizeUi("ui.chat.hudfieldlockbutton.lockField")}
-      aria-label={localizeUi("ui.chat.scheduletimeline.value1Value2", { value1: locked ?localizeUi("ui.noodle.lockedprivatepostcard.unlock") :localizeUi("ui.chat.hudfieldlockbutton.lock"), value2: label })}
+      aria-label={localizeUi("ui.chat.scheduletimeline.value1Value2", { value1: locked ?localizeUi("ui.noodle.lockednoodlerpostcard.unlock") :localizeUi("ui.chat.hudfieldlockbutton.lock"), value2: label })}
       aria-pressed={locked}
       className={cn(
         "flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--muted-foreground)]/55 opacity-70 ring-1 ring-transparent transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-[var(--border)] active:scale-90 max-md:opacity-100",

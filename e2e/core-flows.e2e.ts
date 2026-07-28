@@ -617,6 +617,74 @@ test("settings profile exports use the new identity and legacy exports still imp
   }
 });
 
+test("settings profiles cannot carry Hierarchical Maps state into another chat", async ({ request }, testInfo) => {
+  test.skip(!testInfo.project.name.includes("desktop"), "Settings profile map isolation is covered once.");
+
+  const suffix = Date.now().toString(36);
+  let profileId = "";
+  let chatId = "";
+  const profileResponse = await request.post("/api/chat-presets", {
+    data: {
+      name: `Map Isolation ${suffix}`,
+      mode: "roleplay",
+      settings: {
+        metadata: {
+          enableAgents: true,
+          activeAgentIds: ["hierarchical-maps"],
+          spatialContext: { locations: [{ id: "falmart", name: "Falmart" }] },
+          spatialContextHierarchyProfile: { name: "Inherited map hierarchy" },
+          spatialMapGenerationPreferences: { activeOptionId: "inherited-map-option" },
+        },
+      },
+    },
+  });
+  expect(profileResponse.ok(), await profileResponse.text()).toBeTruthy();
+  const profile = (await profileResponse.json()) as {
+    id: string;
+    settings: { metadata?: Record<string, unknown> };
+  };
+  profileId = profile.id;
+
+  try {
+    expect(profile.settings.metadata).toMatchObject({
+      enableAgents: true,
+      activeAgentIds: ["hierarchical-maps"],
+    });
+    expect(profile.settings.metadata).not.toHaveProperty("spatialContext");
+    expect(profile.settings.metadata).not.toHaveProperty("spatialContextHierarchyProfile");
+    expect(profile.settings.metadata).not.toHaveProperty("spatialMapGenerationPreferences");
+
+    const chatResponse = await request.post("/api/chats", {
+      data: {
+        name: `Fresh RP without inherited map ${suffix}`,
+        mode: "roleplay",
+        characterIds: [],
+      },
+    });
+    expect(chatResponse.ok(), await chatResponse.text()).toBeTruthy();
+    const chat = (await chatResponse.json()) as { id: string };
+    chatId = chat.id;
+
+    const applyResponse = await request.post(`/api/chat-presets/${profile.id}/apply/${chat.id}`);
+    expect(applyResponse.ok(), await applyResponse.text()).toBeTruthy();
+    const appliedChatResponse = await request.get(`/api/chats/${chat.id}`);
+    expect(appliedChatResponse.ok(), await appliedChatResponse.text()).toBeTruthy();
+    const appliedChat = (await appliedChatResponse.json()) as { metadata?: Record<string, unknown> };
+    expect(appliedChat.metadata).toMatchObject({
+      enableAgents: true,
+      activeAgentIds: ["hierarchical-maps"],
+    });
+    expect(appliedChat.metadata).not.toHaveProperty("spatialContext");
+    expect(appliedChat.metadata).not.toHaveProperty("spatialContextHierarchyProfile");
+    expect(appliedChat.metadata).not.toHaveProperty("spatialMapGenerationPreferences");
+  } finally {
+    await Promise.allSettled([
+      chatId ? request.delete(`/api/chats/${chatId}`) : Promise.resolve(),
+      profileId ? request.delete(`/api/chat-presets/${profileId}`) : Promise.resolve(),
+    ]);
+  }
+});
+
 test("Author's Notes keeps its expand and full macro guide inside the field", async ({ page, request }, testInfo) => {
   test.skip(!testInfo.project.name.includes("desktop"), "Author's Notes field chrome is covered on desktop.");
 
@@ -1218,6 +1286,77 @@ test("connection model fetch errors inherit the configured editor accent", async
     await expect(internalErrorText).toBeVisible();
     await expect(internalErrorText).toHaveCSS("color", accentColor);
     expect(await internalErrorText.getAttribute("class")).not.toMatch(/destructive|pink|red|rose/iu);
+  } finally {
+    await page.request.delete(`/api/connections/${connection.id}`).catch(() => undefined);
+  }
+});
+
+test("connection test-message errors inherit the configured editor accent", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name.includes("mobile"), "Desktop connection editor chrome is covered here.");
+
+  const connectionResponse = await page.request.post("/api/connections", {
+    data: {
+      name: "Connection Message Error Chroma",
+      provider: "custom",
+      baseUrl: "https://example.invalid",
+      model: "accent-test-model",
+    },
+  });
+  expect(connectionResponse.ok()).toBeTruthy();
+  const connection = (await connectionResponse.json()) as { id: string };
+  const internalServerError = "Internal Server Error";
+  const accentColor = "rgb(20, 184, 166)";
+
+  try {
+    await page.route(`**/api/connections/${connection.id}/test-message`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          success: false,
+          response: "",
+          latencyMs: 1,
+          error: internalServerError,
+        }),
+      });
+    });
+    await page.goto("/");
+    await page.evaluate(async (accent) => {
+      const { useUIStore } = (await import("/src/stores/ui.store.ts")) as {
+        useUIStore: {
+          getState: () => {
+            setAppAccentColor: (color: string) => void;
+          };
+        };
+      };
+      useUIStore.getState().setAppAccentColor(accent);
+    }, "#14b8a6");
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          getComputedStyle(document.documentElement).getPropertyValue("--marinara-app-accent-static").trim(),
+        ),
+      )
+      .toBe("#14b8a6");
+    await page.evaluate(() => {
+      document.documentElement.style.setProperty("--destructive", "rgb(255, 0, 0)");
+    });
+
+    await page.locator('[data-tour="panel-connections"]').click();
+    const rightPanel = page.locator('[data-component="RightPanelDesktop"]');
+    await rightPanel
+      .getByText("Connection Message Error Chroma", { exact: true })
+      .first()
+      .evaluate((element) => (element as HTMLElement).click());
+
+    const editor = page.locator(".mari-editor-shell");
+    await expect(editor).toBeVisible();
+    await editor.getByRole("button", { name: "Send Test Message" }).click();
+
+    const errorText = editor.getByText(internalServerError, { exact: true });
+    await expect(errorText).toBeVisible();
+    await expect(errorText).toHaveCSS("color", accentColor);
+    expect(await errorText.getAttribute("class")).not.toMatch(/destructive|pink|red|rose/iu);
   } finally {
     await page.request.delete(`/api/connections/${connection.id}`).catch(() => undefined);
   }
@@ -2761,149 +2900,149 @@ test("Personal Extensions default to the Professor Mari-only locked workflow", a
   expect(warningColors.warning).toBe(warningColors.accent);
 });
 
-test(
-  "external Agent imports require the Danger Zone gate and explicit capabilities",
-  async ({ page, request }, testInfo) => {
-    test.skip(
-      testInfo.project.name !== "mobile-chromium",
-      "This stateful import-policy flow runs once against the shared test server",
-    );
+test("external Agent imports require the Danger Zone gate and explicit capabilities", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.skip(
+    testInfo.project.name !== "mobile-chromium",
+    "This stateful import-policy flow runs once against the shared test server",
+  );
 
-    const disabledPolicy = await request.patch("/api/agents/import-policy", { data: { enabled: false } });
-    expect(disabledPolicy.ok()).toBeTruthy();
+  const disabledPolicy = await request.patch("/api/agents/import-policy", { data: { enabled: false } });
+  expect(disabledPolicy.ok()).toBeTruthy();
 
-    const testSuffix = Date.now().toString(36);
-    const localAgentName = `Locally Authored Agent ${testSuffix}`;
-    const importedAgentName = `Permission Review Agent ${testSuffix}`;
-    let localAgentId: string | undefined;
-    let importedAgentId: string | undefined;
-    try {
-      const localAgentResponse = await request.post("/api/agents", {
-        data: {
-          type: `e2e-local-agent-${testSuffix}`,
-          name: localAgentName,
-          description: "Must remain creatable while external imports are locked.",
-          phase: "parallel",
+  const testSuffix = Date.now().toString(36);
+  const localAgentName = `Locally Authored Agent ${testSuffix}`;
+  const importedAgentName = `Permission Review Agent ${testSuffix}`;
+  let localAgentId: string | undefined;
+  let importedAgentId: string | undefined;
+  try {
+    const localAgentResponse = await request.post("/api/agents", {
+      data: {
+        type: `e2e-local-agent-${testSuffix}`,
+        name: localAgentName,
+        description: "Must remain creatable while external imports are locked.",
+        phase: "parallel",
+        connectionId: null,
+        imagePath: null,
+        promptTemplate: "Return a short note.",
+        settings: { resultType: "context_injection", customCapabilities: {} },
+      },
+    });
+    expect(localAgentResponse.ok()).toBeTruthy();
+    const localAgent = (await localAgentResponse.json()) as { id: string };
+    localAgentId = localAgent.id;
+
+    const blockedImport = await request.post("/api/agents/import", {
+      data: {
+        agent: {
+          type: "untrusted-haptic",
+          name: "Blocked External Agent",
+          description: "",
+          phase: "post_processing",
           connectionId: null,
           imagePath: null,
-          promptTemplate: "Return a short note.",
-          settings: { resultType: "context_injection", customCapabilities: {} },
+          resultType: "haptic_command",
+          promptTemplate: "Return a haptic command.",
+          settings: { customCapabilities: { control_haptics: true } },
         },
-      });
-      expect(localAgentResponse.ok()).toBeTruthy();
-      const localAgent = (await localAgentResponse.json()) as { id: string };
-      localAgentId = localAgent.id;
+        source: "file",
+        approvedCapabilities: ["control_haptics"],
+        acknowledgePermissions: true,
+      },
+    });
+    expect(blockedImport.status()).toBe(403);
 
-      const blockedImport = await request.post("/api/agents/import", {
-        data: {
-          agent: {
-            type: "untrusted-haptic",
-            name: "Blocked External Agent",
-            description: "",
-            phase: "post_processing",
-            connectionId: null,
-            imagePath: null,
-            resultType: "haptic_command",
-            promptTemplate: "Return a haptic command.",
-            settings: { customCapabilities: { control_haptics: true } },
-          },
-          source: "file",
-          approvedCapabilities: ["control_haptics"],
-          acknowledgePermissions: true,
-        },
-      });
-      expect(blockedImport.status()).toBe(403);
+    await page.goto("/");
+    await page.locator('[data-tour="panel-agents"]').click();
+    const disabledHelp = 'Enable "Allow custom Agent imports" in Advanced Settings → Danger Zone first.';
+    const lockedImportButton = page.getByTitle(disabledHelp).first();
+    await expect(lockedImportButton).toHaveAttribute("aria-disabled", "true");
+    await lockedImportButton.dispatchEvent("click");
+    await expect(page.getByText(disabledHelp, { exact: true }).last()).toBeVisible();
 
-      await page.goto("/");
-      await page.locator('[data-tour="panel-agents"]').click();
-      const disabledHelp = 'Enable "Allow custom Agent imports" in Advanced Settings → Danger Zone first.';
-      const lockedImportButton = page.getByTitle(disabledHelp).first();
-      await expect(lockedImportButton).toHaveAttribute("aria-disabled", "true");
-      await lockedImportButton.dispatchEvent("click");
-      await expect(page.getByText(disabledHelp, { exact: true }).last()).toBeVisible();
+    await page.locator('[data-tour="panel-settings"]').click();
+    await page.getByRole("tab", { name: "Advanced" }).click();
+    const agentImportToggle = page.getByLabel("Allow custom Agent imports");
+    const extensionImportToggle = page.getByLabel("Allow third-party extension imports");
+    await expect(agentImportToggle).toBeEnabled();
+    await expect(agentImportToggle).not.toBeChecked();
+    expect(
+      await agentImportToggle.evaluate((toggle) => {
+        const extensionLabel = [...document.querySelectorAll("label")].find(
+          (label) => label.textContent?.trim() === "Allow third-party extension imports",
+        );
+        const extension =
+          extensionLabel instanceof HTMLLabelElement ? document.getElementById(extensionLabel.htmlFor) : null;
+        return Boolean(
+          extension && (toggle.compareDocumentPosition(extension) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+        );
+      }),
+    ).toBe(true);
 
-      await page.locator('[data-tour="panel-settings"]').click();
-      await page.getByRole("tab", { name: "Advanced" }).click();
-      const agentImportToggle = page.getByLabel("Allow custom Agent imports");
-      const extensionImportToggle = page.getByLabel("Allow third-party extension imports");
-      await expect(agentImportToggle).toBeEnabled();
-      await expect(agentImportToggle).not.toBeChecked();
-      expect(
-        await agentImportToggle.evaluate((toggle) => {
-          const extensionLabel = [...document.querySelectorAll("label")].find(
-            (label) => label.textContent?.trim() === "Allow third-party extension imports",
-          );
-          const extension =
-            extensionLabel instanceof HTMLLabelElement
-              ? document.getElementById(extensionLabel.htmlFor)
-              : null;
-          return Boolean(
-            extension && (toggle.compareDocumentPosition(extension) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
-          );
+    const enabledPolicy = await request.patch("/api/agents/import-policy", { data: { enabled: true } });
+    expect(enabledPolicy.ok()).toBeTruthy();
+    await page.reload();
+    await page.locator('[data-tour="panel-agents"]').click();
+    await expect(page.getByTitle("Import agents")).toHaveAttribute("aria-disabled", "false");
+
+    const packageInput = page
+      .getByRole("region", { name: "Agents" })
+      .locator('input[type="file"][accept*="application/json"]');
+    await packageInput.setInputFiles({
+      name: "permission-review-agent.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(
+        JSON.stringify({
+          type: "untrusted-haptic",
+          name: importedAgentName,
+          description: "Requests haptic control.",
+          phase: "post_processing",
+          resultType: "haptic_command",
+          promptTemplate: "Return a haptic command.",
+          settings: { customCapabilities: { control_haptics: true } },
         }),
-      ).toBe(true);
+      ),
+    });
 
-      const enabledPolicy = await request.patch("/api/agents/import-policy", { data: { enabled: true } });
-      expect(enabledPolicy.ok()).toBeTruthy();
-      await page.reload();
-      await page.locator('[data-tour="panel-agents"]').click();
-      await expect(page.getByTitle("Import agents")).toHaveAttribute("aria-disabled", "false");
+    await expect(page.getByRole("dialog", { name: "Review Agent Import Permissions" })).toBeVisible();
+    const hapticPermission = page.getByLabel("Control haptic devices");
+    await expect(hapticPermission).not.toBeChecked();
+    await hapticPermission.check();
+    await expect(hapticPermission).toBeChecked();
+    await page.getByRole("button", { name: "Approve Permissions and Import" }).click();
+    await expect(page.getByRole("dialog", { name: "Review Agent Import Permissions" })).toHaveCount(0);
 
-      const packageInput = page.locator('input[type="file"][accept*="application/json"]');
-      await packageInput.setInputFiles({
-        name: "permission-review-agent.json",
-        mimeType: "application/json",
-        buffer: Buffer.from(
-          JSON.stringify({
-            type: "untrusted-haptic",
-            name: importedAgentName,
-            description: "Requests haptic control.",
-            phase: "post_processing",
-            resultType: "haptic_command",
-            promptTemplate: "Return a haptic command.",
-            settings: { customCapabilities: { control_haptics: true } },
-          }),
-        ),
-      });
-
-      await expect(page.getByRole("dialog", { name: "Review Agent Import Permissions" })).toBeVisible();
-      const hapticPermission = page.getByLabel("Control haptic devices");
-      await expect(hapticPermission).not.toBeChecked();
-      await hapticPermission.check();
-      await expect(hapticPermission).toBeChecked();
-      await page.getByRole("button", { name: "Approve Permissions and Import" }).click();
-      await expect(page.getByRole("dialog", { name: "Review Agent Import Permissions" })).toHaveCount(0);
-
-      const agentsResponse = await request.get("/api/agents");
-      expect(agentsResponse.ok()).toBeTruthy();
-      const agents = (await agentsResponse.json()) as Array<{ id: string; name: string; settings: string }>;
-      const importedAgent = agents.find((agent) => agent.name === importedAgentName);
-      expect(importedAgent).toBeTruthy();
-      importedAgentId = importedAgent?.id;
-      const importedSettings = JSON.parse(importedAgent!.settings) as Record<string, unknown>;
-      expect(importedSettings.customAgentImportSource).toBe("file");
-      expect(importedSettings.customAgentPermissionsExplicit).toBe(true);
-      expect(importedSettings.customCapabilities).toEqual({ control_haptics: true });
-    } finally {
-      try {
-        if (!localAgentId || !importedAgentId) {
-          const cleanupAgentsResponse = await request.get("/api/agents").catch(() => null);
-          if (cleanupAgentsResponse?.ok()) {
-            const cleanupAgents = (await cleanupAgentsResponse.json()) as Array<{ id: string; name: string }>;
-            localAgentId ??= cleanupAgents.find((agent) => agent.name === localAgentName)?.id;
-            importedAgentId ??= cleanupAgents.find((agent) => agent.name === importedAgentName)?.id;
-          }
+    const agentsResponse = await request.get("/api/agents");
+    expect(agentsResponse.ok()).toBeTruthy();
+    const agents = (await agentsResponse.json()) as Array<{ id: string; name: string; settings: string }>;
+    const importedAgent = agents.find((agent) => agent.name === importedAgentName);
+    expect(importedAgent).toBeTruthy();
+    importedAgentId = importedAgent?.id;
+    const importedSettings = JSON.parse(importedAgent!.settings) as Record<string, unknown>;
+    expect(importedSettings.customAgentImportSource).toBe("file");
+    expect(importedSettings.customAgentPermissionsExplicit).toBe(true);
+    expect(importedSettings.customCapabilities).toEqual({ control_haptics: true });
+  } finally {
+    try {
+      if (!localAgentId || !importedAgentId) {
+        const cleanupAgentsResponse = await request.get("/api/agents").catch(() => null);
+        if (cleanupAgentsResponse?.ok()) {
+          const cleanupAgents = (await cleanupAgentsResponse.json()) as Array<{ id: string; name: string }>;
+          localAgentId ??= cleanupAgents.find((agent) => agent.name === localAgentName)?.id;
+          importedAgentId ??= cleanupAgents.find((agent) => agent.name === importedAgentName)?.id;
         }
-        await Promise.all([
-          localAgentId ? request.delete(`/api/agents/${localAgentId}`).catch(() => undefined) : Promise.resolve(),
-          importedAgentId ? request.delete(`/api/agents/${importedAgentId}`).catch(() => undefined) : Promise.resolve(),
-        ]);
-      } finally {
-        await request.patch("/api/agents/import-policy", { data: { enabled: false } });
       }
+      await Promise.all([
+        localAgentId ? request.delete(`/api/agents/${localAgentId}`).catch(() => undefined) : Promise.resolve(),
+        importedAgentId ? request.delete(`/api/agents/${importedAgentId}`).catch(() => undefined) : Promise.resolve(),
+      ]);
+    } finally {
+      await request.patch("/api/agents/import-policy", { data: { enabled: false } });
     }
-  },
-);
+  }
+});
 
 test("Roleplay Active Context shows rich lorebook activation provenance", async ({ page, request }, testInfo) => {
   const lorebookId = "roleplay-active-context-smoke-lorebook";
@@ -4626,7 +4765,10 @@ test("Backup & Export identifies the automatic backup location", async ({ page }
 
   const backupSection = page.locator("#settings-section-backup-export");
   await expect(backupSection).toBeVisible();
-  await expect(backupSection).toContainText("DATA_DIR/backups/marinara-automatic-backup.zip");
+  await expect(backupSection).toContainText("Automatic backups kept");
+  await expect(backupSection.getByLabel("Number of automatic backups kept")).toHaveValue("1");
+  await expect(backupSection).toContainText("DATA_DIR/backups");
+  await expect(backupSection).toContainText("marinara-automatic-backup.zip");
   await expect(backupSection).toContainText("Docker defaults to /app/data");
   await expect(backupSection).toContainText("On Android, app storage is usually inaccessible");
 });
@@ -5076,6 +5218,11 @@ test("downloadable agent catalog is usable on desktop and mobile", async ({ page
   });
   await page.route("**/api/agents", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+  });
+  // Keep this catalog-only experiment isolated from the server-wide import-policy
+  // mutation exercised by the dedicated Danger Zone flow in the other project.
+  await page.route("**/api/agents/import-policy", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ enabled: true }) });
   });
   await page.route("**/api/custom-agent-repositories", async (route) => {
     await route.fulfill({
@@ -7712,13 +7859,18 @@ test("streamed profile and full-backup ZIPs round-trip through import preview", 
   try {
     const automaticSettingsResponse = await request.get("/api/backup/automatic");
     expect(automaticSettingsResponse.ok()).toBeTruthy();
-    const automaticSettings = (await automaticSettingsResponse.json()) as { enabled: boolean };
+    const automaticSettings = (await automaticSettingsResponse.json()) as {
+      enabled: boolean;
+      retentionCount: number;
+    };
     expect(automaticSettings.enabled).toBe(false);
+    expect(automaticSettings.retentionCount).toBeGreaterThanOrEqual(1);
 
     const enableAutomaticResponse = await request.put("/api/backup/automatic", {
-      data: { enabled: true, frequency: "daily" },
+      data: { enabled: true, frequency: "daily", retentionCount: 3 },
     });
     expect(enableAutomaticResponse.ok()).toBeTruthy();
+    expect(((await enableAutomaticResponse.json()) as { retentionCount: number }).retentionCount).toBe(3);
     await expect
       .poll(
         async () => {
@@ -7775,7 +7927,9 @@ test("streamed profile and full-backup ZIPs round-trip through import preview", 
       expect(preview.imported.characters).toBeGreaterThanOrEqual(1);
     }
   } finally {
-    await request.put("/api/backup/automatic", { data: { enabled: false, frequency: "daily" } }).catch(() => undefined);
+    await request
+      .put("/api/backup/automatic", { data: { enabled: false, frequency: "daily", retentionCount: 1 } })
+      .catch(() => undefined);
     await request.delete(`/api/characters/${character.id}`).catch(() => undefined);
   }
 });
@@ -9551,12 +9705,88 @@ test("mobile chat composer follows the visual viewport above the software keyboa
   }
 });
 
-test("kaomoji scrollbar presses stay inside the picker and use the theme accent", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name.includes("mobile"), "Native desktop scrollbar behavior is desktop-only.");
-
+test("Conversation media searches match GIFs and internal presses keep the picker open", async ({ page }) => {
   const response = await page.request.post("/api/chats", {
     data: {
       name: "Kaomoji Scrollbar Smoke",
+      mode: "conversation",
+      characterIds: [],
+    },
+  });
+  expect(response.ok()).toBeTruthy();
+  const chat = (await response.json()) as { id: string };
+
+  try {
+    await page.addInitScript((chatId) => {
+      localStorage.setItem("marinara-active-chat-id", chatId);
+    }, chat.id);
+    await page.goto("/");
+
+    await page.getByRole("button", { name: /Emoji, GIFs/u }).click();
+    const mediaPicker = page.locator("[data-conversation-media-picker]:visible");
+    await expect(mediaPicker).toBeVisible();
+    const emojiSearchInput = page.locator('input[placeholder="Search emojis..."]:visible');
+    const emojiSearchStyle = await emojiSearchInput.evaluate((input) => {
+      const style = getComputedStyle(input);
+      const shellStyle = getComputedStyle(input.parentElement!);
+      return {
+        backgroundColor: shellStyle.backgroundColor,
+        borderRadius: shellStyle.borderRadius,
+        fontSize: style.fontSize,
+        paddingBlock: `${shellStyle.paddingTop} ${shellStyle.paddingBottom}`,
+        paddingInline: `${shellStyle.paddingLeft} ${shellStyle.paddingRight}`,
+      };
+    });
+    await mediaPicker.getByRole("button", { name: "Kaomoji", exact: true }).click();
+    const picker = page.getByRole("dialog", { name: "Kaomoji picker" });
+    await expect(picker).toBeVisible();
+
+    const [categoriesFit, resultsFit] = await Promise.all([
+      picker.locator("[data-kaomoji-categories]").evaluate((element) => element.scrollWidth <= element.clientWidth),
+      picker.locator("[data-kaomoji-results]").evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ]);
+    expect(categoriesFit).toBe(true);
+    expect(resultsFit).toBe(true);
+
+    const searchInput = picker.getByPlaceholder("Search kaomoji…");
+    const kaomojiSearchStyle = await searchInput.evaluate((input) => {
+      const inputStyle = getComputedStyle(input);
+      const shellStyle = getComputedStyle(input.parentElement!);
+      return {
+        backgroundColor: shellStyle.backgroundColor,
+        borderRadius: shellStyle.borderRadius,
+        fontSize: inputStyle.fontSize,
+        paddingBlock: `${shellStyle.paddingTop} ${shellStyle.paddingBottom}`,
+        paddingInline: `${shellStyle.paddingLeft} ${shellStyle.paddingRight}`,
+      };
+    });
+    await picker.locator("[data-kaomoji-results]").dispatchEvent("pointerdown");
+    await expect(mediaPicker).toBeVisible();
+
+    await mediaPicker.getByRole("button", { name: "GIFs", exact: true }).click();
+    const gifSearchInput = page.getByRole("textbox", { name: "Search for GIFs", exact: true });
+    const gifSearchStyle = await gifSearchInput.evaluate((input) => {
+      const inputStyle = getComputedStyle(input);
+      const shellStyle = getComputedStyle(input.parentElement!);
+      return {
+        backgroundColor: shellStyle.backgroundColor,
+        borderRadius: shellStyle.borderRadius,
+        fontSize: inputStyle.fontSize,
+        paddingBlock: `${shellStyle.paddingTop} ${shellStyle.paddingBottom}`,
+        paddingInline: `${shellStyle.paddingLeft} ${shellStyle.paddingRight}`,
+      };
+    });
+    expect(emojiSearchStyle).toEqual(gifSearchStyle);
+    expect(kaomojiSearchStyle).toEqual(gifSearchStyle);
+  } finally {
+    await page.request.delete(`/api/chats/${chat.id}`).catch(() => undefined);
+  }
+});
+
+test("Roleplay composer does not offer kaomoji", async ({ page }) => {
+  const response = await page.request.post("/api/chats", {
+    data: {
+      name: "Roleplay Without Kaomoji",
       mode: "roleplay",
       characterIds: [],
     },
@@ -9570,39 +9800,8 @@ test("kaomoji scrollbar presses stay inside the picker and use the theme accent"
     }, chat.id);
     await page.goto("/");
 
-    await page.getByRole("button", { name: "Kaomoji" }).click();
-    const picker = page.getByRole("dialog", { name: "Kaomoji picker" });
-    await expect(picker).toBeVisible();
-    const pickerBox = await picker.boundingBox();
-    expect(pickerBox).not.toBeNull();
-
-    await page.mouse.move(pickerBox!.x + pickerBox!.width - 2, pickerBox!.y + pickerBox!.height / 2);
-    await page.mouse.down();
-    await page.mouse.up();
-    await expect(picker).toBeVisible();
-
-    const [categoriesFit, resultsFit] = await Promise.all([
-      picker.locator("[data-kaomoji-categories]").evaluate((element) => element.scrollWidth <= element.clientWidth),
-      picker.locator("[data-kaomoji-results]").evaluate((element) => element.scrollWidth <= element.clientWidth),
-    ]);
-    expect(categoriesFit).toBe(true);
-    expect(resultsFit).toBe(true);
-
-    const searchIconUsesTheme = await picker
-      .locator("svg")
-      .first()
-      .evaluate((icon) => {
-        const iconColor = getComputedStyle(icon).color;
-        const themeColor = getComputedStyle(document.documentElement).getPropertyValue("--primary").trim();
-        if (!themeColor) return false;
-        const probe = document.createElement("span");
-        probe.style.color = themeColor;
-        document.body.appendChild(probe);
-        const resolvedThemeColor = getComputedStyle(probe).color;
-        probe.remove();
-        return iconColor === resolvedThemeColor;
-      });
-    expect(searchIconUsesTheme).toBe(true);
+    await expect(page.locator(".chat-input-container textarea:visible")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Kaomoji" })).toHaveCount(0);
   } finally {
     await page.request.delete(`/api/chats/${chat.id}`).catch(() => undefined);
   }
@@ -9825,6 +10024,77 @@ test("mobile Game keeps CYOA usable above four HUD widgets", async ({ page, requ
   } finally {
     await request.delete(`/api/chats/${chat.id}`);
   }
+});
+
+test("Background rows keep long tag lists collapsed without crowding desktop controls", async ({ page }, testInfo) => {
+  await page.route("**/api/backgrounds", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([
+        {
+          id: "user:collapsible-background-tags.png",
+          filename: "collapsible-background-tags.png",
+          url: "/api/backgrounds/file/collapsible-background-tags.png",
+          originalName: "Collapsible background tags",
+          tags: ["fontaine", "rainy night", "quarantine berth", "warm interior"],
+          source: "user",
+          createdAt: "2026-07-27T00:00:00.000Z",
+          folderId: null,
+        },
+      ]),
+    });
+  });
+
+  await page.goto("/");
+  await page.locator('[data-tour="panel-settings"]').click();
+  await page.getByRole("tab", { name: "Appearance" }).click();
+  await page.getByPlaceholder("Search settings").fill("Backgrounds");
+  await page.getByRole("button", { name: /Backgrounds Section/ }).click();
+
+  const backgroundRow = page.locator('[data-background-id="user:collapsible-background-tags.png"]');
+  const backgroundName = backgroundRow.locator("[data-background-name]");
+  const backgroundTagsToggle = backgroundRow.locator("[data-background-tags-toggle]");
+  await expect(backgroundTagsToggle).toHaveAttribute("aria-expanded", "false");
+  await expect(backgroundRow.getByText("quarantine berth", { exact: true })).toHaveCount(0);
+
+  if (!testInfo.project.name.includes("mobile")) {
+    await backgroundTagsToggle.focus();
+    const actionBar = backgroundRow.locator("[data-background-actions]");
+    const deleteButton = backgroundRow.getByTitle("Delete background");
+    const favoriteButton = backgroundRow.locator("[data-background-default-toggle]");
+    const [nameBox, tagToggleBox, actionBarBox, deleteColor, favoriteColor] = await Promise.all([
+      backgroundName.boundingBox(),
+      backgroundTagsToggle.boundingBox(),
+      actionBar.boundingBox(),
+      deleteButton.evaluate((element) => getComputedStyle(element).color),
+      favoriteButton.evaluate((element) => getComputedStyle(element).color),
+    ]);
+    expect(nameBox).not.toBeNull();
+    expect(tagToggleBox).not.toBeNull();
+    expect(actionBarBox).not.toBeNull();
+    expect(nameBox!.width).toBeGreaterThanOrEqual(80);
+    expect(tagToggleBox!.height).toBeLessThanOrEqual(22);
+    expect(actionBarBox!.width).toBeLessThanOrEqual(55);
+    expect(deleteColor).toBe(favoriteColor);
+
+    const editTagsButton = backgroundRow.locator("[data-background-edit-tags]");
+    await editTagsButton.click();
+    const tagInputBox = await backgroundRow.locator("[data-background-tag-input]").boundingBox();
+    expect(tagInputBox).not.toBeNull();
+    expect(tagInputBox!.width).toBeGreaterThanOrEqual(100);
+    await editTagsButton.click();
+    await backgroundTagsToggle.click();
+    await expect(backgroundTagsToggle).toHaveAttribute("aria-expanded", "false");
+  }
+
+  await backgroundTagsToggle.focus();
+  await page.keyboard.press("Enter");
+  await expect(backgroundTagsToggle).toHaveAttribute("aria-expanded", "true");
+  await expect(backgroundRow.getByText("quarantine berth", { exact: true })).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(backgroundTagsToggle).toHaveAttribute("aria-expanded", "false");
+  await expect(backgroundRow.getByText("quarantine berth", { exact: true })).toHaveCount(0);
 });
 
 test("Roleplay displays a selected background when its file route is GET-only", async ({ page }, testInfo) => {

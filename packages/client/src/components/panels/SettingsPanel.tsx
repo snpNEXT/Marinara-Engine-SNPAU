@@ -13,6 +13,7 @@ import {
   type ConversationAvatarShape,
   type ConversationMessageStyle,
   type GameDialogueDisplayMode,
+  type ChatListBackgroundMode,
   type RoleplayAvatarStyle,
   type TrackerDataPanelSection,
   type TrackerPanelSizeProfile,
@@ -519,7 +520,7 @@ const SETTINGS_SEARCHABLE_CONTROLS: readonly SettingsSearchableControlMeta[] = [
     sectionId: "application",
     label: "Documentation Language",
     description: "Choose the language for Marinara's built-in guides.",
-    aliases: ["documentation", "guides", "docs", "manual", "spanish", "español"],
+    aliases: ["documentation", "guides", "docs", "manual", "spanish", "español", "german", "deutsch"],
     kind: "Select",
   },
   {
@@ -1087,6 +1088,14 @@ const SETTINGS_SEARCHABLE_CONTROLS: readonly SettingsSearchableControlMeta[] = [
     kind: "Slider",
   },
   {
+    id: "chat-list-backgrounds",
+    sectionId: "chat-backgrounds",
+    label: "Chat list backgrounds",
+    description: "Show each chat's background as a banner behind its row in the chat list.",
+    aliases: ["sidebar", "chat list", "banner", "background", "row"],
+    kind: "Button group",
+  },
+  {
     id: "game-dialogue-display",
     sectionId: "game-presentation",
     label: "Game Dialogue Display",
@@ -1194,9 +1203,17 @@ const SETTINGS_SEARCHABLE_CONTROLS: readonly SettingsSearchableControlMeta[] = [
     id: "automatic-backups",
     sectionId: "backup-export",
     label: "Automatic backups",
-    description: "Keep one scheduled full backup and replace it after each successful run.",
+    description: "Schedule full backups and choose how many automatic archives to retain.",
     aliases: ["backup", "daily", "weekly", "monthly", "scheduled"],
     kind: "Toggle",
+  },
+  {
+    id: "automatic-backups-kept",
+    sectionId: "backup-export",
+    label: "Automatic backups kept",
+    description: "Retain between 1 and 9999 automatic backup archives without affecting manual backups.",
+    aliases: ["backup", "retention", "history", "rotate", "automatic"],
+    kind: "Input",
   },
 ] as const;
 
@@ -1477,6 +1494,20 @@ const ROLEPLAY_AVATAR_STYLE_OPTIONS: Array<{ id: RoleplayAvatarStyle; label: str
     label: "Glued Side Panel",
     desc: "A taller portrait strip fused into the message bubble.",
   },
+];
+
+const CHAT_LIST_BACKGROUND_OPTIONS: Array<{ id: ChatListBackgroundMode; label: string; desc: string }> = [
+  {
+    id: "hover",
+    label: "Active & Hovered",
+    desc: "Banner on the chat you are in and the one under the pointer. On touch devices, the active chat only.",
+  },
+  {
+    id: "always",
+    label: "Every Row",
+    desc: "Banner behind every chat in the list. Loads one downscaled image per chat.",
+  },
+  { id: "off", label: "Off", desc: "No banners. Chat rows keep the plain sidebar background." },
 ];
 
 const GAME_DIALOGUE_DISPLAY_OPTIONS: Array<{ id: GameDialogueDisplayMode; label: string; desc: string }> = [
@@ -2837,11 +2868,16 @@ function DocsLanguageSetting() {
     try {
       const result = await fixDocsLanguage.mutateAsync();
       setPickedLanguage(null);
-      toast.success(
-        result.repaired
-          ? localizeUi("settings.application.docsLanguage.fixed")
-          : localizeUi("settings.application.docsLanguage.healthy"),
-      );
+      // Say what the fix actually did: re-downloaded the pack, reset to
+      // English, or just swept leftovers — the outcomes are very different.
+      const message = !result.repaired
+        ? "settings.application.docsLanguage.healthy"
+        : result.actions.includes("reinstalled-pack")
+          ? "settings.application.docsLanguage.fixedReinstalled"
+          : result.actions.some((action) => action.startsWith("reset"))
+            ? "settings.application.docsLanguage.fixed"
+            : "settings.application.docsLanguage.fixedCleaned";
+      toast.success(localizeUi(message));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     }
@@ -4115,6 +4151,8 @@ function AppearanceSettings() {
   const setRoleplaySpriteScale = useUIStore((s) => s.setRoleplaySpriteScale);
   const gameDialogueDisplayMode = useUIStore((s) => s.gameDialogueDisplayMode);
   const setGameDialogueDisplayMode = useUIStore((s) => s.setGameDialogueDisplayMode);
+  const chatListBackgrounds = useUIStore((s) => s.chatListBackgrounds);
+  const setChatListBackgrounds = useUIStore((s) => s.setChatListBackgrounds);
   const gameTextEffectsEnabled = useUIStore((s) => s.gameTextEffectsEnabled);
   const setGameTextEffectsEnabled = useUIStore((s) => s.setGameTextEffectsEnabled);
   const gameAvatarScale = useUIStore((s) => s.gameAvatarScale);
@@ -5158,6 +5196,22 @@ function AppearanceSettings() {
                   {chatBackgroundBlur === 0 ?localizeUi("ui.panels.appearancesettings.off") :localizeUi("ui.panels.appearancesettings.value1Px", { value1: chatBackgroundBlur })}
                 </span>
               </div>
+            </label>
+            <label className="flex items-center gap-2">
+              <span className="inline-flex shrink-0 items-center gap-1 text-[0.6875rem] font-medium">
+                {localizeUi("ui.panels.appearancesettings.chatListBackgrounds")}
+                <HelpTooltip text={localizeUi("ui.panels.appearancesettings.showsEachChatsOwnBackgroundAsAMutedBanner")} />
+              </span>
+              <select
+                id={getSettingsControlAnchorId("chat-list-backgrounds")}
+                value={chatListBackgrounds}
+                onChange={(e) => setChatListBackgrounds(e.target.value as ChatListBackgroundMode)}
+                className="h-7 min-w-0 flex-1 scroll-mt-3 rounded-md border border-[var(--border)] bg-[var(--secondary)] px-2 text-xs"
+              >
+                {CHAT_LIST_BACKGROUND_OPTIONS.map((opt) => (
+                  <option key={opt.id} value={opt.id}>{opt.label}</option>
+                ))}
+              </select>
             </label>
             <BackgroundPicker
               selected={chatBackground}
@@ -6862,6 +6916,7 @@ function AdvancedSettings() {
   type AutomaticBackupSettings = {
     enabled: boolean;
     frequency: AutomaticBackupFrequency;
+    retentionCount: number;
     lastBackupAt: string | null;
     lastError: string | null;
     nextBackupAt: string | null;
@@ -6873,7 +6928,7 @@ function AdvancedSettings() {
     refetchInterval: (query) => (query.state.data?.enabled ? 30_000 : false),
   });
   const automaticBackupMutation = useMutation({
-    mutationFn: (settings: Pick<AutomaticBackupSettings, "enabled" | "frequency">) =>
+    mutationFn: (settings: Pick<AutomaticBackupSettings, "enabled" | "frequency" | "retentionCount">) =>
       api.put<AutomaticBackupSettings>("/backup/automatic", settings),
     onSuccess: (settings) => {
       qc.setQueryData(["backups", "automatic"], settings);
@@ -6887,12 +6942,15 @@ function AdvancedSettings() {
       );
     },
   });
-  const updateAutomaticBackup = (patch: Partial<Pick<AutomaticBackupSettings, "enabled" | "frequency">>) => {
+  const updateAutomaticBackup = (
+    patch: Partial<Pick<AutomaticBackupSettings, "enabled" | "frequency" | "retentionCount">>,
+  ) => {
     const current = automaticBackupQuery.data;
     if (!current) return;
     automaticBackupMutation.mutate({
       enabled: patch.enabled ?? current.enabled,
       frequency: patch.frequency ?? current.frequency,
+      retentionCount: patch.retentionCount ?? current.retentionCount,
     });
   };
 
@@ -7425,6 +7483,33 @@ function AdvancedSettings() {
                     {localizeUi(`ui.panels.advancedsettings.automaticBackupFrequency.${frequency}`)}
                   </button>
                 ))}
+              </div>
+              <div
+                id={getSettingsControlAnchorId("automatic-backups-kept")}
+                className="mt-2 grid scroll-mt-3 gap-2 border-t border-[var(--border)]/60 pt-2 sm:grid-cols-[minmax(0,1fr)_5.5rem] sm:items-center"
+              >
+                <div className="min-w-0">
+                  <label
+                    htmlFor="automatic-backup-retention-count"
+                    className="text-[0.6875rem] font-medium text-[var(--foreground)]"
+                  >
+                    {localizeUi("ui.panels.advancedsettings.automaticBackupsKept")}
+                  </label>
+                  <p className="mt-0.5 text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
+                    {localizeUi("ui.panels.advancedsettings.automaticBackupsKeptDescription")}
+                  </p>
+                </div>
+                <DraftNumberInput
+                  id="automatic-backup-retention-count"
+                  value={automaticBackupQuery.data.retentionCount}
+                  min={1}
+                  max={9999}
+                  selectOnFocus
+                  disabled={automaticBackupMutation.isPending}
+                  onCommit={(retentionCount) => updateAutomaticBackup({ retentionCount })}
+                  ariaLabel={localizeUi("ui.panels.advancedsettings.automaticBackupsKeptAriaLabel")}
+                  className="mari-chrome-field h-9 w-full px-2 text-right text-xs tabular-nums"
+                />
               </div>
               <p className="mt-2 text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
                 {automaticBackupQuery.data.lastError

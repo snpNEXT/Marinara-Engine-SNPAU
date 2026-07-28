@@ -3,18 +3,22 @@
 // ──────────────────────────────────────────────
 import { logger } from "../../lib/logger.js";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { getEmbeddingRequestTimeoutMs, isProviderLocalUrlsEnabled } from "../../config/runtime-config.js";
+import {
+  getChatGenerationTimeoutMs,
+  getEmbeddingRequestTimeoutMs,
+  isProviderLocalUrlsEnabled,
+} from "../../config/runtime-config.js";
 import { requestHeadersWithIdentityEncoding, safeFetch, type SafeFetchOptions } from "../../utils/security.js";
 import type { GenerationParameterSendKey, GenerationParameterSendMap } from "@marinara-engine/shared";
 
 /**
- * Shared undici Agent with a 5-minute headers timeout (time to first byte)
- * and a finite inter-chunk body timeout to prevent half-open streams from
- * hanging indefinitely while still allowing long-running healthy streams.
+ * Shared undici Agent settings. The headers timeout (time to first byte) follows
+ * CHAT_GENERATION_TIMEOUT_MS so slow local models get the same budget on background
+ * generation (Noodle, agents) as on the chat routes. The inter-chunk body timeout
+ * stays finite so half-open streams cannot hang forever.
  */
-const LLM_HEADERS_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 const LLM_BODY_TIMEOUT = 120 * 1000; // 2 minutes between body chunks
-const llmAgentOptions = { bodyTimeout: LLM_BODY_TIMEOUT, headersTimeout: LLM_HEADERS_TIMEOUT };
+const llmAgentOptions = () => ({ bodyTimeout: LLM_BODY_TIMEOUT, headersTimeout: getChatGenerationTimeoutMs() });
 const llmRequestTimeout = new AsyncLocalStorage<number>();
 
 /** Scope a provider request timeout without changing background/agent generation behavior. */
@@ -47,7 +51,7 @@ export function llmFetch(
       init?.agentOptions ??
       (requestTimeoutMs
         ? { bodyTimeout: requestTimeoutMs, headersTimeout: requestTimeoutMs }
-        : llmAgentOptions),
+        : llmAgentOptions()),
     bufferResponse,
     decodeCompressedResponse: init?.decodeCompressedResponse ?? bufferResponse,
   });

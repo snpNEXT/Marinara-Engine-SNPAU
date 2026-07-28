@@ -4,7 +4,7 @@ import { logger, logDebugOverride } from "../../lib/logger.js";
 import { newId } from "../../utils/id-generator.js";
 import { createNoodleStorage } from "../storage/noodle.storage.js";
 import { getErrorMessage } from "./noodle-public-support.js";
-import { privatePostMediaUrl } from "./noodle-private-media.js";
+import { NOODLER_MEDIA_PREFIX, noodlerPostMediaUrl } from "./noodle-noodler-media.js";
 import { resolveImageConnectionFallback } from "../generation/media-connection-fallback.js";
 import { generateImage, stageImageToDisk, type StagedGalleryImage } from "../image/image-generation.js";
 import { resolveConnectionImageDefaults } from "../image/image-generation-defaults.js";
@@ -31,14 +31,14 @@ function imageClaimLeaseUntil() {
 type ImageConnection = NonNullable<Awaited<ReturnType<ReturnType<typeof createConnectionsStorage>["getWithKey"]>>>;
 
 /**
- * Private analog of generateNoodlePostImage. The deliberate difference from public
- * Noodle: bytes stage into a NoodleR-owned private-media namespace and never touch the
+ * NoodleR analog of generateNoodlePostImage. The deliberate difference from public
+ * Noodle: bytes stage into a NoodleR-owned media namespace and never touch the
  * public gallery or character gallery, so subscriber/PPV output can be served only
  * through the access-checked media endpoint. The staged file's on-disk path is persisted in
- * `metadata.privateMediaPath`; callers finalize via `stagedMedia` and derive the access-checked
+ * `metadata.noodlerMediaPath`; callers finalize via `stagedMedia` and derive the access-checked
  * URL from the persisted post id.
  */
-export async function generatePrivatePostImage(input: {
+export async function generateNoodlerPostImage(input: {
   account: NoodleAccount;
   linkedPublicAccount: NoodleAccount | null;
   disclosureMode: NoodleIdentityDisclosure;
@@ -186,21 +186,21 @@ export async function generatePrivatePostImage(input: {
     },
   );
   const provider = input.imageConnection.provider ?? "image_generation";
-  const file = stageImageToDisk(`noodler-private/${input.account.id}`, image.base64, image.ext);
+  const file = stageImageToDisk(`${NOODLER_MEDIA_PREFIX}${input.account.id}`, image.base64, image.ext);
   return {
     metadata: {
       imageGenerated: true,
       imageProvider: provider,
       imageModel: imageModel || "unknown",
       imageStyleProfileId: compiledPrompt.profile.id,
-      privateMediaPath: file.filePath,
+      noodlerMediaPath: file.filePath,
     },
     preview: null,
     stagedMedia: file,
   };
 }
 
-export function createPrivateNoodleImagesService(db: DB) {
+export function createNoodlerNoodleImagesService(db: DB) {
   const noodle = createNoodleStorage(db);
   const characters = createCharactersStorage(db);
   const connections = createConnectionsStorage(db);
@@ -226,18 +226,18 @@ export function createPrivateNoodleImagesService(db: DB) {
       let finalized = 0;
       for (const promptOverride of input.prompts) {
         const claimToken = newId();
-        // Reuses the shared post-image claim; the private-account check below rejects any
+        // Reuses the shared post-image claim; the NoodleR-account check below rejects any
         // non-NoodleR post so a public post id can never be finalized through this route.
         const claimed = await noodle.claimPostImage(promptOverride.id, claimToken, imageClaimLeaseUntil());
         if (!claimed) continue;
-        const account = await noodle.getPrivateAccountById(claimed.authorAccountId);
+        const account = await noodle.getNoodlerAccountById(claimed.authorAccountId);
         if (!account) {
           await noodle.releasePostImageClaim(claimed.id, claimToken);
           continue;
         }
         const disclosureMode = account.settings.privacy.identityDisclosure ?? "secret";
-        const linkedPublicAccount = account.publicAccountId
-          ? await noodle.getAccountById(account.publicAccountId)
+        const linkedPublicAccount = account.noodleAccountId
+          ? await noodle.getAccountById(account.noodleAccountId)
           : null;
 
         let claimOwned = true;
@@ -253,9 +253,9 @@ export function createPrivateNoodleImagesService(db: DB) {
         const renewalTimer = setInterval(() => void renewClaim(), REVIEWED_IMAGE_CLAIM_RENEW_MS);
         renewalTimer.unref?.();
 
-        let image: Awaited<ReturnType<typeof generatePrivatePostImage>>;
+        let image: Awaited<ReturnType<typeof generateNoodlerPostImage>>;
         try {
-          image = await generatePrivatePostImage({
+          image = await generateNoodlerPostImage({
             account,
             linkedPublicAccount,
             disclosureMode,
@@ -296,12 +296,12 @@ export function createPrivateNoodleImagesService(db: DB) {
         // Re-read the profile before finalizing: if disclosure or the linked public identity
         // changed during the (potentially long) provider call, the staged image was built from a
         // now-stale appearance policy, so discard it and finalize as failed rather than publish it.
-        const fresh = await noodle.getPrivateAccountById(claimed.authorAccountId);
+        const fresh = await noodle.getNoodlerAccountById(claimed.authorAccountId);
         const freshDisclosure = fresh?.settings.privacy.identityDisclosure ?? "secret";
         if (
           !fresh ||
           freshDisclosure !== disclosureMode ||
-          (fresh.publicAccountId ?? null) !== (account.publicAccountId ?? null)
+          (fresh.noodleAccountId ?? null) !== (account.noodleAccountId ?? null)
         ) {
           image.stagedMedia?.compensate();
           await noodle.finalizePostImageClaim(claimed.id, claimToken, {
@@ -317,7 +317,7 @@ export function createPrivateNoodleImagesService(db: DB) {
         try {
           image.stagedMedia?.promote();
           const ok = await noodle.finalizePostImageClaim(claimed.id, claimToken, {
-            imageUrl: privatePostMediaUrl(claimed.id),
+            imageUrl: noodlerPostMediaUrl(claimed.id),
             metadata: image.metadata,
           });
           if (!ok) {

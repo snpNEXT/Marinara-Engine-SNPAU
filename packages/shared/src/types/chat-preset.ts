@@ -13,7 +13,7 @@
 // What profiles DO NOT carry: per-chat identity (name, characters,
 // persona, group, sprites, scene prompt, generated summaries, tags,
 // ephemeral lorebook overrides, generated schedules, scene lifecycle
-// state, connected chat link, folder/sort placement).
+// state, connected chat link, hierarchical map state, folder/sort placement).
 
 import type { ChatMode, ChatMetadata } from "./chat.js";
 
@@ -80,6 +80,10 @@ export const CHAT_PRESET_EXCLUDED_METADATA_KEYS: readonly string[] = [
   "sceneBusyCharIds",
   // Lorebooks are owned by the chat, never by the profile.
   "activeLorebookIds",
+  // Hierarchical Maps definitions and per-chat editing choices stay with the chat.
+  "spatialContext",
+  "spatialContextHierarchyProfile",
+  "spatialMapGenerationPreferences",
   // Generated Game state is session identity/history, not reusable setup.
   "gameId",
   "gameSessionNumber",

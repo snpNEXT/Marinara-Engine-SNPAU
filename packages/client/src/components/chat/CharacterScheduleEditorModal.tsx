@@ -816,7 +816,7 @@ export function CharacterScheduleEditorModal({
                       {dayGenerationStatus[day] && <div className="text-[0.6875rem] font-medium text-[var(--muted-foreground)]">{dayGenerationStatus[day]}</div>}
                     </div>
                     <label className="block text-xs">
-                      <span className="mb-1.5 block font-medium">{localizeUi("ui.noodle.privatepostcomposer.guide_bf073fa")} {day}</span>
+                      <span className="mb-1.5 block font-medium">{localizeUi("ui.noodle.noodlerpostcomposer.guide_bf073fa")} {day}</span>
                       <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
                         <input
                           value={dayGuidance[day] ?? ""}

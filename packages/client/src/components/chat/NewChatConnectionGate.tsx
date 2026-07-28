@@ -39,7 +39,7 @@ export function NewChatConnectionGate({ mode, onClose }: NewChatConnectionGatePr
   const connectionRows = useMemo(
     () =>
       appendLocalSidecarConnectionOption(
-        (connections ?? []) as Array<{ id: string; name: string; provider?: string }>,
+        (connections ?? []) as Array<{ id: string; name: string; provider?: string; isDefault?: boolean | string }>,
         mode !== "game" && sidecarModelDownloaded,
         sidecarModelDisplayName,
       ),
@@ -51,7 +51,9 @@ export function NewChatConnectionGate({ mode, onClose }: NewChatConnectionGatePr
       setConnectionId("");
       return;
     }
-    setConnectionId((current) => current || connectionRows[0]!.id);
+    const isDefault = (row: { isDefault?: boolean | string }) => row.isDefault === true || row.isDefault === "true";
+    const preferred = connectionRows.find(isDefault) ?? connectionRows[0]!;
+    setConnectionId((current) => current || preferred.id);
   }, [connectionRows]);
 
   const handleCreate = () => {

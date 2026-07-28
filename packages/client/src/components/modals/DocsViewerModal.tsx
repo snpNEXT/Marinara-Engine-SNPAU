@@ -14,8 +14,9 @@ import { useTranslation as useUiTranslation } from "react-i18next";
  * language): a user can run an English UI with Spanish docs, and the headers
  * must match the content they sit above. Unlisted folders fall back to the
  * English map, then to title-cased folder names, so new categories and new
- * languages degrade gracefully. Spanish terms follow the docs translation
- * glossary (loanwords like "roleplay"/"lorebooks"/"prompts" stay English).
+ * languages degrade gracefully. Spanish and German terms follow their docs
+ * translation glossaries (loanwords like "roleplay"/"lorebooks"/"prompts" and
+ * the mode names stay English, matching the UI).
  */
 const DIR_LABELS_BY_DOCS_LANG: Record<string, Record<string, string>> = {
   en: {
@@ -44,6 +45,28 @@ const DIR_LABELS_BY_DOCS_LANG: Record<string, Record<string, string>> = {
     extending: "Extensiones",
     integrations: "Integraciones",
     development: "Desarrollo",
+  },
+  de: {
+    "": "Anleitungen",
+    home: "Start",
+    installation: "Installation",
+    connections: "Verbindungen",
+    conversation: "Conversation",
+    roleplay: "Roleplay",
+    game: "Game Mode",
+    characters: "Charaktere",
+    chats: "Chats",
+    lorebooks: "Lorebooks",
+    agents: "Agenten",
+    media: "Medien",
+    prompts: "Prompts",
+    noodle: "Noodle",
+    appearance: "Darstellung",
+    settings: "Einstellungen",
+    data: "Daten",
+    extending: "Erweiterungen",
+    integrations: "Integrationen",
+    development: "Entwicklung",
   },
 };
 

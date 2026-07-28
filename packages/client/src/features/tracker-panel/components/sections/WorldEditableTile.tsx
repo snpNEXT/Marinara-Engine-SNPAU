@@ -110,7 +110,7 @@ export function WorldRenderedEdit({
       }}
       title={lockToggleActive ? (locked ?localizeUi("ui.trackerPanel.worldrenderededit.unlockValue1", { value1: label.toLowerCase() }) :localizeUi("ui.trackerPanel.worldrenderededit.lockValue1", { value1: label.toLowerCase() })) : title}
       aria-label={
-        lockToggleActive ?localizeUi("ui.trackerPanel.inlineedit.value1Value2", { value1: locked ?localizeUi("ui.noodle.lockedprivatepostcard.unlock") :localizeUi("ui.trackerPanel.inlineedit.lock"), value2: label.toLowerCase() }) :localizeUi("ui.trackerPanel.worldrenderededit.value1ClickToEdit", { value1: title })
+        lockToggleActive ?localizeUi("ui.trackerPanel.inlineedit.value1Value2", { value1: locked ?localizeUi("ui.noodle.lockednoodlerpostcard.unlock") :localizeUi("ui.trackerPanel.inlineedit.lock"), value2: label.toLowerCase() }) :localizeUi("ui.trackerPanel.worldrenderededit.value1ClickToEdit", { value1: title })
       }
       aria-pressed={lockToggleActive ? locked : undefined}
       className={cn(

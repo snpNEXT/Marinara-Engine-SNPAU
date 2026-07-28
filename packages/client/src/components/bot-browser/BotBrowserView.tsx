@@ -34,7 +34,12 @@ import { parsePngCharacterCard } from "../../lib/png-parser";
 import { useUIStore } from "../../stores/ui.store";
 import { toast } from "sonner";
 import { cn } from "../../lib/utils";
-import { confirmEmbeddedLorebookImport, hasLorebookEntries, readEmbeddedLorebookFromCharacterPayload } from "../../lib/character-import";
+import {
+  confirmEmbeddedLorebookImport,
+  hasLorebookEntries,
+  readCharacterCardDetailFields,
+  readEmbeddedLorebookFromCharacterPayload,
+} from "../../lib/character-import";
 import { mergeChubDetailIntoCharacterJson } from "../../lib/chub-character-card";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
@@ -635,6 +640,21 @@ const jannyProvider: ProviderConfig = {
       .replace(/^-|-$/g, "");
     const pageUrl = `https://jannyai.com/characters/${charId}_character-${slug}`;
     const apiPageUrl = `https://api.jannyai.com/characters/${charId}_character-${slug}`;
+
+    // Prefer JannyAI's supported full-card download API. Search results contain
+    // only catalog metadata, while the original PNG preserves the full V2/V3
+    // definition used by imports and Start Chat.
+    try {
+      const cardRes = await fetch(`/api/bot-browser/janny/download/${encodeURIComponent(charId)}`);
+      if (cardRes.ok) {
+        const cardFile = new File([await cardRes.blob()], "character.png", { type: "image/png" });
+        const { json } = await parsePngCharacterCard(cardFile);
+        const cardDetail = readCharacterCardDetailFields(json);
+        if (cardDetail) return cardDetail;
+      }
+    } catch {
+      /* fall through to legacy page extraction */
+    }
 
     // Helper to decode Astro's [type, data] serialization
     function decodeAstro(value: unknown): unknown {
@@ -1637,10 +1657,17 @@ export function BotBrowserView() {
       let downloadUrl = "";
       if (sourceId === "chub") downloadUrl = `/api/bot-browser/chub/download/${card.id}`;
       else if (sourceId === "chartavern") downloadUrl = `/api/bot-browser/chartavern/download/${card.id}`;
+      else if (sourceId === "janny") downloadUrl = `/api/bot-browser/janny/download/${encodeURIComponent(card.id)}`;
 
       if (downloadUrl) {
         const res = await fetch(downloadUrl);
-        if (!res.ok) throw new Error("Failed to download character card");
+        if (!res.ok) {
+          throw new Error(
+            sourceId === "janny"
+              ? localizeUi("ui.botBrowser.botbrowserview.jannyCompleteCardUnavailable")
+              : localizeUi("ui.botBrowser.botbrowserview.importFailed"),
+          );
+        }
         const blob = await res.blob();
         const file = new File([blob], "character.png", { type: "image/png" });
         const { json, imageDataUrl } = await parsePngCharacterCard(file);

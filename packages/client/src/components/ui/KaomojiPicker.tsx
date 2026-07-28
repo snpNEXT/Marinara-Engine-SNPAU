@@ -126,15 +126,22 @@ export function KaomojiPicker({ open, onClose, onSelect, anchorRef, containerRef
 
   const body = (
     <>
-      <div className="flex items-center gap-2 border-b border-[var(--border)] px-2.5 py-2">
-        <Search size="0.8125rem" className="shrink-0 text-[var(--primary)]" />
-        <input
-          ref={searchInputRef}
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder={t("chat.kaomoji.search")}
-          className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--muted-foreground)]"
-        />
+      <div className="border-b border-foreground/10 px-3 py-2">
+        <div
+          data-kaomoji-search-shell
+          className="flex items-center gap-2 rounded-md bg-foreground/5 px-2.5 py-1.5 ring-1 ring-foreground/10 transition-shadow focus-within:ring-foreground/20"
+        >
+          <Search aria-hidden="true" size="0.875rem" className="shrink-0 text-foreground/45" />
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={t("chat.kaomoji.search")}
+            aria-label={t("chat.kaomoji.search")}
+            className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-foreground/35"
+          />
+        </div>
       </div>
 
       {!search.trim() && (
@@ -184,7 +191,12 @@ export function KaomojiPicker({ open, onClose, onSelect, anchorRef, containerRef
 
   if (embedded) {
     return (
-      <div ref={panelRef} role="dialog" aria-label={t("chat.kaomoji.title")} className="flex h-full flex-col overflow-hidden">
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-label={t("chat.kaomoji.title")}
+        className="flex h-full flex-col overflow-hidden"
+      >
         {body}
       </div>
     );
@@ -192,12 +204,7 @@ export function KaomojiPicker({ open, onClose, onSelect, anchorRef, containerRef
 
   return createPortal(
     <>
-      <div
-        data-kaomoji-picker-backdrop
-        aria-hidden="true"
-        className="fixed inset-0 z-[59]"
-        onPointerDown={onClose}
-      />
+      <div data-kaomoji-picker-backdrop aria-hidden="true" className="fixed inset-0 z-[59]" onPointerDown={onClose} />
       <div
         ref={panelRef}
         role="dialog"

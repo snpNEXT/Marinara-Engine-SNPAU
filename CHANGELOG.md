@@ -6,6 +6,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Added
 
+- Added the **German** documentation language pack, covering all 123 in-app guides (developer docs included) in natural standard German with informal address, English UI control names preserved for following instructions against the interface, and German sidebar category labels in the docs viewer. Select it under **Settings → General → Documentation Language** via **Download & Replace** (#4157).
 - Added a **Documentation Language** selector under **Settings → General** and at the end of the first-time tutorial. Languages ship as downloadable packs from the repository's `docs-i18n` branch: **Download & Replace** fetches the selected language into the data folder with per-file integrity verification and live progress, then removes the previous language's pack, so installs carry only one language and checkouts carry none. Guides without a translation open in English with an `EN` badge, the in-app docs search works in the active language, the choice survives every update path, the first start after an update automatically refreshes the pack when its translations changed, and a **Fix documentation** failsafe verifies, re-downloads, or resets a broken pack. Forks and mirrors can point `DOCS_I18N_BASE_URL` at their own copy of the branch (#4100).
 - Added the first documentation language pack: **Spanish**, covering all 123 in-app guides (developer docs included) in neutral international Spanish, with UI control names kept in English so instructions can be followed against the English interface. Contributor docs now require keeping every language pack on `docs-i18n` in step when guides change (#4100).
 - Added rotating daily, weekly, or monthly automatic full backups under **Settings → Advanced → Backup & Export**, with the latest run and failure state shown in the UI (#4071).
@@ -20,6 +21,9 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Made Game session conclusions prepare the next playable arc with refreshed goals, quest seeds, pressure clocks, factions, and named NPCs so the following session does not inherit a stale scenario plan (#4059).
 
 ### Fixed
+
+- Made `CHAT_GENERATION_TIMEOUT_MS` govern the time-to-first-byte budget for background generation as well, so a slow local model no longer fails the Noodle timeline refresh with `HeadersTimeoutError` / "fetch failed" after a fixed five minutes. The default stays at five minutes; raise the variable to give slow local models more room (#4174).
+- Documented the **Documentation Language** control in the settings overview guide (in English, Spanish, and German), and made the **Fix documentation** toast report what actually happened — pack re-downloaded, guides reset to English, or leftovers cleaned up — instead of always claiming a reset (#4158).
 
 - Rendered indented code fences correctly in the shared markdown renderer: a fence nested inside a list item (as in several developer guides) previously never closed and showed its ` ``` ` markers as literal text in the docs viewer, and list-nested code no longer renders or copies phantom leading spaces (#4100).
 - Replaced the unsafe built-in **Clean HTML (Outgoing Prompt)** regex with a validator-safe tag cleaner and migrated unchanged legacy defaults, restoring HTML and group-speaker-tag cleanup for Immersive HTML and Agent prompt history without overwriting customized scripts (#4101).

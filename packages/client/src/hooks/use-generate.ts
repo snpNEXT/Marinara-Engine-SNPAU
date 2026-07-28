@@ -18,6 +18,7 @@ import { chatBackgroundMetadataToUrl, chatBackgroundUrlToMetadata } from "../lib
 import { formatGenerationParameterError } from "../lib/generation-parameter-errors";
 import { sanitizeAppCss } from "../lib/theme-css";
 import {
+  getRoleplayTypewriterRevealCharsPerSecond,
   getTypewriterRevealCharsPerSecond,
   isGenerationStartBlocked,
   reconcileTypewriterReplacement,
@@ -918,6 +919,7 @@ const pendingVisibleGameStateRefreshes = new Map<string, Promise<void>>();
 const activeGenerateLocks = new Set<string>();
 const PASSIVE_STREAM_SETTLE_POLL_MS = 1_500;
 const PASSIVE_STREAM_SETTLE_MAX_WAIT_MS = 30 * 60_000;
+const ROLEPLAY_TYPEWRITER_PREBUFFER_MS = 160;
 
 function wait(ms: number, signal?: AbortSignal) {
   if (!signal) return new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -1299,6 +1301,7 @@ export function useGenerate() {
       const transportStreaming = useUIStore.getState().enableStreaming;
       const streamingEnabled = transportStreaming;
       const chatModeForGeneration = getCachedChatMode(qc, params.chatId);
+      const smoothRoleplayTypewriter = chatModeForGeneration === "roleplay" || chatModeForGeneration === "visual_novel";
       const shouldDisplayRawStream =
         chatModeForGeneration !== "conversation" || !!params.regenerateMessageId || !!params.continueMessageId;
       const keepStreamLiveThroughPostProcessing = shouldKeepStreamLiveThroughPostProcessing({
@@ -1329,6 +1332,9 @@ export function useGenerate() {
       let typingActive = false;
       let typewriterDone: (() => void) | null = null;
       let rafId = 0;
+      let roleplayTypewriterStarted = false;
+      let roleplayTypewriterBufferUntil = 0;
+      let roleplayTypewriterCharsPerSecond: number | null = null;
       const persistedMessages = new Map<string, Message>();
       let sawGroupTurn = false;
       let currentGroupTurnSavedMessage: Message | null = null;
@@ -1354,7 +1360,9 @@ export function useGenerate() {
         if (!normalizedChunk) return;
         if (streamingEnabled && shouldDisplayRawStream) {
           const now = performance.now();
-          if (lastVisibleChunkAt > 0) {
+          if (smoothRoleplayTypewriter && !roleplayTypewriterStarted && roleplayTypewriterBufferUntil === 0) {
+            roleplayTypewriterBufferUntil = now + ROLEPLAY_TYPEWRITER_PREBUFFER_MS;
+          } else if (!smoothRoleplayTypewriter && lastVisibleChunkAt > 0) {
             const elapsedMs = now - lastVisibleChunkAt;
             if (elapsedMs >= 16 && elapsedMs <= 5000) {
               const sampleRate = (normalizedChunk.length * 1000) / elapsedMs;
@@ -1364,7 +1372,7 @@ export function useGenerate() {
                   : observedArrivalCharsPerSecond * 0.5 + sampleRate * 0.5;
             }
           }
-          lastVisibleChunkAt = now;
+          if (!smoothRoleplayTypewriter) lastVisibleChunkAt = now;
           pendingText += normalizedChunk;
           startTypewriter();
         } else {
@@ -1421,6 +1429,7 @@ export function useGenerate() {
         typingActive = false;
         typewriterRemainder = 0;
         lastTypewriterPaintAt = 0;
+        roleplayTypewriterCharsPerSecond = null;
         if (streamingEnabled && shouldDisplayRawStream && fullBuffer) setStreamBuffer(fullBuffer, params.chatId);
         if (typewriterDone) {
           const done = typewriterDone;
@@ -1471,16 +1480,37 @@ export function useGenerate() {
             }
             return;
           }
+          const selectedCharsPerSecond = getCharsPerSecond();
+          if (
+            smoothRoleplayTypewriter &&
+            !roleplayTypewriterStarted &&
+            selectedCharsPerSecond !== Infinity &&
+            !sawDoneEvent &&
+            now < roleplayTypewriterBufferUntil
+          ) {
+            rafId = requestAnimationFrame(tick);
+            return;
+          }
+          roleplayTypewriterStarted = true;
           if (!lastTypewriterPaintAt) lastTypewriterPaintAt = now;
           const elapsedMs = Math.min(TYPEWRITER_MAX_FRAME_MS, Math.max(0, now - lastTypewriterPaintAt));
           lastTypewriterPaintAt = now;
 
-          const charsPerSecond = getTypewriterRevealCharsPerSecond({
-            selectedCharsPerSecond: getCharsPerSecond(),
-            pendingCharacters: pendingText.length,
-            observedArrivalCharsPerSecond,
-            streamComplete: sawDoneEvent,
-          });
+          const charsPerSecond = smoothRoleplayTypewriter
+            ? getRoleplayTypewriterRevealCharsPerSecond({
+                selectedCharsPerSecond,
+                pendingCharacters: pendingText.length,
+                previousCharsPerSecond: roleplayTypewriterCharsPerSecond,
+                elapsedMs,
+                streamComplete: sawDoneEvent,
+              })
+            : getTypewriterRevealCharsPerSecond({
+                selectedCharsPerSecond,
+                pendingCharacters: pendingText.length,
+                observedArrivalCharsPerSecond,
+                streamComplete: sawDoneEvent,
+              });
+          if (smoothRoleplayTypewriter) roleplayTypewriterCharsPerSecond = charsPerSecond;
           if (charsPerSecond === Infinity) {
             fullBuffer += pendingText;
             pendingText = "";
@@ -1978,6 +2008,9 @@ export function useGenerate() {
                 // Reset the stream buffer for the new character
                 fullBuffer = "";
                 pendingText = "";
+                roleplayTypewriterStarted = false;
+                roleplayTypewriterBufferUntil = 0;
+                roleplayTypewriterCharsPerSecond = null;
                 leadingSpeakerPrefixFilter.reset();
                 thinkingStreamFilter.reset();
                 setStreamBuffer("", params.chatId);
@@ -3122,7 +3155,8 @@ export function useGenerate() {
       }
       useChatStore.getState().setAbortController(chatId, abortController);
       useChatStore.getState().setBackgroundIllustration(chatId, false);
-      const isIllustratorOnlyRetry = agentTypes.length === 1 && agentTypes[0] === "illustrator";
+      const isIllustratorOnlyRetry =
+        agentTypes.length > 0 && agentTypes.every((agentType) => agentType === "illustrator");
       const isTrackerRetry = agentTypes.some(
         (agentType) => isBuiltInTrackerAgentType(agentType) || !isBuiltInAgentType(agentType),
       );

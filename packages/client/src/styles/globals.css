@@ -3280,7 +3280,8 @@ strong {
   .mari-sidebar-header,
   .mari-sidebar-footer,
   .mari-right-panel,
-  .mari-right-panel-header {
+  .mari-right-panel-header,
+  [data-chat-mode="roleplay"] .marinara-chat-input-shell {
     backdrop-filter: none !important;
   }
 
@@ -3289,6 +3290,14 @@ strong {
   .mari-sidebar-footer,
   .mari-right-panel-header {
     background: var(--card) !important;
+  }
+
+  [data-chat-mode="roleplay"] .marinara-chat-input-shell {
+    background:
+      linear-gradient(var(--card), var(--card)),
+      var(--background) !important;
+    contain: layout paint;
+    isolation: isolate;
   }
 
   .mari-sidebar,
@@ -5070,6 +5079,28 @@ strong {
 /* ─────────────────────────────────────────────
    21. PERFORMANCE — GPU COMPOSITING HINTS
    ───────────────────────────────────────────── */
+[data-chat-mode="roleplay"] .mari-chat-input-textarea {
+  contain: paint;
+}
+
+/* Local models often share the same GPU as the active browser tab. Freeze
+   ambient effects during generation while keeping progress spinners live. */
+.mari-generation-render-paused
+  :where(
+    .roleplay-hud-scroll-track,
+    [class*="game-expression-reaction"],
+    .glimmer-streaming,
+    .game-map-fog,
+    .game-map-marquee-track,
+    .game-party-marker,
+    .game-campfire,
+    .game-combat-border,
+    [class*="anim-text-"]
+  ),
+.mari-generation-render-paused .rpg-streaming::after {
+  animation-play-state: paused !important;
+}
+
 .rpg-sprite-container img,
 .rpg-avatar-glow img,
 .rpg-avatar-panel img,

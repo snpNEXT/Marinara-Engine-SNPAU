@@ -70,7 +70,7 @@ const capabilityPackageManifestBaseSchema = z.object({
   restartRequired: z.boolean().default(false),
 }).strict();
 
-export const supportedCapabilityApi = Object.freeze({ major: 1, minor: 4 } as const);
+export const supportedCapabilityApi = Object.freeze({ major: 1, minor: 6 } as const);
 
 const capabilityApiVersionSchema = z.object({
   major: z.number().int().positive(),

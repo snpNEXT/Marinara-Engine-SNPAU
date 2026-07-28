@@ -17,7 +17,7 @@ import {
 import { ChevronDown, MessageCircle, Trash2, RefreshCw } from "lucide-react";
 import { useAgentStore } from "../../stores/agent.store";
 import { useUIStore } from "../../stores/ui.store";
-import type { EchoChamberSide } from "../../stores/ui.store";
+import type { EchoChamberSide, EchoChamberSize } from "../../stores/ui.store";
 import { useChatStore } from "../../stores/chat.store";
 import { useChat } from "../../hooks/use-chats";
 import { useGenerate } from "../../hooks/use-generate";
@@ -188,10 +188,15 @@ function CornerPicker({ current, onChange }: { current: EchoChamberSide; onChang
 
 export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelProps) {
   const { t: localizeUi } = useUiTranslation();
+  const activeChatId = useChatStore((s) => s.activeChatId);
   const echoChamberSide = useUIStore((s) => s.echoChamberSide);
   const setEchoChamberSide = useUIStore((s) => s.setEchoChamberSide);
   const echoChamberOpen = useUIStore((s) => s.echoChamberOpen);
   const toggleEchoChamber = useUIStore((s) => s.toggleEchoChamber);
+  const rememberedPanelSize = useUIStore((s) =>
+    activeChatId ? (s.echoChamberSizeByChatId[activeChatId] ?? null) : null,
+  );
+  const setEchoChamberSizeForChat = useUIStore((s) => s.setEchoChamberSizeForChat);
   const trackerPanelEnabled = useUIStore((s) => s.trackerPanelEnabled);
   const trackerPanelOpen = useUIStore((s) => s.trackerPanelOpen);
   const trackerPanelSide = useUIStore((s) => s.trackerPanelSide);
@@ -199,9 +204,9 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
   const scrollRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<{ startX: number; startY: number; width: number; height: number } | null>(null);
-  const [panelSize, setPanelSize] = useState<{ width: number; height: number } | null>(null);
+  const pendingPanelSizeRef = useRef<EchoChamberSize | null>(null);
+  const [panelSize, setPanelSize] = useState<EchoChamberSize | null>(null);
 
-  const activeChatId = useChatStore((s) => s.activeChatId);
   const isAgentProcessing = useAgentStore((s) =>
     activeChatId ? s.processingChatIds.includes(activeChatId) : s.isProcessing,
   );
@@ -342,6 +347,25 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
     };
   }, []);
 
+  const commitPanelSize = useCallback(
+    (width: number, height: number) => {
+      const nextSize = clampPanelSize(width, height);
+      pendingPanelSizeRef.current = null;
+      setPanelSize(nextSize);
+      if (activeChatId) setEchoChamberSizeForChat(activeChatId, nextSize);
+    },
+    [activeChatId, clampPanelSize, setEchoChamberSizeForChat],
+  );
+
+  useEffect(() => {
+    pendingPanelSizeRef.current = null;
+    setPanelSize(
+      activeChatId && rememberedPanelSize
+        ? clampPanelSize(rememberedPanelSize.width, rememberedPanelSize.height)
+        : null,
+    );
+  }, [activeChatId, clampPanelSize, rememberedPanelSize]);
+
   const handleResizeStart = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     const rect = panelRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -359,15 +383,44 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
       event.stopPropagation();
       const horizontalDelta = (event.clientX - start.startX) * (resizeFromLeft ? -1 : 1);
       const verticalDelta = (event.clientY - start.startY) * (resizeFromTop ? -1 : 1);
-      setPanelSize(clampPanelSize(start.width + horizontalDelta, start.height + verticalDelta));
+      const nextSize = clampPanelSize(start.width + horizontalDelta, start.height + verticalDelta);
+      pendingPanelSizeRef.current = nextSize;
+      setPanelSize(nextSize);
     },
     [clampPanelSize, resizeFromLeft, resizeFromTop],
   );
 
-  const handleResizeEnd = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
-    resizeRef.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-  }, []);
+  const handleResizeEnd = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      const pendingSize = pendingPanelSizeRef.current;
+      const rect = panelRef.current?.getBoundingClientRect();
+      resizeRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      if (pendingSize) {
+        commitPanelSize(pendingSize.width, pendingSize.height);
+      } else if (rect) {
+        commitPanelSize(rect.width, rect.height);
+      }
+    },
+    [commitPanelSize],
+  );
+
+  const handleResizeCancel = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      const start = resizeRef.current;
+      resizeRef.current = null;
+      pendingPanelSizeRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      if (start) {
+        setPanelSize(clampPanelSize(start.width, start.height));
+      }
+    },
+    [clampPanelSize],
+  );
 
   const handleResizeKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLButtonElement>) => {
@@ -377,9 +430,9 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
       if (!rect) return;
       const widthDelta = event.key === "ArrowRight" ? RESIZE_KEYBOARD_STEP : event.key === "ArrowLeft" ? -RESIZE_KEYBOARD_STEP : 0;
       const heightDelta = event.key === "ArrowDown" ? RESIZE_KEYBOARD_STEP : event.key === "ArrowUp" ? -RESIZE_KEYBOARD_STEP : 0;
-      setPanelSize(clampPanelSize(rect.width + widthDelta, rect.height + heightDelta));
+      commitPanelSize(rect.width + widthDelta, rect.height + heightDelta);
     },
-    [clampPanelSize],
+    [commitPanelSize],
   );
 
   useEffect(() => {
@@ -630,7 +683,7 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
         onPointerDown={handleResizeStart}
         onPointerMove={handleResizeMove}
         onPointerUp={handleResizeEnd}
-        onPointerCancel={handleResizeEnd}
+        onPointerCancel={handleResizeCancel}
         onKeyDown={handleResizeKeyDown}
       >
         <span

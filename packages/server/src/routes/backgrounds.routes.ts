@@ -8,7 +8,8 @@ import { join, extname, basename, parse as parsePath } from "path";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import { DATA_DIR } from "../utils/data-dir.js";
-import { logDebugOverride } from "../lib/logger.js";
+import { logDebugOverride, logger } from "../lib/logger.js";
+import { getSharp } from "../services/image/sharp-runtime.js";
 import { isDebugAgentsEnabled } from "../config/runtime-config.js";
 import { buildAssetManifest, GAME_ASSETS_DIR, getAssetManifest } from "../services/game/asset-manifest.service.js";
 import {
@@ -28,9 +29,11 @@ import { resolveConnectionImageDefaults } from "../services/image/image-generati
 import { loadImageGenerationUserSettings } from "../services/image/image-generation-settings.js";
 import { resolveImagePromptReviewSize } from "../services/image/image-prompt-review.js";
 import { resolveImageConnectionFallback } from "../services/generation/media-connection-fallback.js";
-import { resolveGameSetupArtStylePrompt } from "@marinara-engine/shared";
+import { BACKGROUND_THUMBNAIL_WIDTH, resolveGameSetupArtStylePrompt } from "@marinara-engine/shared";
 
 const BG_DIR = join(DATA_DIR, "backgrounds");
+// Sibling of BG_DIR, not inside it: the library listing and folder organization walk BG_DIR.
+const THUMB_DIR = join(DATA_DIR, "backgrounds-thumbs");
 const META_PATH = join(BG_DIR, "meta.json");
 const ORGANIZATION_PATH = join(BG_DIR, "organization.json");
 
@@ -38,6 +41,51 @@ const ORGANIZATION_PATH = join(BG_DIR, "organization.json");
 function ensureDir() {
   if (!existsSync(BG_DIR)) {
     mkdirSync(BG_DIR, { recursive: true });
+  }
+}
+
+/**
+ * Widths the thumbnailer will honour, so `?w=` can't be used to fill the disk. One entry on
+ * purpose: the sidebar row banner and the settings picker tile both fit inside 320px even at
+ * 3x, so they share a single cached file. Add a width here when something needs a bigger one.
+ */
+const THUMB_WIDTHS = new Set([BACKGROUND_THUMBNAIL_WIDTH]);
+
+/**
+ * Downscaled copy of a background, cached on disk. Returns null whenever the original
+ * should be served instead: unsupported width, animated source, or no `sharp` on this
+ * platform (it is an optional native dep — see services/image/sharp-runtime).
+ *
+ * Cache key includes mtime so replacing a file serves the new image immediately.
+ * ponytail: superseded thumbs are never swept; they are a few KB each and bounded by
+ * how often someone re-uploads over a filename. Add a sweep if that stops being true.
+ */
+async function resolveThumbPath(filePath: string, filename: string, width: number): Promise<string | null> {
+  if (!THUMB_WIDTHS.has(width) || extname(filename).toLowerCase() === ".gif") return null;
+
+  const thumbPath = join(THUMB_DIR, `${width}-${statSync(filePath).mtimeMs}-${filename}.webp`);
+  if (existsSync(thumbPath)) return thumbPath;
+
+  try {
+    const sharp = await getSharp();
+    const buffer = await sharp(filePath).resize({ width, withoutEnlargement: true }).webp({ quality: 72 }).toBuffer();
+    if (!existsSync(THUMB_DIR)) mkdirSync(THUMB_DIR, { recursive: true });
+    const temporaryPath = `${thumbPath}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporaryPath, buffer);
+      try {
+        renameSync(temporaryPath, thumbPath);
+      } catch (error) {
+        // On Windows, a concurrent winner may make rename fail because the target now exists.
+        if (!existsSync(thumbPath)) throw error;
+      }
+    } finally {
+      if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
+    }
+    return thumbPath;
+  } catch (error) {
+    logger.warn(error instanceof Error ? error : new Error(String(error)), "Background thumbnail failed for %s", filename);
+    return null;
   }
 }
 
@@ -653,6 +701,7 @@ export async function backgroundsRoutes(app: FastifyInstance) {
   app.get("/file/:filename", async (req, reply) => {
     ensureDir();
     const { filename } = req.params as { filename: string };
+    const requestedWidth = Number((req.query as { w?: string }).w);
 
     // Prevent path traversal
     if (filename.includes("..") || filename.includes("/")) {
@@ -674,10 +723,13 @@ export async function backgroundsRoutes(app: FastifyInstance) {
       ".avif": "image/avif",
     };
 
+    // Downscaled variant when asked for one; falls back to the original on any miss.
+    const thumbPath = requestedWidth ? await resolveThumbPath(filePath, filename, requestedWidth) : null;
+
     const { createReadStream } = await import("fs");
-    const stream = createReadStream(filePath);
+    const stream = createReadStream(thumbPath ?? filePath);
     return reply
-      .header("Content-Type", mimeMap[ext] ?? "application/octet-stream")
+      .header("Content-Type", thumbPath ? "image/webp" : (mimeMap[ext] ?? "application/octet-stream"))
       .header("Cache-Control", "public, max-age=31536000, immutable")
       .send(stream);
   });

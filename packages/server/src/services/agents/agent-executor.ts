@@ -32,6 +32,7 @@ import { logger, logDebugOverride } from "../../lib/logger.js";
 import { wrapContent } from "../prompt/format-engine.js";
 import { sanitizePromptLeaf } from "../prompt/prompt-escaping.js";
 import { settleAgentJobsWithConcurrencyLimit } from "./agent-concurrency.js";
+import { normalizeCyoaChoiceOutput } from "./cyoa-choice-normalization.js";
 import { getAssetManifest } from "../game/asset-manifest.service.js";
 
 const MAX_AGENT_CONTEXT_MESSAGES = 200;
@@ -2756,7 +2757,8 @@ function parseAgentResponse(
   if (agentResponseIsJson(config)) {
     try {
       const jsonStr = extractJson(responseText);
-      const data = JSON.parse(jsonStr);
+      const parsedData: unknown = JSON.parse(jsonStr);
+      const data = config.type === "cyoa" ? normalizeCyoaChoiceOutput(parsedData) : parsedData;
       return { type: resultType, data };
     } catch {
       return { type: resultType, data: { raw: responseText, parseError: true } };

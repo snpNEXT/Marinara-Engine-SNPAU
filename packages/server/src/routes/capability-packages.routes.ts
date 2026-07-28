@@ -84,7 +84,7 @@ export async function capabilityPackagesRoutes(app: FastifyInstance) {
         throw error;
       }
       try {
-        return installed.manifest.kind.includes("turn-game")
+        return installed.manifest.kind.includes("turn-game") && installed.status !== "restart-required"
           ? await capabilityModuleRuntime.activatePackage(app, id)
           : installed;
       } finally {

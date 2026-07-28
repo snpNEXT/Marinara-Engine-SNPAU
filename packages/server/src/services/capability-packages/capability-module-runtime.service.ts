@@ -10,11 +10,13 @@ import {
   type CapabilityRuntimeHost,
   type CapabilityRuntimeLogArgument,
   type InstalledCapabilityPackage,
+  parseAgentSettingsRecord,
 } from "@marinara-engine/shared";
 import { isDebugAgentsEnabled } from "../../config/runtime-config.js";
 import { logger, logDebugOverride } from "../../lib/logger.js";
 import { DATA_DIR } from "../../utils/data-dir.js";
 import { parseGameJsonish } from "../game/jsonish.js";
+import { createAgentsStorage } from "../storage/agents.storage.js";
 import { capabilityPackageManager } from "./package-manager.service.js";
 import {
   registerCapabilityConversationCommand,
@@ -23,8 +25,10 @@ import {
 import { registerCapabilityService } from "./capability-service-registry.service.js";
 import { createCapabilityLanguageModelHost } from "./capability-language-model.service.js";
 import { createCapabilityImageGenerationHost } from "./capability-image-generation.service.js";
+import { createCapabilityEmbeddingHost } from "./capability-embedding.service.js";
 import { createCapabilityPersistenceHost } from "./capability-persistence.service.js";
 import { createCapabilityResourceHost } from "./capability-resources.service.js";
+import { registerCapabilityPrivilegedRoutes } from "./capability-route-registration.service.js";
 
 type Cleanup = () => void | Promise<void>;
 type CapabilityActivationContext = {
@@ -36,6 +40,7 @@ type CapabilityActivationContext = {
     registerTurnGameEngine(engine: AnyTurnGameEngine): Cleanup;
     registerConversationCommand(registration: CapabilityConversationCommandRegistration): Cleanup;
     registerService<T>(key: string, service: T): Cleanup;
+    registerPrivilegedRoutes(routes: import("fastify").FastifyPluginAsync, options: { prefix: string }): Promise<Cleanup>;
   };
 };
 
@@ -45,6 +50,13 @@ function createCapabilityRuntimeHost(
   permissions: readonly string[],
 ): CapabilityRuntimeHost {
   return Object.freeze({
+    embeddings: createCapabilityEmbeddingHost(),
+    async getAgentConfig() {
+      const config = await createAgentsStorage(app.db).getByType(packageId);
+      return config
+        ? { connectionId: config.connectionId, settings: parseAgentSettingsRecord(config.settings) }
+        : null;
+    },
     isDebugAgentsEnabled,
     json: Object.freeze({ parseJsonish: parseGameJsonish }),
     images: createCapabilityImageGenerationHost(app.db, packageId, permissions.includes("image-generation")),
@@ -156,6 +168,8 @@ class CapabilityModuleRuntime {
           registerConversationCommand: (registration) =>
             trackCleanup(registerCapabilityConversationCommand(registration)),
           registerService: (key, service) => trackCleanup(registerCapabilityService(key, service)),
+          registerPrivilegedRoutes: async (routes, options) =>
+            trackCleanup(await registerCapabilityPrivilegedRoutes(app, installed, routes, options)),
         },
       };
       const cleanup = await module.activate(context);

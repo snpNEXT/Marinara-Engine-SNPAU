@@ -18,6 +18,14 @@ interface TypewriterRevealRateInput {
   streamComplete: boolean;
 }
 
+interface RoleplayTypewriterRevealRateInput {
+  selectedCharsPerSecond: number;
+  pendingCharacters: number;
+  previousCharsPerSecond: number | null;
+  elapsedMs: number;
+  streamComplete: boolean;
+}
+
 interface GenerationSendBlockInput {
   streamActive: boolean;
   agentsProcessing: boolean;
@@ -30,6 +38,10 @@ interface GenerationStartBlockInput {
   activeController: boolean;
   backgroundIllustration: boolean;
 }
+
+const ROLEPLAY_QUEUE_RESERVE_SECONDS = 0.9;
+const ROLEPLAY_SLOWDOWN_RESPONSE_MS = 120;
+const ROLEPLAY_SPEEDUP_RESPONSE_MS = 480;
 
 /** Keep send actions guarded while leaving the draft field itself editable. */
 export function isGenerationSendBlocked(input: GenerationSendBlockInput): boolean {
@@ -56,6 +68,38 @@ export function getTypewriterRevealCharsPerSecond(input: TypewriterRevealRateInp
   const initialRateFloor =
     input.observedArrivalCharsPerSecond === null ? Math.min(12, input.selectedCharsPerSecond) : 1;
   return Math.max(initialRateFloor, Math.min(input.selectedCharsPerSecond, arrivalRate * 0.95));
+}
+
+/**
+ * Pace Roleplay from one continuous reveal clock instead of mirroring the
+ * provider's token bursts. The open-stream target leaves roughly a second of
+ * text in the queue; asymmetric easing slows down quickly when that reserve
+ * shrinks and speeds up gently when another provider chunk arrives.
+ *
+ * The user's selected speed remains the ceiling. Completion removes the queue
+ * reserve, but still eases toward that ceiling so the final chunk cannot flash
+ * in at a suddenly faster cadence.
+ */
+export function getRoleplayTypewriterRevealCharsPerSecond(input: RoleplayTypewriterRevealRateInput): number {
+  if (!Number.isFinite(input.selectedCharsPerSecond)) return input.selectedCharsPerSecond;
+
+  const minimumRate = Math.min(6, input.selectedCharsPerSecond);
+  const queueSmoothedTarget = Math.max(
+    minimumRate,
+    input.pendingCharacters / ROLEPLAY_QUEUE_RESERVE_SECONDS,
+  );
+  const targetRate = input.streamComplete
+    ? input.selectedCharsPerSecond
+    : Math.min(input.selectedCharsPerSecond, queueSmoothedTarget);
+
+  if (input.previousCharsPerSecond === null || !Number.isFinite(input.previousCharsPerSecond)) {
+    return targetRate;
+  }
+
+  const responseTimeMs =
+    targetRate < input.previousCharsPerSecond ? ROLEPLAY_SLOWDOWN_RESPONSE_MS : ROLEPLAY_SPEEDUP_RESPONSE_MS;
+  const blend = 1 - Math.exp(-Math.max(0, input.elapsedMs) / responseTimeMs);
+  return input.previousCharsPerSecond + (targetRate - input.previousCharsPerSecond) * blend;
 }
 
 /**

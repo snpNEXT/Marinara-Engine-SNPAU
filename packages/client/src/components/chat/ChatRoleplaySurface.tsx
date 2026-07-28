@@ -177,12 +177,12 @@ function useIsMobileToolbarViewport() {
   return isMobileViewport;
 }
 
-function WeatherEffectsConnected() {
+function WeatherEffectsConnected({ paused }: { paused: boolean }) {
   const weather = useGameStateStore((s) => s.current?.weather ?? null);
   const timeOfDay = useGameStateStore((s) => s.current?.time ?? null);
   return (
     <Suspense fallback={null}>
-      <WeatherEffects weather={weather} timeOfDay={timeOfDay} />
+      <WeatherEffects weather={weather} timeOfDay={timeOfDay} paused={paused} />
     </Suspense>
   );
 }
@@ -256,7 +256,7 @@ function CrossfadeBackground({
         alt=""
         draggable={false}
         className={cn(
-          "mari-background pointer-events-none absolute inset-0 h-full w-full select-none object-fill object-center max-md:object-cover",
+          "mari-background pointer-events-none absolute inset-0 h-full w-full select-none object-cover object-center",
           className,
         )}
         style={{
@@ -270,7 +270,7 @@ function CrossfadeBackground({
         alt=""
         draggable={false}
         className={cn(
-          "mari-background pointer-events-none absolute inset-0 h-full w-full select-none object-fill object-center max-md:object-cover",
+          "mari-background pointer-events-none absolute inset-0 h-full w-full select-none object-cover object-center",
           className,
         )}
         style={{
@@ -1066,6 +1066,7 @@ type RoleplaySurfaceProps = {
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
   isStreaming: boolean;
+  generationVisualsPaused: boolean;
   agentProcessing: boolean;
   regenerateMessageId: string | null;
   shouldAnimateMessages: boolean;
@@ -1183,6 +1184,7 @@ export function ChatRoleplaySurface({
   hasNextPage,
   isFetchingNextPage,
   isStreaming,
+  generationVisualsPaused,
   agentProcessing,
   regenerateMessageId,
   shouldAnimateMessages,
@@ -1277,7 +1279,11 @@ export function ChatRoleplaySurface({
   const topChromeRef = useRef<HTMLDivElement>(null);
   const inputChromeRef = useRef<HTMLDivElement>(null);
   const composerScrollTopRef = useRef(0);
-  const [chromeHeights, setChromeHeights] = useState({ top: 0, bottom: 0 });
+  const chromeInsetsRef = useRef<{ target: HTMLDivElement | null; top: number; bottom: number }>({
+    target: null,
+    top: -1,
+    bottom: -1,
+  });
   const [mobileHistoryComposerCollapsed, setMobileHistoryComposerCollapsed] = useState(false);
   const [authorNotesOpenOwner, setAuthorNotesOpenOwner] = useState<"expanded" | "compact" | null>(null);
   const compactToolbarOwnsAuthorNotes = centerCompact || isMobileToolbarViewport;
@@ -1330,7 +1336,15 @@ export function ChatRoleplaySurface({
     const measure = () => {
       const top = Math.ceil(topChromeRef.current?.getBoundingClientRect().height ?? 0);
       const bottom = Math.ceil(inputChromeRef.current?.getBoundingClientRect().height ?? 0);
-      setChromeHeights((current) => (current.top === top && current.bottom === bottom ? current : { top, bottom }));
+      const scrollElement = scrollRef.current;
+      if (!scrollElement) return;
+      const current = chromeInsetsRef.current;
+      if (current.target === scrollElement && current.top === top && current.bottom === bottom) return;
+      chromeInsetsRef.current = { target: scrollElement, top, bottom };
+      scrollElement.style.setProperty("--mari-roleplay-content-padding-top", `${Math.max(16, top + 12)}px`);
+      scrollElement.style.setProperty("--mari-roleplay-content-padding-bottom", `${Math.max(16, bottom + 12)}px`);
+      scrollElement.style.setProperty("--mari-roleplay-scroll-padding-top", `${Math.max(16, top + 8)}px`);
+      scrollElement.style.setProperty("--mari-roleplay-scroll-padding-bottom", `${Math.max(16, bottom + 12)}px`);
     };
 
     measure();
@@ -1339,7 +1353,7 @@ export function ChatRoleplaySurface({
     if (topChromeRef.current) observer.observe(topChromeRef.current);
     if (inputChromeRef.current) observer.observe(inputChromeRef.current);
     return () => observer.disconnect();
-  }, [activeChatId, centerCompact, chatMeta.enableAgents, chatMeta.sceneStatus, combatAgentEnabled]);
+  }, [activeChatId, centerCompact, chatMeta.enableAgents, chatMeta.sceneStatus, combatAgentEnabled, scrollRef]);
 
   useEffect(() => {
     initialLoadSettledRef.current = false;
@@ -1496,6 +1510,7 @@ export function ChatRoleplaySurface({
         className={cn(
           "rpg-chat-area mari-chat-area mari-card-css relative flex flex-1 flex-col overflow-hidden",
           roleplayReducedPaintEffects && "mari-rp-reduced-paint",
+          generationVisualsPaused && "mari-generation-render-paused",
         )}
         data-chat-mode="roleplay"
         style={{ isolation: "isolate" }}
@@ -1503,7 +1518,7 @@ export function ChatRoleplaySurface({
         <CrossfadeBackground url={chatBackground} blurPx={chatBackgroundBlur} />
         <div className="rpg-overlay absolute inset-0" />
         <div className="rpg-vignette pointer-events-none absolute inset-0" />
-        {weatherEffects && <WeatherEffectsConnected />}
+        {weatherEffects && <WeatherEffectsConnected paused={generationVisualsPaused} />}
         {showSpriteOverlay && (
           <Suspense fallback={null}>
             <SpriteOverlay
@@ -1848,10 +1863,10 @@ export function ChatRoleplaySurface({
                   centerCompact ? "px-3" : "px-3 md:px-8 lg:px-10 xl:px-12",
                 )}
                 style={{
-                  paddingTop: Math.max(16, chromeHeights.top + 12),
-                  paddingBottom: Math.max(16, chromeHeights.bottom + 12),
-                  scrollPaddingTop: Math.max(16, chromeHeights.top + 8),
-                  scrollPaddingBottom: Math.max(16, chromeHeights.bottom + 12),
+                  paddingTop: "var(--mari-roleplay-content-padding-top, 16px)",
+                  paddingBottom: "var(--mari-roleplay-content-padding-bottom, 16px)",
+                  scrollPaddingTop: "var(--mari-roleplay-scroll-padding-top, 16px)",
+                  scrollPaddingBottom: "var(--mari-roleplay-scroll-padding-bottom, 16px)",
                 }}
               >
                 {hasNextPage && (

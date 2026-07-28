@@ -15,11 +15,11 @@ export const noodleReasoningEffortSchema = z
   .nullable();
 export const noodleIdentityDisclosureSchema = z.enum(["open", "hinted", "secret"]);
 export const noodleAutoPostingIntensitySchema = z.union([z.literal(1), z.literal(3), z.literal(6)]);
-export const NOODLE_PRIVATE_POST_TITLE_MAX_LENGTH = 200;
-export const NOODLE_PRIVATE_POST_CONTENT_MAX_LENGTH = 4000;
-// Exact `Title:\n` + `\n\n` + `Body:\n` framing overhead from serializePrivatePostGuide.
-export const NOODLE_PRIVATE_POST_GUIDE_MAX_LENGTH =
-  NOODLE_PRIVATE_POST_TITLE_MAX_LENGTH + NOODLE_PRIVATE_POST_CONTENT_MAX_LENGTH + 15;
+export const NOODLER_POST_TITLE_MAX_LENGTH = 200;
+export const NOODLER_POST_CONTENT_MAX_LENGTH = 4000;
+// Exact `Title:\n` + `\n\n` + `Body:\n` framing overhead from serializeNoodlerPostGuide.
+export const NOODLER_POST_GUIDE_MAX_LENGTH =
+  NOODLER_POST_TITLE_MAX_LENGTH + NOODLER_POST_CONTENT_MAX_LENGTH + 15;
 
 export const DEFAULT_NOODLE_SETTINGS = {
   refreshesPerDay: 2,
@@ -57,7 +57,7 @@ export const DEFAULT_NOODLE_SETTINGS = {
   generationReasoningEffort: null,
   includeChatCharacterStatuses: false,
   enableNoodler: false,
-  privateGenerationGuidance:
+  noodlerGenerationGuidance:
     "All NoodleR creators and viewers are adults (18+). NSFW and explicit content are allowed when appropriate to the creator's personality and current context. Do not force it: stay true to each creator's voice rather than making every post sexual.",
   autoPostingScheduleEnabled: true,
   autoPostingDefaultIntensity: 1,
@@ -115,7 +115,7 @@ export const noodleSettingsSchema = z.object({
   generationReasoningEffort: noodleReasoningEffortSchema.default(DEFAULT_NOODLE_SETTINGS.generationReasoningEffort),
   includeChatCharacterStatuses: z.boolean().default(DEFAULT_NOODLE_SETTINGS.includeChatCharacterStatuses),
   enableNoodler: z.boolean().default(DEFAULT_NOODLE_SETTINGS.enableNoodler),
-  privateGenerationGuidance: z.string().max(4000).default(DEFAULT_NOODLE_SETTINGS.privateGenerationGuidance),
+  noodlerGenerationGuidance: z.string().max(4000).default(DEFAULT_NOODLE_SETTINGS.noodlerGenerationGuidance),
   autoPostingScheduleEnabled: z.boolean().default(DEFAULT_NOODLE_SETTINGS.autoPostingScheduleEnabled),
   autoPostingDefaultIntensity: noodleAutoPostingIntensitySchema.default(
     DEFAULT_NOODLE_SETTINGS.autoPostingDefaultIntensity,
@@ -251,12 +251,12 @@ const noodleStageProfileShape = {
 };
 
 export const noodleStageProfileSchema = z.object(noodleStageProfileShape).strict();
-export const noodlePrivateAccountCreateSchema = z.object({ stageProfile: noodleStageProfileSchema }).strict();
-export const noodleBulkPrivateAccountCreateSchema = z
+export const noodlerAccountCreateSchema = z.object({ stageProfile: noodleStageProfileSchema }).strict();
+export const noodleBulkNoodlerAccountCreateSchema = z
   .object({
     // Cap and dedupe so one accepted request can't fan out into unbounded or
     // duplicated sequential create work, and each public account has exactly one outcome.
-    publicAccountIds: z
+    noodleAccountIds: z
       .array(z.string().min(1).max(64))
       .min(1)
       .max(100)
@@ -268,15 +268,15 @@ export const noodleStageProfileUpdateSchema = z.object(noodleStageProfileShape).
 
 export const noodleStageProfileDraftRequestSchema = z
   .object({
-    publicAccountId: z.string().min(1).optional(),
-    privateAccountId: z.string().min(1).optional(),
+    noodleAccountId: z.string().min(1).optional(),
+    noodlerAccountId: z.string().min(1).optional(),
     disclosureMode: noodleIdentityDisclosureSchema,
     guidance: z.string().trim().max(2000).default(""),
     currentDraft: noodleStageProfileSchema.partial().optional(),
     connectionId: z.string().min(1).optional(),
   })
   .strict()
-  .refine((input) => Boolean(input.publicAccountId || input.privateAccountId), {
+  .refine((input) => Boolean(input.noodleAccountId) !== Boolean(input.noodlerAccountId), {
     message: "Choose a source account.",
   });
 
@@ -413,36 +413,36 @@ export const noodlePostUpdateSchema = z.object({
   poll: noodlePollInputSchema.nullable().optional(),
 });
 
-const noodlePrivatePostTitleValueSchema = z.string().trim().max(NOODLE_PRIVATE_POST_TITLE_MAX_LENGTH).nullable();
-const noodlePrivatePostTitleSchema = noodlePrivatePostTitleValueSchema
+const noodlerPostTitleValueSchema = z.string().trim().max(NOODLER_POST_TITLE_MAX_LENGTH).nullable();
+const noodlerPostTitleSchema = noodlerPostTitleValueSchema
   .optional()
   .transform((value) => value?.trim() || null);
-const noodlePrivatePostTitleUpdateSchema = noodlePrivatePostTitleValueSchema
+const noodlerPostTitleUpdateSchema = noodlerPostTitleValueSchema
   .optional()
   .transform((value) => (value === undefined ? undefined : value?.trim() || null));
 
-const noodlePrivatePostCreateShape = {
+const noodlerPostCreateShape = {
   targetAccountId: z.string().min(1),
-  title: noodlePrivatePostTitleSchema,
-  content: z.string().trim().max(NOODLE_PRIVATE_POST_CONTENT_MAX_LENGTH),
+  title: noodlerPostTitleSchema,
+  content: z.string().trim().max(NOODLER_POST_CONTENT_MAX_LENGTH),
   uploadedImageUrl: z.string().trim().url().max(2000).optional(),
   imageCrop: noodlePostImageCropSchema.optional(),
   poll: noodlePollInputSchema.nullable().optional(),
 };
 
-export const noodlePrivatePostCreateWithMediaSchema = z.union([
-  z.object({ ...noodlePrivatePostCreateShape, access: z.literal("public").default("public") }).strict(),
-  z.object({ ...noodlePrivatePostCreateShape, access: z.literal("subscriber") }).strict(),
+export const noodlerPostCreateWithMediaSchema = z.union([
+  z.object({ ...noodlerPostCreateShape, access: z.literal("public").default("public") }).strict(),
+  z.object({ ...noodlerPostCreateShape, access: z.literal("subscriber") }).strict(),
   z
     .object({
-      ...noodlePrivatePostCreateShape,
+      ...noodlerPostCreateShape,
       access: z.literal("ppv"),
       ppvPrice: z.number().finite().min(0).max(999_999).nullable().optional(),
     })
     .strict(),
 ]);
 
-export const noodlePrivatePostCreateSchema = noodlePrivatePostCreateWithMediaSchema
+export const noodlerPostCreateSchema = noodlerPostCreateWithMediaSchema
   .superRefine((input, ctx) => {
     if (!input.content && !input.poll && !input.uploadedImageUrl) {
       ctx.addIssue({
@@ -453,10 +453,10 @@ export const noodlePrivatePostCreateSchema = noodlePrivatePostCreateWithMediaSch
     }
   });
 
-export const noodlePrivatePostUpdateSchema = z
+export const noodlerPostUpdateSchema = z
   .object({
-    title: noodlePrivatePostTitleUpdateSchema,
-    content: z.string().trim().max(NOODLE_PRIVATE_POST_CONTENT_MAX_LENGTH).optional(),
+    title: noodlerPostTitleUpdateSchema,
+    content: z.string().trim().max(NOODLER_POST_CONTENT_MAX_LENGTH).optional(),
     removeImage: z.literal(true).optional(),
     imageCrop: noodlePostImageCropSchema.nullable().optional(),
     poll: noodlePollInputSchema.nullable().optional(),
@@ -559,16 +559,16 @@ export const noodlePublicGenerationRequestSchema = z
   })
   .strict();
 
-export const noodlePrivatePostGuideSchema = z.string().trim().min(1).max(NOODLE_PRIVATE_POST_GUIDE_MAX_LENGTH);
+export const noodlerPostGuideSchema = z.string().trim().min(1).max(NOODLER_POST_GUIDE_MAX_LENGTH);
 
-export const noodlePrivateProjectWorkSchema = z.string().trim().min(1).max(4000);
+export const noodlerProjectWorkSchema = z.string().trim().min(1).max(4000);
 
-const noodlePrivateGenerationRequestShape = {
-  mode: z.literal("private"),
+const noodlerGenerationRequestShape = {
+  mode: z.literal("noodler"),
   ...noodleGenerationConnectionShape,
   targetAccountId: z.string().min(1),
-  privatePostGuide: noodlePrivatePostGuideSchema.optional(),
-  privateProjectWork: noodlePrivateProjectWorkSchema.optional(),
+  noodlerPostGuide: noodlerPostGuideSchema.optional(),
+  noodlerProjectWork: noodlerProjectWorkSchema.optional(),
   // Manual Guide path may ask to review the image prompt before rendering; the autonomous
   // scheduler never sets this (no human in the loop).
   reviewImagePromptsBeforeSend: z.boolean().optional(),
@@ -577,12 +577,12 @@ const noodlePrivateGenerationRequestShape = {
   poll: noodlePollInputSchema.nullable().optional(),
 };
 
-export const noodlePrivateGenerationRequestSchema = z.union([
-  z.object({ ...noodlePrivateGenerationRequestShape, access: z.literal("public").default("public") }).strict(),
-  z.object({ ...noodlePrivateGenerationRequestShape, access: z.literal("subscriber") }).strict(),
+export const noodlerGenerationRequestSchema = z.union([
+  z.object({ ...noodlerGenerationRequestShape, access: z.literal("public").default("public") }).strict(),
+  z.object({ ...noodlerGenerationRequestShape, access: z.literal("subscriber") }).strict(),
   z
     .object({
-      ...noodlePrivateGenerationRequestShape,
+      ...noodlerGenerationRequestShape,
       access: z.literal("ppv"),
       ppvPrice: z.number().finite().min(0).max(999_999).nullable().optional(),
     })
@@ -591,7 +591,7 @@ export const noodlePrivateGenerationRequestSchema = z.union([
 
 export const noodleGenerationRequestSchema = z.union([
   noodlePublicGenerationRequestSchema,
-  noodlePrivateGenerationRequestSchema,
+  noodlerGenerationRequestSchema,
 ]);
 
 export const noodleNudgeSchema = z.object({
@@ -618,10 +618,10 @@ export const noodleGeneratedPostSchema = z.object({
   poll: noodlePollInputSchema.nullable().optional(),
 });
 
-export const noodleGeneratedPrivatePostSchema = z
+export const noodleGeneratedNoodlerPostSchema = z
   .object({
-    title: noodlePrivatePostTitleSchema,
-    content: z.string().trim().min(1).max(NOODLE_PRIVATE_POST_CONTENT_MAX_LENGTH),
+    title: noodlerPostTitleSchema,
+    content: z.string().trim().min(1).max(NOODLER_POST_CONTENT_MAX_LENGTH),
     imagePrompt: z.string().max(2000).nullable().optional(),
     poll: noodlePollInputSchema.nullable().optional(),
   })
@@ -720,8 +720,8 @@ export type NoodleAccountUpdateInput = z.infer<typeof noodleAccountUpdateSchema>
 export type NoodleAccountProfileUpdateInput = z.infer<typeof noodleAccountProfileUpdateSchema>;
 export type NoodleAccountSettingsPatchInput = z.infer<typeof noodleAccountSettingsPatchSchema>;
 export type NoodleAccountFollowUpdateInput = z.infer<typeof noodleAccountFollowUpdateSchema>;
-export type NoodlePrivateAccountCreateInput = z.infer<typeof noodlePrivateAccountCreateSchema>;
-export type NoodleBulkPrivateAccountCreateInput = z.infer<typeof noodleBulkPrivateAccountCreateSchema>;
+export type NoodlerAccountCreateInput = z.infer<typeof noodlerAccountCreateSchema>;
+export type NoodleBulkNoodlerAccountCreateInput = z.infer<typeof noodleBulkNoodlerAccountCreateSchema>;
 export type NoodleStageProfileInput = z.infer<typeof noodleStageProfileSchema>;
 export type NoodleStageProfileDraftRequest = z.infer<typeof noodleStageProfileDraftRequestSchema>;
 export type NoodleInviteInput = z.infer<typeof noodleInviteSchema>;
@@ -730,8 +730,8 @@ export type NoodlePollInput = z.infer<typeof noodlePollInputSchema>;
 export type NoodlePollData = z.infer<typeof noodlePollSchema>;
 export type NoodleCreatePostInput = z.infer<typeof noodleCreatePostSchema>;
 export type NoodlePostUpdateInput = z.infer<typeof noodlePostUpdateSchema>;
-export type NoodlePrivatePostCreateInput = z.infer<typeof noodlePrivatePostCreateSchema>;
-export type NoodlePrivatePostUpdateInput = z.infer<typeof noodlePrivatePostUpdateSchema>;
+export type NoodlerPostCreateInput = z.infer<typeof noodlerPostCreateSchema>;
+export type NoodlerPostUpdateInput = z.infer<typeof noodlerPostUpdateSchema>;
 export type NoodleCreateInteractionInput = z.infer<typeof noodleCreateInteractionSchema>;
 export type NoodleRemoveInteractionInput = z.infer<typeof noodleRemoveInteractionSchema>;
 export type NoodleInteractionOwnerInput = z.infer<typeof noodleInteractionOwnerSchema>;
@@ -746,14 +746,14 @@ export type NoodlePublicGenerationRequest = InferredNoodlePublicGenerationReques
     AssertNoKeys<
       Extract<
         keyof InferredNoodlePublicGenerationRequest,
-        "targetAccountId" | "privatePostGuide" | "privateProjectWork"
+        "targetAccountId" | "noodlerPostGuide" | "noodlerProjectWork"
       >
     >,
     never
   >;
-export type NoodlePrivatePostGuide = z.infer<typeof noodlePrivatePostGuideSchema>;
-export type NoodlePrivateProjectWork = z.infer<typeof noodlePrivateProjectWorkSchema>;
-export type NoodlePrivateGenerationRequest = z.infer<typeof noodlePrivateGenerationRequestSchema>;
+export type NoodlerPostGuide = z.infer<typeof noodlerPostGuideSchema>;
+export type NoodlerProjectWork = z.infer<typeof noodlerProjectWorkSchema>;
+export type NoodlerGenerationRequest = z.infer<typeof noodlerGenerationRequestSchema>;
 export type NoodleGenerationRequest = z.infer<typeof noodleGenerationRequestSchema>;
 export type NoodleRescheduleRefreshInput = z.infer<typeof noodleRescheduleRefreshSchema>;
 export type NoodleAutoPostRescheduleInput = z.infer<typeof noodleAutoPostRescheduleSchema>;

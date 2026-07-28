@@ -12,6 +12,7 @@ import { logger } from "../lib/logger.js";
 import { getFileStorageDir } from "../config/runtime-config.js";
 import * as schema from "./schema/index.js";
 import { inArray, isFileCondition, isFileOrdering, type FileCondition, type FileOrdering } from "./file-query.js";
+import { migrateLegacyNoodleAccountRow } from "./noodle-platform-migration.js";
 import {
   getFileTableConfig,
   FileUniqueConstraintError,
@@ -238,7 +239,7 @@ export const CASCADES: Array<{ parent: FileBackedTable; child: FileBackedTable; 
       childKey: "creatorAccountId",
     },
     { parent: "noodle_accounts", child: "noodle_post_unlocks", parentKey: "id", childKey: "viewerAccountId" },
-    { parent: "noodle_accounts", child: "noodle_accounts", parentKey: "id", childKey: "publicAccountId" },
+    { parent: "noodle_accounts", child: "noodle_accounts", parentKey: "id", childKey: "noodleAccountId" },
     { parent: "noodle_accounts", child: "noodle_posts", parentKey: "id", childKey: "authorAccountId" },
     { parent: "noodle_posts", child: "noodle_post_unlocks", parentKey: "id", childKey: "postId" },
     { parent: "noodle_posts", child: "noodle_interactions", parentKey: "id", childKey: "postId" },
@@ -1285,9 +1286,17 @@ class FileTableStore {
         recoveredFromFallback,
         unreadablePaths,
       } = parseJsonFile<Row[]>(path, []);
-      const normalized = (Array.isArray(rows) ? rows : []).map((row) => normalizeRow(meta, row));
+      const source = Array.isArray(rows) ? rows : [];
+      const migrate = table === "noodle_accounts" ? migrateLegacyNoodleAccountRow : null;
+      const normalized = source.map((row) => normalizeRow(meta, migrate ? migrate(row) : row));
       this.tables.set(table, normalized);
       counts[table] = normalized.length;
+      if (migrate && source.some((row) => row.platform === undefined)) {
+        // Persist the renamed keys on the next flush, alongside the `visibility` /
+        // `publicAccountId` rollback mirrors the migration deliberately retains.
+        this.dirtyTables.add(table);
+        this.dirty = true;
+      }
       if (recoveredFromBackup || recoveredFromFallback) {
         this.backupRecoveredPaths.add(path);
         // Same self-heal: rewrite the corrupt main file from in-memory data on

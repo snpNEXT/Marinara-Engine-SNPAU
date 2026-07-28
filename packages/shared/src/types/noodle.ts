@@ -4,9 +4,15 @@
 import type { LegacyPersonaAvatarCrop, PersonaAvatarCrop } from "./persona.js";
 
 export type NoodleAccountKind = "persona" | "character" | "random_user";
-export type NoodleAccountVisibility = "public" | "private";
+/**
+ * Which simulated platform an account lives on. This is content separation
+ * between two fictional products, NOT a privacy or security control — see
+ * `NoodlePostAccess` for the actual paywall/visibility concept.
+ */
+export type NoodlePlatform = "noodle" | "noodler";
 export type NoodleInteractionType = "like" | "repost" | "reply" | "vote";
 export type NoodlePostSource = "manual" | "generated";
+/** The real privacy concept: who may read a NoodleR post. Deliberately keeps the word "public". */
 export type NoodlePostAccess = "public" | "subscriber" | "ppv";
 export type NoodleTheme = "system" | "light" | "dark";
 export type NoodleCarryoverMode = "off" | "conversation" | "roleplay" | "game" | "all";
@@ -58,7 +64,7 @@ export type NoodlerRefreshNowOutcomeStatus =
   | "busy"
   | "connection_required"
   | "connection_not_found"
-  | "private_account_not_found"
+  | "noodler_account_not_found"
   | "skipped"
   | "error";
 
@@ -133,8 +139,8 @@ export interface NoodleSettings {
   generationReasoningEffort: NoodleReasoningEffort;
   includeChatCharacterStatuses: boolean;
   enableNoodler: boolean;
-  /** Editable creative guidance injected into every NoodleR private-post generation. */
-  privateGenerationGuidance: string;
+  /** Editable creative guidance injected into every NoodleR post generation. */
+  noodlerGenerationGuidance: string;
   /** Master switch for automatic posting; pauses the scheduler without disabling NoodleR. */
   autoPostingScheduleEnabled: boolean;
   /** Cadence applied when a creator's automatic posting is first turned on. */
@@ -152,15 +158,15 @@ export interface NoodleAccount {
   avatarCrop: NoodleAvatarCrop | null;
   invited: boolean;
   settings: NoodleAccountSettings;
-  visibility: NoodleAccountVisibility;
-  publicAccountId: string | null;
+  platform: NoodlePlatform;
+  noodleAccountId: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface NoodlerStageProfile {
   id: string;
-  publicAccountId: string | null;
+  noodleAccountId: string | null;
   handle: string;
   displayName: string;
   bio: string;

@@ -1,17 +1,17 @@
 const activeAccountOperations = new Set<string>();
 
-export type NoodlePrivateAccountOperationResult<T> =
+export type NoodlerAccountOperationResult<T> =
   | { acquired: true; value: T }
   | { acquired: false };
 
 /**
- * Serializes identity-sensitive work for one private account in this server process.
+ * Serializes identity-sensitive work for one NoodleR account in this server process.
  * It intentionally does not coordinate multiple Marinara processes.
  */
-export async function tryNoodlePrivateAccountOperation<T>(
+export async function tryNoodlerAccountOperation<T>(
   accountId: string,
   operation: () => Promise<T>,
-): Promise<NoodlePrivateAccountOperationResult<T>> {
+): Promise<NoodlerAccountOperationResult<T>> {
   if (activeAccountOperations.has(accountId)) return { acquired: false };
   activeAccountOperations.add(accountId);
   try {

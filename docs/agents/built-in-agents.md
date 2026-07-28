@@ -1,6 +1,6 @@
 # Downloadable Agents Reference
 
-This guide lists all 29 official first-party packages available through **Agents → Download Agents**, grouped by category. Agents do not ship inside a fresh Marinara Engine installation. Their package sources, manifests, artifacts, and machine-readable catalog are published in [Pasta-Devs/Marinara-Agents](https://github.com/Pasta-Devs/Marinara-Agents). For each one, this guide explains what the agent does, when it runs or integrates, which chat modes allow it, and the main settings. For installation and activation, read the [Agents overview](agents-overview.md) first.
+This guide lists all 30 official first-party packages available through **Agents → Download Agents**, grouped by category. Agents do not ship inside a fresh Marinara Engine installation. Their package sources, manifests, artifacts, and machine-readable catalog are published in [Pasta-Devs/Marinara-Agents](https://github.com/Pasta-Devs/Marinara-Agents). For each one, this guide explains what the agent does, when it runs or integrates, which chat modes allow it, and the main settings. For installation and activation, read the [Agents overview](agents-overview.md) first.
 
 ## How to read this reference
 
@@ -150,6 +150,16 @@ Simulates a live audience reacting to your scene, shown as a floating **Echo** w
 - **Phase**: Parallel.
 - **Where it works**: Roleplay.
 - **Key settings**: you pick a style from its named options, such as **AO3 / Wattpad**, **Twitter / Reddit**, **4chan**, **Constructive**, **Hype Squad**, and **Harbingers**. Controls in the widget include **Re-run Echo Chamber** and **Clear messages**.
+
+### Long-Term Memory
+
+Extracts durable memories from chat summaries, character records, and lorebooks into a package-owned vault, then recalls relevant context before the main reply. It supports scoped vault browsing, source imports, pending-draft review, and preset-marker placement for recalled context.
+
+- **Integration**: Feature package; it contributes pre-generation context and memory management UI instead of running as a normal post-processing tracker.
+- **Where it works**: Conversation, Roleplay, Visual Novel, and Game. Visual Novel uses the Roleplay extraction profile.
+- **Key settings**: enablement, recall token budget (128-16,384), maximum recalled chunks (1-100), score threshold, recent-message context (1-20), recall style and semantic, lexical, graph, and keyword weights, resolved-memory inclusion, recall preamble, extraction reasoning and verbosity, generation limits, source limits, prompt templates, AI keyword extraction, and Game-mode extraction.
+- **Data lifecycle**: use the Memory Settings backup controls to export or replace the vault, drafts, and settings. Delete all data permanently removes memories, drafts, activity, and derived indexes while retaining settings. Uninstalling the package preserves the Long-Term Memory vault for a later reinstall. Installing, updating, or removing it requires a Marinara restart.
+- **Compatibility**: Engine `2.3.3` through before `2.4.0`. The package uses `agent-runtime`, `chat-read`, `routes`, `storage`, and `ui` permissions.
 
 ### Illustrator
 

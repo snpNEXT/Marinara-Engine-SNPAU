@@ -778,7 +778,7 @@ export interface NoodlePostCardCtx {
   updatePostPending: boolean;
   /** Human controller edit/delete capability. Viewer-only projections set this false. */
   postManagement: boolean;
-  /** Private-title editing. Public Noodle omits this capability and remains titleless. */
+  /** NoodleR title editing. Noodle posts omit this capability and remain titleless. */
   titleEditing?: NoodlePostCardTitleEditingCap;
   /** Existing-poll editing. Poll-less posts do not expose an add-poll path here. */
   pollEditing?: {
@@ -789,7 +789,7 @@ export interface NoodlePostCardCtx {
   allowPollOnlyEdits?: boolean;
   /** Navigate to an author/mention profile. Omit on hosts without profile navigation (NoodleR). */
   openProfile?: (account: NoodleAccount | null) => void;
-  /** Navigate by private author ID when no public account object exists. */
+  /** Navigate by NoodleR author ID when no Noodle account object exists. */
   openAuthorProfile?: (accountId: string) => void;
   /** Ask an invited character to reply to this post. */
   onNudgeReply?: (post: NoodlePostCardModel) => void;
@@ -1490,7 +1490,7 @@ export function NoodlePostCard({
                   value={editingPostContent}
                   onChange={(event) => setEditingPostContent(event.target.value)}
                 className="min-h-20 w-full resize-none rounded-lg border-0 bg-[var(--noodle-accent)]/5 px-3 py-2 text-[1rem] leading-6 text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)] focus:bg-[var(--noodle-accent)]/10"
-                  placeholder={localizeUi("ui.noodle.privatepostcomposer.whatSSimmeringPrivately")}
+                  placeholder={localizeUi("ui.noodle.noodlerpostcomposer.whatSSimmering")}
                 />
                 {imageEditing && (
                   <PostImageEditControls

@@ -250,6 +250,9 @@ export function getCapabilityPackageInstallIssue(manifest: CapabilityCatalogPack
   if (manifest.kind.includes("turn-game") && !manifest.entrypoints.server) {
     return "Turn-game packages require a server entrypoint";
   }
+  if (manifest.permissions.includes("routes") && !manifest.restartRequired) {
+    return "Packages with privileged routes must require a restart";
+  }
   return null;
 }
 

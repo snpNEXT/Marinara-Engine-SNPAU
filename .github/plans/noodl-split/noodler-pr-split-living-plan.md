@@ -8,6 +8,28 @@ This Living Plan replaces the historical repository v2 plan. Kickoff prompts rem
 self-contained; this file is the planning authority unless product direction
 explicitly replaces it.
 
+## Terminology — "private" is retired
+
+Earlier slices called the NoodleR side of the split **private**. That word is gone from the
+code and the UI as of the platform rename. It read as a real privacy or security guarantee to
+users, and it collided with the genuine access concept one level down.
+
+Historical slice descriptions below are left in their original wording; **new work must use the
+current vocabulary**:
+
+| Old | Current |
+| --- | --- |
+| `visibility: "public" \| "private"` | `platform: "noodle" \| "noodler"` |
+| `publicAccountId` | `noodleAccountId` |
+| "private account" / "private post" | "NoodleR account" / "NoodleR post" |
+| `generatePrivatePost` / `noodlePrivate*` | `generateNoodlerPost` / `noodleNoodler*` — see `packages/server/src/services/noodle/noodle-noodler-*.ts` |
+| `privatePostGuide` | `noodlerPostGuide` |
+| `privateGenerationGuidance` | `noodlerGenerationGuidance` |
+
+The one thing that keeps the word: post-level `access: "public" | "subscriber" | "ppv"`
+(`noodler-access.ts`) is the actual paywall/visibility control and is deliberately unchanged.
+`platform` says *which simulated app an account lives on*; `access` says *who may read a post*.
+
 ## Product charter
 
 NoodleR is Marinara's standalone **18+ adult creator-platform simulation**, analogous
