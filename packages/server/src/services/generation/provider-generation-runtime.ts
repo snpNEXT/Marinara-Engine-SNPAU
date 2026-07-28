@@ -57,7 +57,7 @@ type GenerationProviderRuntimeArgs = {
     frequencyPenalty: number;
     presencePenalty: number;
     showThoughts: boolean;
-    reasoningEffort: "low" | "medium" | "high" | "xhigh" | "maximum" | null;
+    reasoningEffort: "low" | "medium" | "high" | "minimal" | "xhigh" | "maximum" | null;
     verbosity: "low" | "medium" | "high" | null;
     serviceTier: "flex" | "priority" | null;
     assistantPrefill: string;

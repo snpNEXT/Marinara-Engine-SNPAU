@@ -221,14 +221,14 @@ export function resolveGeminiThinkingConfig(
   if (!options.enableThinking && !options.reasoningEffort) return undefined;
 
   if (/gemini-3/i.test(model)) {
-    const levelMap = { low: "low", medium: "medium", high: "high", xhigh: "high", max: "high" } as const;
+    const levelMap = { low: "low", minimal: "low", medium: "medium", high: "high", xhigh: "high", max: "high" } as const;
     return {
       thinkingLevel: options.reasoningEffort ? levelMap[options.reasoningEffort] : "high",
       includeThoughts: true,
     };
   }
 
-  const budgetMap = { low: 1024, medium: 8192, high: 24576, xhigh: 24576, max: 24576 } as const;
+  const budgetMap = { low: 1024, minimal: 1024, medium: 8192, high: 24576, xhigh: 24576, max: 24576 } as const;
   const requestedBudget = options.reasoningEffort ? budgetMap[options.reasoningEffort] : 8192;
   return {
     thinkingBudget: capGeminiThinkingBudget(requestedBudget, maxOutputTokens),

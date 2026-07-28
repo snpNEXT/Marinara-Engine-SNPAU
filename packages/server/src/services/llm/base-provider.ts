@@ -139,7 +139,7 @@ export interface ChatOptions {
    * `none` is an explicit request to disable thinking; `undefined` leaves the
    * provider/model default untouched.
    */
-  reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh" | "max";
+  reasoningEffort?: "none" | "low" | "medium" | "high" | "minimal" | "xhigh" | "max";
   /** When true, previous provider-native reasoning state is not reused. */
   excludePastReasoning?: boolean;
   /** Output verbosity for GPT-5+ models */
