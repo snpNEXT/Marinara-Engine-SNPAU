@@ -300,7 +300,10 @@ export function ConversationMessageBubble({ ctx }: { ctx: MessageRenderContext }
 
           {!isHiddenCollapsed && (
             <>
-              <ConversationMessageTranslation translatedText={translatedText} isTranslating={isTranslating} />
+              <ConversationMessageTranslation
+                translatedText={ctx.showTranslationOnly ? null : translatedText}
+                isTranslating={isTranslating}
+              />
               <ConversationMessageAttachments
                 attachments={extra.attachments ?? []}
                 renderedContent={renderedContent}

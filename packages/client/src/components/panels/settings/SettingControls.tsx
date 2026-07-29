@@ -596,6 +596,7 @@ type SettingsSwitchProps = SettingsSwitchAccessibleLabel & {
   title?: string;
   description?: ReactNode;
   help?: string;
+  helpPosition?: "control" | "label";
   endAction?: ReactNode;
   disabled?: boolean;
   labelPosition?: "start" | "end";
@@ -614,6 +615,7 @@ export function SettingsSwitch({
   title,
   description,
   help,
+  helpPosition = "control",
   endAction,
   disabled = false,
   labelPosition = "end",
@@ -660,7 +662,7 @@ export function SettingsSwitch({
   );
   const switchCluster = (
     <span className="inline-flex shrink-0 items-center gap-1.5">
-      {help && <HelpTooltip text={localize(help)} />}
+      {help && helpPosition === "control" && <HelpTooltip text={localize(help)} />}
       {switchControl}
       {endAction}
     </span>
@@ -671,6 +673,7 @@ export function SettingsSwitch({
         <label htmlFor={inputId} className={cn("min-w-0", disabled ? "cursor-not-allowed" : "cursor-pointer")}>
           {localizedLabel}
         </label>
+        {help && helpPosition === "label" && <HelpTooltip text={localize(help)} />}
       </span>
       {localizedDescription && (
         <label

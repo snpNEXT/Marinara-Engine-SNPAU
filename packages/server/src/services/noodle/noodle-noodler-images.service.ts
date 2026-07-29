@@ -72,11 +72,11 @@ export async function generateNoodlerPostImage(input: {
   let characterImageInstructions = "";
   let characterPersonality = "";
   let referenceImages: string[] | undefined;
-  // Identity protection applies to reference selection: only an OPEN disclosure may draw
-  // on the linked public identity's appearance. Hinted/secret creators get no identifying
-  // reference material.
+  // Hinted identities may use non-identifying card context for prompt quality, but only
+  // open identities may contribute recognizable avatar/reference images.
   const referenceCharacter =
-    input.disclosureMode === "open" && input.linkedPublicAccount?.kind === "character"
+    (input.disclosureMode === "open" || input.disclosureMode === "hinted") &&
+    input.linkedPublicAccount?.kind === "character"
       ? input.linkedPublicAccount
       : null;
   if (referenceCharacter) {
@@ -105,7 +105,11 @@ export async function generateNoodlerPostImage(input: {
         if (input.settings.imageGenerationIncludeDescriptions && referenceResolution.appearanceBlock) {
           characterDescription = referenceResolution.appearanceBlock;
         }
-        if (input.settings.imageGenerationUseAvatarReferences && referenceResolution.referenceImages.length > 0) {
+        if (
+          input.disclosureMode === "open" &&
+          input.settings.imageGenerationUseAvatarReferences &&
+          referenceResolution.referenceImages.length > 0
+        ) {
           referenceImages = Array.from(new Set(referenceResolution.referenceImages)).slice(0, 6);
         }
       }

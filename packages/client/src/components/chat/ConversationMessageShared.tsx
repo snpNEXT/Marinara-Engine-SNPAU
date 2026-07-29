@@ -123,6 +123,7 @@ export interface MessageRenderContext {
   isLastAssistantMessage?: boolean;
   translatedText?: string | null;
   isTranslating: boolean;
+  showTranslationOnly: boolean;
   // swipes
   hasSwipes: boolean;
   swipeCount: number;
@@ -464,7 +465,7 @@ export function ConversationMessageEditForm({
         ref={editRef}
         value={editValue}
         onChange={(e) => {
-          const nextValue = applyTextareaQuoteFormat(e.currentTarget, quoteFormat);
+          const nextValue = applyTextareaQuoteFormat(e.currentTarget, quoteFormat, e.nativeEvent as InputEvent);
           onValueChange(nextValue);
           const el = e.target;
           el.style.height = "auto";

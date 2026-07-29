@@ -40,7 +40,13 @@ type SyncedSettingsObject = ReturnType<typeof pickSyncedSettings>;
 type ServerSettingsPayload = SyncedSettingsObject & { __updatedAt?: number };
 type ParsedSettings = Partial<SyncedSettingsObject> & Record<string, unknown>;
 
-const LOCAL_ONLY_SETTING_KEYS = ["fontSize", "chatFontSize", "trackerPanelOpen"] as const;
+const LOCAL_ONLY_SETTING_KEYS = [
+  "fontSize",
+  "chatFontSize",
+  "trackerPanelOpen",
+  "impersonatePromptTemplate",
+  "activeImpersonatePromptTemplateId",
+] as const;
 
 export function omitLocalOnlySettings(settings: ParsedSettings): ParsedSettings {
   const sanitized = { ...settings };

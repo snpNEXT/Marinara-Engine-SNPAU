@@ -2107,6 +2107,21 @@ function buildCommittedTrackerStateContext(
   ].join("\n");
 }
 
+export function buildIllustratorImageStyleInstructionBlock(styleInstruction: unknown): string {
+  const instruction = typeof styleInstruction === "string" ? styleInstruction.trim() : "";
+  if (!instruction) return "";
+  return [
+    `<illustrator_image_style>`,
+    `The selected Illustrator prompt template and this visual style instruction are cumulative; follow both.`,
+    `The selected prompt template controls the requested image format, composition, panel layout, subjects, and text behavior. The style instruction controls only the visual treatment.`,
+    `If the style instruction contains generic framing or composition defaults that conflict with the selected prompt template, ignore those conflicting defaults and preserve the selected format.`,
+    `Never replace Comic Page or manga panels and lettering with a single illustration, and never replace Background, Illustration, or Selfie framing with another format.`,
+    `Visual style instruction for the image prompt you write: ${escapeXml(instruction)}`,
+    `Carry the resulting visual treatment into both the JSON "style" field and the generated "prompt". Do not copy this meta-instruction verbatim.`,
+    `</illustrator_image_style>`,
+  ].join("\n");
+}
+
 /**
  * Build the full multi-turn message array for an agent call.
  *
@@ -2409,6 +2424,18 @@ function buildAgentExtras(context: AgentContext, agentTypes: string[] = []): str
     parts.push(`</current_game_state>`);
   }
 
+  const gameImageStylePrompt =
+    context.chatMode === "game" && typeof context.memory._gameImageStylePrompt === "string"
+      ? context.memory._gameImageStylePrompt.trim()
+      : "";
+
+  if (agentTypes.includes("illustrator") && !gameImageStylePrompt) {
+    const illustratorStyleBlock = buildIllustratorImageStyleInstructionBlock(
+      context.memory._illustratorImageStyleInstruction,
+    );
+    if (illustratorStyleBlock) parts.push(illustratorStyleBlock);
+  }
+
   if (agentTypes.includes("character-tracker") && context.characterTrackerHistory?.length) {
     parts.push(`<character_tracker_history>`);
     parts.push(
@@ -2418,10 +2445,6 @@ function buildAgentExtras(context: AgentContext, agentTypes: string[] = []): str
     parts.push(`</character_tracker_history>`);
   }
 
-  const gameImageStylePrompt =
-    context.chatMode === "game" && typeof context.memory._gameImageStylePrompt === "string"
-      ? context.memory._gameImageStylePrompt.trim()
-      : "";
   if (agentTypes.includes("illustrator") && gameImageStylePrompt) {
     parts.push(`<game_image_instructions>`);
     parts.push(
@@ -2477,15 +2500,14 @@ function buildAgentExtras(context: AgentContext, agentTypes: string[] = []): str
   if (context.memory._availableBackgrounds) {
     const bgs = context.memory._availableBackgrounds as Array<{
       filename: string;
-      originalName?: string | null;
       tags: string[];
       source?: "user" | "game_asset";
     }>;
     parts.push(`<available_backgrounds>`);
     for (const bg of bgs) {
-      const label = bg.originalName ? `${bg.filename} (${bg.originalName})` : bg.filename;
+      const label = escapeXml(bg.filename);
       const source = bg.source === "game_asset" ? " [source: game asset]" : "";
-      const tagStr = bg.tags.length > 0 ? ` [tags: ${bg.tags.join(", ")}]` : "";
+      const tagStr = bg.tags.length > 0 ? ` [tags: ${escapeXml(bg.tags.join(", "))}]` : "";
       parts.push(`- ${label}${source}${tagStr}`);
     }
     parts.push(`</available_backgrounds>`);

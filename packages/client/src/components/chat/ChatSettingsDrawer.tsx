@@ -9224,12 +9224,14 @@ export function ChatSettingsDrawer({
           <div style={{ order: CHAT_SETTINGS_ORDER.functionCalling }}>
             <FunctionCallingSection
               enableTools={metadata.enableTools as boolean | undefined}
+              forceToolCall={metadata.forceToolCall as boolean | undefined}
               activeToolIds={activeToolIds}
               pendingToolIds={pendingToolIds}
               availableTools={availableTools}
               showToolPicker={showToolPicker}
               toolSearch={toolSearch}
               onEnableToolsChange={(enableTools) => updateMeta.mutate({ id: chat.id, enableTools })}
+              onForceToolCallChange={(forceToolCall) => updateMeta.mutate({ id: chat.id, forceToolCall })}
               onToggleTool={toggleTool}
               onShowToolPickerChange={setShowToolPicker}
               onToolSearchChange={setToolSearch}
@@ -9277,7 +9279,11 @@ export function ChatSettingsDrawer({
               disableMessageMerge={metadata.disableMessageMerge as boolean | undefined}
               imageCaptioningEnabled={metadata.imageCaptioningEnabled as boolean | undefined}
               imageCaptioningConnectionId={
-                typeof metadata.imageCaptioningConnectionId === "string" ? metadata.imageCaptioningConnectionId : null
+                Object.prototype.hasOwnProperty.call(metadata, "imageCaptioningConnectionId")
+                  ? typeof metadata.imageCaptioningConnectionId === "string"
+                    ? metadata.imageCaptioningConnectionId
+                    : null
+                  : undefined
               }
               onChatParametersChange={(chatParameters) => updateMeta.mutate({ id: chat.id, chatParameters })}
               onContextMessageLimitChange={(contextMessageLimit) =>

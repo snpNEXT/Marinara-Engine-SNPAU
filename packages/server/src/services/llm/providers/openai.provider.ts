@@ -940,7 +940,10 @@ export class OpenAIProvider extends BaseLLMProvider {
     if (isOpenAIGpt56Model(normalizedModel) && options.excludePastReasoning !== undefined) {
       reasoning.context = options.excludePastReasoning ? "current_turn" : "all_turns";
     }
-    if (options.enableThinking) {
+    if (
+      (options.enableThinking || options.captureReasoning) &&
+      !this.hasExplicitReasoningDisable(options.reasoningEffort)
+    ) {
       reasoning.summary = "auto";
     }
     if (Object.keys(reasoning).length > 0) {
@@ -1141,7 +1144,10 @@ export class OpenAIProvider extends BaseLLMProvider {
 
     if (!suppressModelParameters) {
       if (this.shouldSendStopSequences(options.model) && options.stop?.length) body.stop = options.stop;
-      if (options.tools?.length && !options.forceTextualToolCalls) body.tools = options.tools;
+      if (options.tools?.length && !options.forceTextualToolCalls) {
+        body.tools = options.tools;
+        body.tool_choice = options.toolChoice ?? "auto";
+      }
       if (effectiveStream) body.stream_options = { include_usage: true };
 
       // o-series models never support temperature/topP; GPT-5.x only with effort=none
@@ -1420,7 +1426,7 @@ export class OpenAIProvider extends BaseLLMProvider {
       (!suppressModelParameters || this.allowsToolCalling)
     ) {
       body.tools = options.tools;
-      body.tool_choice = "auto";
+      body.tool_choice = options.toolChoice ?? "auto";
     }
 
     if (!suppressModelParameters) {
@@ -1979,9 +1985,11 @@ export class OpenAIProvider extends BaseLLMProvider {
       !isOpenAIChatGPT &&
       !suppressModelParameters &&
       options.tools?.length &&
+      !options.forceTextualToolCalls &&
       !this.isXAIMultiAgentModel(options.model)
     ) {
       body.tools = this.formatResponsesTools(options.tools);
+      body.tool_choice = options.toolChoice ?? "auto";
     }
 
     if (!isOpenAIChatGPT) {
@@ -2058,24 +2066,7 @@ export class OpenAIProvider extends BaseLLMProvider {
         "OpenAI chatResponses() non-stream response",
       );
       OpenAIProvider.assertResponsesSucceeded(json, "OpenAI chatResponses() non-stream response");
-      // Extract reasoning summaries for non-streaming
-      if (options.onThinking) {
-        const output = json.output as Array<Record<string, unknown>> | undefined;
-        if (output) {
-          for (const item of output) {
-            if (item.type === "reasoning") {
-              const summary = item.summary as Array<Record<string, unknown>> | undefined;
-              if (summary) {
-                for (const part of summary) {
-                  if (part.type === "summary_text" && typeof part.text === "string") {
-                    options.onThinking(part.text);
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
+      this.emitMissingResponsesReasoningSummary(json, options, "");
       // Emit encrypted reasoning items for multi-turn context
       this.emitEncryptedReasoning(json, options);
       const text = this.extractResponsesText(json);
@@ -2109,6 +2100,7 @@ export class OpenAIProvider extends BaseLLMProvider {
     let streamUsage: LLMUsage | undefined;
     let yieldedAny = false;
     let currentEvent = "";
+    let emittedReasoningSummary = "";
 
     try {
       while (true) {
@@ -2157,7 +2149,30 @@ export class OpenAIProvider extends BaseLLMProvider {
             }
             case "response.reasoning_summary_text.delta": {
               const delta = parsed.delta as string | undefined;
-              if (delta && options.onThinking) options.onThinking(delta);
+              if (delta && options.onThinking) {
+                emittedReasoningSummary += delta;
+                options.onThinking(delta);
+              }
+              break;
+            }
+            case "response.reasoning_summary_text.done":
+            case "response.reasoning_summary_part.done": {
+              emittedReasoningSummary = this.emitMissingResponsesReasoningSummaryText(
+                this.extractResponsesReasoningSummaryEvent(parsed),
+                options,
+                emittedReasoningSummary,
+              );
+              break;
+            }
+            case "response.output_item.done": {
+              const item = parsed.item as Record<string, unknown> | undefined;
+              if (item?.type === "reasoning") {
+                emittedReasoningSummary = this.emitMissingResponsesReasoningSummary(
+                  { output: [item] },
+                  options,
+                  emittedReasoningSummary,
+                );
+              }
               break;
             }
             case "response.refusal.delta": {
@@ -2183,6 +2198,11 @@ export class OpenAIProvider extends BaseLLMProvider {
                   };
                 }
                 this.emitEncryptedReasoning(resp, options);
+                emittedReasoningSummary = this.emitMissingResponsesReasoningSummary(
+                  resp,
+                  options,
+                  emittedReasoningSummary,
+                );
                 // If no text was streamed (e.g. refusal or content only in the
                 // completed payload), extract it as a last-resort fallback.
                 if (!yieldedAny) {
@@ -2209,6 +2229,11 @@ export class OpenAIProvider extends BaseLLMProvider {
               if (resp) {
                 streamUsage = this.extractResponsesUsage(resp);
                 this.emitEncryptedReasoning(resp, options);
+                emittedReasoningSummary = this.emitMissingResponsesReasoningSummary(
+                  resp,
+                  options,
+                  emittedReasoningSummary,
+                );
                 if (!yieldedAny) {
                   const fallback = this.extractResponsesText(resp);
                   if (fallback) {
@@ -2294,24 +2319,7 @@ export class OpenAIProvider extends BaseLLMProvider {
         "OpenAI chatCompleteResponses() non-stream response",
       );
       OpenAIProvider.assertResponsesSucceeded(json, "OpenAI chatCompleteResponses() non-stream response");
-      // Extract reasoning summaries
-      if (options.onThinking) {
-        const output = json.output as Array<Record<string, unknown>> | undefined;
-        if (output) {
-          for (const item of output) {
-            if (item.type === "reasoning") {
-              const summary = item.summary as Array<Record<string, unknown>> | undefined;
-              if (summary) {
-                for (const part of summary) {
-                  if (part.type === "summary_text" && typeof part.text === "string") {
-                    options.onThinking(part.text);
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
+      this.emitMissingResponsesReasoningSummary(json, options, "");
       // Emit encrypted reasoning items for multi-turn context
       this.emitEncryptedReasoning(json, options);
       return this.parseResponsesResult(json);
@@ -2339,6 +2347,7 @@ export class OpenAIProvider extends BaseLLMProvider {
     // Track in-progress function call argument deltas keyed by call_id
     const fnCallArgs = new Map<string, { id: string; name: string; arguments: string }>();
     let currentEvent = "";
+    let emittedReasoningSummary = "";
 
     try {
       while (true) {
@@ -2396,7 +2405,20 @@ export class OpenAIProvider extends BaseLLMProvider {
 
             case "response.reasoning_summary_text.delta": {
               const delta = parsed.delta as string | undefined;
-              if (delta && options.onThinking) options.onThinking(delta);
+              if (delta && options.onThinking) {
+                emittedReasoningSummary += delta;
+                options.onThinking(delta);
+              }
+              break;
+            }
+
+            case "response.reasoning_summary_text.done":
+            case "response.reasoning_summary_part.done": {
+              emittedReasoningSummary = this.emitMissingResponsesReasoningSummaryText(
+                this.extractResponsesReasoningSummaryEvent(parsed),
+                options,
+                emittedReasoningSummary,
+              );
               break;
             }
 
@@ -2455,6 +2477,12 @@ export class OpenAIProvider extends BaseLLMProvider {
                     arguments: entry?.arguments ?? (item.arguments as string) ?? "",
                   },
                 });
+              } else if (item?.type === "reasoning") {
+                emittedReasoningSummary = this.emitMissingResponsesReasoningSummary(
+                  { output: [item] },
+                  options,
+                  emittedReasoningSummary,
+                );
               }
               break;
             }
@@ -2464,6 +2492,11 @@ export class OpenAIProvider extends BaseLLMProvider {
               if (resp) {
                 streamUsage = this.extractResponsesUsage(resp);
                 this.emitEncryptedReasoning(resp, options);
+                emittedReasoningSummary = this.emitMissingResponsesReasoningSummary(
+                  resp,
+                  options,
+                  emittedReasoningSummary,
+                );
                 const status = resp.status as string | undefined;
                 if (status === "incomplete") {
                   finishReason = OpenAIProvider.normalizeResponsesIncompleteFinishReason(
@@ -2494,6 +2527,13 @@ export class OpenAIProvider extends BaseLLMProvider {
               const reason = (resp?.incomplete_details as Record<string, unknown>)?.reason ?? "unknown";
               logger.warn("[OpenAI Responses] chatCompleteResponses stream incomplete (reason=%s)", reason);
               finishReason = OpenAIProvider.normalizeResponsesIncompleteFinishReason(reason);
+              if (resp) {
+                emittedReasoningSummary = this.emitMissingResponsesReasoningSummary(
+                  resp,
+                  options,
+                  emittedReasoningSummary,
+                );
+              }
               break;
             }
           }
@@ -2572,6 +2612,82 @@ export class OpenAIProvider extends BaseLLMProvider {
     if (!options.onEncryptedReasoning) return;
     const items = this.extractEncryptedReasoningItems(json);
     if (items.length > 0) options.onEncryptedReasoning(items);
+  }
+
+  /** Extract the displayable summary from Responses API reasoning output items. */
+  private extractResponsesReasoningSummary(json: Record<string, unknown>): string {
+    const output = json.output as Array<Record<string, unknown>> | undefined;
+    if (!output) return "";
+
+    let summaryText = "";
+    for (const item of output) {
+      if (item.type !== "reasoning" || !Array.isArray(item.summary)) continue;
+      for (const part of item.summary) {
+        if (
+          typeof part === "object" &&
+          part !== null &&
+          (part as Record<string, unknown>).type === "summary_text" &&
+          typeof (part as Record<string, unknown>).text === "string"
+        ) {
+          summaryText += (part as Record<string, unknown>).text;
+        }
+      }
+    }
+    return summaryText;
+  }
+
+  /** Extract a completed displayable summary from Responses API stream events. */
+  private extractResponsesReasoningSummaryEvent(event: Record<string, unknown>): string {
+    if (typeof event.text === "string") return event.text;
+
+    const part = event.part as Record<string, unknown> | undefined;
+    if (part?.type === "summary_text" && typeof part.text === "string") {
+      return part.text;
+    }
+    return "";
+  }
+
+  /**
+   * Emit only summary text that has not already arrived through another
+   * Responses event. OpenAI may repeat the full summary in text.done,
+   * part.done, output_item.done, and response.completed events.
+   */
+  private emitMissingResponsesReasoningSummaryText(
+    finalSummary: string,
+    options: ChatOptions,
+    emittedSummary: string,
+  ): string {
+    if (!options.onThinking) return emittedSummary;
+    if (!finalSummary || finalSummary === emittedSummary || emittedSummary.startsWith(finalSummary)) {
+      return emittedSummary;
+    }
+
+    if (finalSummary.startsWith(emittedSummary)) {
+      options.onThinking(finalSummary.slice(emittedSummary.length));
+      return finalSummary;
+    }
+
+    let overlap = Math.min(emittedSummary.length, finalSummary.length);
+    while (overlap > 0 && !emittedSummary.endsWith(finalSummary.slice(0, overlap))) {
+      overlap -= 1;
+    }
+    const missingSuffix = finalSummary.slice(overlap);
+    if (missingSuffix) options.onThinking(missingSuffix);
+    return emittedSummary + missingSuffix;
+  }
+
+  /**
+   * Recover reasoning summaries from final Responses payloads. Some models or
+   * gateways omit summary delta events even though the completed output item
+   * contains the requested summary.
+   */
+  private emitMissingResponsesReasoningSummary(
+    json: Record<string, unknown>,
+    options: ChatOptions,
+    emittedSummary: string,
+  ): string {
+    const finalSummary = this.extractResponsesReasoningSummary(json);
+    return this.emitMissingResponsesReasoningSummaryText(finalSummary, options, emittedSummary);
   }
 
   /** Extract usage from a Responses API result */

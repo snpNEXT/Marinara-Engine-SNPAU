@@ -658,7 +658,10 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
         ) : (
           <div className="flex flex-col gap-0.5">
             {visibleMessages.map((msg, i) => (
-              <div key={i} className="min-w-0 animate-in fade-in slide-in-from-bottom-1 duration-300 break-words">
+              <div
+                key={i}
+                className="min-w-0 animate-in fade-in slide-in-from-bottom-1 [animation-duration:300ms] break-words"
+              >
                 <span className={cn("text-[0.6875rem] font-bold", nameColorMap.get(msg.characterName))}>
                   {msg.characterName}
                 </span>

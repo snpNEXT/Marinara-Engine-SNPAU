@@ -11,6 +11,7 @@ import {
   IMAGE_DEFAULTS_STORAGE_KEY,
   MODEL_LISTS,
   VIDEO_DEFAULTS_STORAGE_KEY,
+  connectionImageCaptioningDefaultsSchema,
   createConnectionSchema,
   createDefaultVideoGenerationProfile,
   generationParametersSchema,
@@ -387,6 +388,17 @@ export async function connectionsRoutes(app: FastifyInstance) {
       }
       params = { ...parsed.data };
       const rawRecord = raw as Record<string, unknown>;
+      const imageCaptioningDefaults = connectionImageCaptioningDefaultsSchema.safeParse(rawRecord);
+      if (!imageCaptioningDefaults.success) {
+        return reply.status(400).send({
+          error: "Invalid image captioning defaults",
+          issues: imageCaptioningDefaults.error.issues.map((issue) => ({
+            path: issue.path.join("."),
+            message: issue.message,
+          })),
+        });
+      }
+      Object.assign(params, imageCaptioningDefaults.data);
       if (Object.prototype.hasOwnProperty.call(rawRecord, IMAGE_DEFAULTS_STORAGE_KEY)) {
         params[IMAGE_DEFAULTS_STORAGE_KEY] = rawRecord[IMAGE_DEFAULTS_STORAGE_KEY];
       }
@@ -1036,7 +1048,7 @@ export async function connectionsRoutes(app: FastifyInstance) {
     }
   });
 
-  // ── Test image generation — generates a small fixed test image ──
+  // ── Test image generation — uses a broadly supported 1K square canvas ──
   app.post<{ Params: { id: string } }>("/:id/test-image", async (req, reply) => {
     const conn = await storage.getWithKey(req.params.id);
     if (!conn) return reply.status(404).send({ error: "Connection not found" });
@@ -1063,8 +1075,8 @@ export async function connectionsRoutes(app: FastifyInstance) {
         prompt: BASE_PROMPT,
         model: imgModel || undefined,
         imageEndpointId: (conn.imageEndpointId as string | undefined) ?? undefined,
-        width: 512,
-        height: 512,
+        width: 1024,
+        height: 1024,
         comfyWorkflow: conn.comfyuiWorkflow || undefined,
         imageDefaults,
       });
@@ -1188,6 +1200,7 @@ export async function connectionsRoutes(app: FastifyInstance) {
                     : undefined,
         comfyWorkflow: conn.comfyuiWorkflow || undefined,
         comfyLoras: isComfyUiVideo ? defaults.comfyui.loras : [],
+        fps: isComfyUiVideo ? defaults.comfyui.fps : undefined,
       });
       return {
         success: true,

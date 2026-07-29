@@ -17,7 +17,7 @@ import {
   useDuplicateCharacter,
 } from "../../hooks/use-characters";
 import { api } from "../../lib/api-client";
-import { confirmNonEmptyFolderDelete, showConfirmDialog } from "../../lib/app-dialogs";
+import { confirmNonEmptyFolderDelete, showChoiceDialog, showConfirmDialog } from "../../lib/app-dialogs";
 import {
   Plus,
   Trash2,
@@ -26,6 +26,7 @@ import {
   Check,
   Search,
   FolderPlus,
+  FolderInput,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -197,6 +198,7 @@ export function CharactersPanel() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedCharacterIds, setSelectedCharacterIds] = useState<Set<string>>(new Set());
   const [exportingSelected, setExportingSelected] = useState(false);
+  const [movingSelected, setMovingSelected] = useState(false);
 
   // Parse character data and filter by search
   const parsedCharacters = useMemo(() => {
@@ -657,6 +659,39 @@ export function CharactersPanel() {
     }
   }, [selectedCharacterIds, localizeUi]);
 
+  const handleMoveSelected = useCallback(async () => {
+    const ids = [...selectedCharacterIds];
+    if (ids.length === 0 || movingSelected) return;
+
+    setMovingSelected(true);
+    try {
+      const choice = await showChoiceDialog({
+        title: localizeUi("lorebook.editor.batch.move"),
+        message: localizeUi("ui.panels.characterspanel.chooseFolderForValue1Character", {
+          value1: ids.length,
+          value2: ids.length === 1 ? "" : localizeUi("ui.noodle.stageprofileview.s"),
+        }),
+        choices: [
+          // Uniform tone: no folder is a recommended target, so none gets the primary highlight.
+          ...parsedGroups.map((folder) => ({ key: folder.id, label: folder.name, tone: "accent" as const })),
+          { key: "__none__", label: localizeUi("ui.panels.characterspanel.noFolder"), tone: "accent" as const },
+        ],
+      });
+      if (!choice) return;
+
+      try {
+        await moveCharactersToFolder(ids, choice === "__none__" ? null : choice);
+        exitSelectionMode();
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : localizeUi("ui.panels.characterspanel.failedToMoveCharacters"),
+        );
+      }
+    } finally {
+      setMovingSelected(false);
+    }
+  }, [selectedCharacterIds, parsedGroups, moveCharactersToFolder, exitSelectionMode, localizeUi, movingSelected]);
+
   const handleDeleteSelected = useCallback(async () => {
     const ids = [...selectedCharacterIds];
     if (ids.length === 0) return;
@@ -826,8 +861,7 @@ export function CharactersPanel() {
             )}
           >
             <Tag size="0.625rem" />
-            {localizeUi("ui.panels.backgroundpicker.tags")}
-            {allTags.length})
+            {localizeUi("ui.panels.backgroundpicker.tagsValue1", { value1: allTags.length })}
             <ChevronDown size="0.625rem" className={cn("transition-transform", tagsExpanded && "rotate-180")} />
           </button>
         )}
@@ -1212,10 +1246,9 @@ export function CharactersPanel() {
                               if (
                                 !(await showConfirmDialog({
                                   title: localizeUi("ui.panels.characterspanel.deleteCharacter"),
-                                  message: localizeUi(
-                                    "ui.panels.characterspanel.deleteValue1ThisCannotBeUndone",
-                                    { value1: memberName },
-                                  ),
+                                  message: localizeUi("ui.panels.characterspanel.deleteValue1ThisCannotBeUndone", {
+                                    value1: memberName,
+                                  }),
                                   confirmLabel: localizeUi("lorebook.editor.batch.delete"),
                                   tone: "destructive",
                                 }))
@@ -1576,6 +1609,18 @@ export function CharactersPanel() {
         <SelectionActionBar
           placement="panel"
           selectedCount={selectedCharacterIds.size}
+          extraAction={
+            <button
+              type="button"
+              onClick={() => void handleMoveSelected()}
+              disabled={selectedCharacterIds.size === 0 || parsedGroups.length === 0 || movingSelected}
+              className="mari-chrome-control flex-1 px-3 py-2 text-xs"
+              title={localizeUi("lorebook.editor.batch.move")}
+            >
+              <FolderInput size="0.75rem" />
+              {localizeUi("lorebook.editor.batch.move")}
+            </button>
+          }
           onExport={() => void handleExportSelected()}
           onDelete={handleDeleteSelected}
           exporting={exportingSelected}

@@ -416,16 +416,16 @@ async function savePreviewAsset(args: {
   return asset;
 }
 
-async function readBackgroundMeta(): Promise<Record<string, { originalName?: string; tags: string[] }>> {
+async function readBackgroundMeta(): Promise<Record<string, { tags: string[] }>> {
   if (!existsSync(BACKGROUND_META_PATH)) return {};
   try {
-    return JSON.parse(await readFile(BACKGROUND_META_PATH, "utf8")) as Record<string, { originalName?: string; tags: string[] }>;
+    return JSON.parse(await readFile(BACKGROUND_META_PATH, "utf8")) as Record<string, { tags: string[] }>;
   } catch {
     return {};
   }
 }
 
-async function writeBackgroundMeta(meta: Record<string, { originalName?: string; tags: string[] }>) {
+async function writeBackgroundMeta(meta: Record<string, { tags: string[] }>) {
   await mkdir(BACKGROUND_DIR, { recursive: true });
   await writeFile(BACKGROUND_META_PATH, JSON.stringify(meta, null, 2), "utf8");
 }
@@ -1012,7 +1012,7 @@ export class MariImagesService {
     const path = assertInsideDir(BACKGROUND_DIR, join(BACKGROUND_DIR, filename));
     await writeFile(path, source.buffer);
     const meta = await readBackgroundMeta();
-    meta[filename] = { originalName: target.name ?? source.label, tags: target.tags };
+    meta[filename] = { tags: target.tags };
     await writeBackgroundMeta(meta);
     buildAssetManifest();
     return { filename, url: `/api/backgrounds/file/${encodeURIComponent(filename)}`, tags: target.tags };

@@ -8,13 +8,13 @@ import { join, extname, basename, parse as parsePath } from "path";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import { DATA_DIR } from "../utils/data-dir.js";
-import { logDebugOverride, logger } from "../lib/logger.js";
-import { getSharp } from "../services/image/sharp-runtime.js";
+import { logDebugOverride } from "../lib/logger.js";
 import { isDebugAgentsEnabled } from "../config/runtime-config.js";
 import { buildAssetManifest, GAME_ASSETS_DIR, getAssetManifest } from "../services/game/asset-manifest.service.js";
 import {
   moveBackgroundAssignment,
   normalizeBackgroundLibraryOrganization,
+  pruneBackgroundLibraryOrganization,
   removeBackgroundFolder,
   type BackgroundLibraryOrganization,
 } from "../services/background-library-organization.js";
@@ -28,12 +28,11 @@ import { buildBackgroundProviderPrompt, generateChatBackground } from "../servic
 import { resolveConnectionImageDefaults } from "../services/image/image-generation-defaults.js";
 import { loadImageGenerationUserSettings } from "../services/image/image-generation-settings.js";
 import { resolveImagePromptReviewSize } from "../services/image/image-prompt-review.js";
+import { parseThumbnailWidth, resolveThumbPath } from "../services/image/image-thumbnail.js";
 import { resolveImageConnectionFallback } from "../services/generation/media-connection-fallback.js";
-import { BACKGROUND_THUMBNAIL_WIDTH, resolveGameSetupArtStylePrompt } from "@marinara-engine/shared";
+import { resolveGameSetupArtStylePrompt } from "@marinara-engine/shared";
 
 const BG_DIR = join(DATA_DIR, "backgrounds");
-// Sibling of BG_DIR, not inside it: the library listing and folder organization walk BG_DIR.
-const THUMB_DIR = join(DATA_DIR, "backgrounds-thumbs");
 const META_PATH = join(BG_DIR, "meta.json");
 const ORGANIZATION_PATH = join(BG_DIR, "organization.json");
 
@@ -44,53 +43,7 @@ function ensureDir() {
   }
 }
 
-/**
- * Widths the thumbnailer will honour, so `?w=` can't be used to fill the disk. One entry on
- * purpose: the sidebar row banner and the settings picker tile both fit inside 320px even at
- * 3x, so they share a single cached file. Add a width here when something needs a bigger one.
- */
-const THUMB_WIDTHS = new Set([BACKGROUND_THUMBNAIL_WIDTH]);
-
-/**
- * Downscaled copy of a background, cached on disk. Returns null whenever the original
- * should be served instead: unsupported width, animated source, or no `sharp` on this
- * platform (it is an optional native dep — see services/image/sharp-runtime).
- *
- * Cache key includes mtime so replacing a file serves the new image immediately.
- * ponytail: superseded thumbs are never swept; they are a few KB each and bounded by
- * how often someone re-uploads over a filename. Add a sweep if that stops being true.
- */
-async function resolveThumbPath(filePath: string, filename: string, width: number): Promise<string | null> {
-  if (!THUMB_WIDTHS.has(width) || extname(filename).toLowerCase() === ".gif") return null;
-
-  const thumbPath = join(THUMB_DIR, `${width}-${statSync(filePath).mtimeMs}-${filename}.webp`);
-  if (existsSync(thumbPath)) return thumbPath;
-
-  try {
-    const sharp = await getSharp();
-    const buffer = await sharp(filePath).resize({ width, withoutEnlargement: true }).webp({ quality: 72 }).toBuffer();
-    if (!existsSync(THUMB_DIR)) mkdirSync(THUMB_DIR, { recursive: true });
-    const temporaryPath = `${thumbPath}.${process.pid}.${randomUUID()}.tmp`;
-    try {
-      await writeFile(temporaryPath, buffer);
-      try {
-        renameSync(temporaryPath, thumbPath);
-      } catch (error) {
-        // On Windows, a concurrent winner may make rename fail because the target now exists.
-        if (!existsSync(thumbPath)) throw error;
-      }
-    } finally {
-      if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
-    }
-    return thumbPath;
-  } catch (error) {
-    logger.warn(error instanceof Error ? error : new Error(String(error)), "Background thumbnail failed for %s", filename);
-    return null;
-  }
-}
-
 interface BgMeta {
-  originalName?: string;
   tags: string[];
 }
 type MetaMap = Record<string, BgMeta>;
@@ -112,11 +65,11 @@ function writeMeta(meta: MetaMap) {
 
 function readOrganization(): BackgroundLibraryOrganization {
   ensureDir();
-  if (!existsSync(ORGANIZATION_PATH)) return { folders: [], assignments: {} };
+  if (!existsSync(ORGANIZATION_PATH)) return { folders: [], assignments: {}, favorites: [] };
   try {
     return normalizeBackgroundLibraryOrganization(JSON.parse(readFileSync(ORGANIZATION_PATH, "utf-8")));
   } catch {
-    return { folders: [], assignments: {} };
+    return { folders: [], assignments: {}, favorites: [] };
   }
 }
 
@@ -129,6 +82,18 @@ function writeOrganization(organization: BackgroundLibraryOrganization) {
   } finally {
     if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
   }
+}
+
+/** Every background id the library can currently show, so organization writes can't reference ghosts. */
+function knownBackgroundIds(): Set<string> {
+  ensureDir();
+  const userIds = readdirSync(BG_DIR)
+    .filter((filename) => ALLOWED_EXTS.has(extname(filename).toLowerCase()))
+    .map((filename) => `user:${filename}`);
+  const gameIds = (getAssetManifest().byCategory.backgrounds ?? [])
+    .filter((entry) => !entry.path.startsWith("__user_bg__/"))
+    .map((entry) => `game:${entry.tag}`);
+  return new Set([...userIds, ...gameIds]);
 }
 
 function fileCreatedAt(filePath: string): string {
@@ -171,6 +136,11 @@ const backgroundFolderNameSchema = z.object({
 const backgroundAssignmentSchema = z.object({
   backgroundId: z.string().trim().min(1).max(500),
   folderId: z.string().trim().min(1).max(100).nullable(),
+});
+
+const backgroundFavoriteSchema = z.object({
+  backgroundId: z.string().trim().min(1).max(500),
+  favorite: z.boolean(),
 });
 
 /** Sanitise a filename: keep alphanumeric, spaces, hyphens, underscores, dots. */
@@ -260,6 +230,7 @@ export async function backgroundsRoutes(app: FastifyInstance) {
     ensureDir();
     const meta = readMeta();
     const organization = readOrganization();
+    const favorites = new Set(organization.favorites);
     const files = readdirSync(BG_DIR).filter((f) => {
       const ext = extname(f).toLowerCase();
       return ALLOWED_EXTS.has(ext);
@@ -270,7 +241,6 @@ export async function backgroundsRoutes(app: FastifyInstance) {
         id,
         filename,
         url: `/api/backgrounds/file/${encodeURIComponent(filename)}`,
-        originalName: meta[filename]?.originalName ?? null,
         tags: meta[filename]?.tags ?? [],
         source: "user" as const,
         editable: true,
@@ -278,6 +248,7 @@ export async function backgroundsRoutes(app: FastifyInstance) {
         renameable: true,
         createdAt: fileCreatedAt(join(BG_DIR, filename)),
         folderId: organization.assignments[id] ?? null,
+        favorite: favorites.has(id),
       };
     });
 
@@ -289,7 +260,6 @@ export async function backgroundsRoutes(app: FastifyInstance) {
           id,
           filename: `${entry.name}${entry.ext}`,
           url: `/api/game-assets/file/${encodeAssetPath(entry.path)}`,
-          originalName: entry.tag,
           tags: entry.subcategory ? [entry.subcategory] : [],
           source: "game_asset" as const,
           tag: entry.tag,
@@ -298,6 +268,7 @@ export async function backgroundsRoutes(app: FastifyInstance) {
           renameable: false,
           createdAt: fileCreatedAt(join(GAME_ASSETS_DIR, entry.path)),
           folderId: organization.assignments[id] ?? null,
+          favorite: favorites.has(id),
         };
       });
 
@@ -363,20 +334,32 @@ export async function backgroundsRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Folder not found" });
     }
 
-    const userBackgroundIds = readdirSync(BG_DIR)
-      .filter((filename) => ALLOWED_EXTS.has(extname(filename).toLowerCase()))
-      .map((filename) => `user:${filename}`);
-    const gameBackgroundIds = (getAssetManifest().byCategory.backgrounds ?? [])
-      .filter((entry) => !entry.path.startsWith("__user_bg__/"))
-      .map((entry) => `game:${entry.tag}`);
-    if (!new Set([...userBackgroundIds, ...gameBackgroundIds]).has(parsed.data.backgroundId)) {
+    const knownIds = knownBackgroundIds();
+    if (!knownIds.has(parsed.data.backgroundId)) {
       return reply.status(404).send({ error: "Background not found" });
     }
 
     if (parsed.data.folderId) organization.assignments[parsed.data.backgroundId] = parsed.data.folderId;
     else delete organization.assignments[parsed.data.backgroundId];
-    writeOrganization(organization);
+    writeOrganization(pruneBackgroundLibraryOrganization(organization, knownIds));
     return { success: true, folderId: parsed.data.folderId };
+  });
+
+  app.patch("/favorite", async (req, reply) => {
+    const parsed = backgroundFavoriteSchema.safeParse(req.body);
+    if (!parsed.success)
+      return reply.status(400).send({ error: "A valid backgroundId and favorite flag are required" });
+    const knownIds = knownBackgroundIds();
+    if (!knownIds.has(parsed.data.backgroundId)) {
+      return reply.status(404).send({ error: "Background not found" });
+    }
+
+    const organization = readOrganization();
+    const favorites = new Set(organization.favorites);
+    if (parsed.data.favorite) favorites.add(parsed.data.backgroundId);
+    else favorites.delete(parsed.data.backgroundId);
+    writeOrganization(pruneBackgroundLibraryOrganization({ ...organization, favorites: [...favorites] }, knownIds));
+    return { success: true, favorite: parsed.data.favorite };
   });
 
   // Upload a new background (preserves original filename)
@@ -412,7 +395,7 @@ export async function backgroundsRoutes(app: FastifyInstance) {
 
     // Store metadata
     const meta = readMeta();
-    meta[safeName] = { originalName: data.filename, tags: [] };
+    meta[safeName] = { tags: [] };
     writeMeta(meta);
 
     // Rebuild game asset manifest so scene analysis picks up new backgrounds
@@ -421,7 +404,6 @@ export async function backgroundsRoutes(app: FastifyInstance) {
     return {
       success: true,
       filename: safeName,
-      originalName: data.filename,
       url: `/api/backgrounds/file/${encodeURIComponent(safeName)}`,
       tags: [],
     };
@@ -701,7 +683,7 @@ export async function backgroundsRoutes(app: FastifyInstance) {
   app.get("/file/:filename", async (req, reply) => {
     ensureDir();
     const { filename } = req.params as { filename: string };
-    const requestedWidth = Number((req.query as { w?: string }).w);
+    const requestedWidth = parseThumbnailWidth((req.query as { w?: string }).w);
 
     // Prevent path traversal
     if (filename.includes("..") || filename.includes("/")) {
@@ -724,7 +706,7 @@ export async function backgroundsRoutes(app: FastifyInstance) {
     };
 
     // Downscaled variant when asked for one; falls back to the original on any miss.
-    const thumbPath = requestedWidth ? await resolveThumbPath(filePath, filename, requestedWidth) : null;
+    const thumbPath = requestedWidth ? await resolveThumbPath(filePath, requestedWidth) : null;
 
     const { createReadStream } = await import("fs");
     const stream = createReadStream(thumbPath ?? filePath);

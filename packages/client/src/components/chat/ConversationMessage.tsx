@@ -19,6 +19,7 @@ import { useUIStore, type ConversationMessageStyle } from "../../stores/ui.store
 import { cn, copyToClipboard, getAvatarCropStyle, parseAvatarCropJson } from "../../lib/utils";
 import { resolveMessageMacros } from "../../lib/chat-macros";
 import { useTranslate } from "../../hooks/use-translate";
+import { useApplyRegex } from "../../hooks/use-apply-regex";
 import { api } from "../../lib/api-client";
 import { chatKeys } from "../../hooks/use-chats";
 import type { CharacterMap, MessageSelectionToggle, PersonaInfo } from "./chat-area.types";
@@ -36,6 +37,8 @@ import { ConversationMessageBubble } from "./ConversationMessageBubble";
 import { ConversationMessageLine } from "./ConversationMessageLine";
 import { MessageReactions } from "./MessageReactions";
 import { MessageThinkingModal } from "./MessageThinkingModal";
+import { useChatStore } from "../../stores/chat.store";
+import { parseChatMetadata } from "../../lib/chat-display";
 import {
   findRetargetableUserReaction,
   reactionTargetOf,
@@ -101,10 +104,12 @@ interface ConversationMessageProps {
   chatCharacterIds?: string[];
   messageIndex?: number;
   messageOrderIndex?: number;
+  messageDepth?: number;
   multiSelectMode?: boolean;
   isSelected?: boolean;
   onToggleSelect?: (toggle: MessageSelectionToggle) => void;
   hasDraftInput?: boolean;
+  translationDisplayOnly?: boolean;
 }
 
 // ── Shell component ──────────────────────────────────────────────
@@ -141,10 +146,12 @@ export const ConversationMessage = memo(function ConversationMessage({
   chatCharacterIds,
   messageIndex,
   messageOrderIndex,
+  messageDepth,
   multiSelectMode,
   isSelected,
   onToggleSelect,
   hasDraftInput = false,
+  translationDisplayOnly = false,
 }: ConversationMessageProps) {
   const { t: localizeUi } = useUiTranslation();
   // ── Local state ──
@@ -169,10 +176,14 @@ export const ConversationMessage = memo(function ConversationMessage({
   const showMessageNumbers = useUIStore((s) => s.showMessageNumbers);
   const quoteFormat = useUIStore((s) => s.quoteFormat);
   const conversationAvatarShape = useUIStore((s) => s.conversationAvatarShape);
+  const activeChatMetadata = useChatStore((s) => s.activeChat?.metadata);
+  const scopedRegexMode = useMemo(() => parseChatMetadata(activeChatMetadata).scopedRegexMode, [activeChatMetadata]);
+  const { applyToAIOutput } = useApplyRegex();
 
   // ── Translation ──
-  const { translate, translations, translating } = useTranslate();
+  const { translate, translations, translationSources, translating } = useTranslate();
   const translatedText = translations[message.id];
+  const translationSource = translationSources[message.id];
   const isTranslating = !!translating[message.id];
 
   // ── Derived flags ──
@@ -327,16 +338,33 @@ export const ConversationMessage = memo(function ConversationMessage({
   );
   // #3164: seed display randomness by message identity so {{random}}/{{roll}} don't
   // re-roll on every recompute for finished messages.
-  const renderedContent = useMemo(
-    () =>
-      formatTextQuotes(
-        resolveMessageMacros(displayContent, macroContext, {
-          randomSeed: `${message.id}:${message.activeSwipeIndex ?? 0}`,
+  const renderedContent = useMemo(() => {
+    const randomSeed = `${message.id}:${message.activeSwipeIndex ?? 0}`;
+    const resolveDisplayMacros = (value: string) => resolveMessageMacros(value, macroContext, { randomSeed });
+    if (!isUser && !isSystem) {
+      return resolveDisplayMacros(
+        applyToAIOutput(displayContent, {
+          depth: messageDepth,
+          resolveMacros: resolveDisplayMacros,
+          scopedMode: scopedRegexMode,
+          characterId: message.characterId,
         }),
-        quoteFormat,
-      ),
-    [macroContext, displayContent, message.activeSwipeIndex, message.id, quoteFormat],
-  );
+      );
+    }
+    return formatTextQuotes(resolveDisplayMacros(displayContent), quoteFormat);
+  }, [
+    applyToAIOutput,
+    displayContent,
+    isSystem,
+    isUser,
+    macroContext,
+    message.activeSwipeIndex,
+    message.characterId,
+    message.id,
+    messageDepth,
+    quoteFormat,
+    scopedRegexMode,
+  ]);
   const renderedContentParts = useMemo(() => {
     if (!contentParts?.length) return null;
     const count = Math.max(1, Math.min(visiblePartCount ?? contentParts.length, contentParts.length));
@@ -344,14 +372,41 @@ export const ConversationMessage = memo(function ConversationMessage({
       .slice(0, count)
       .map((part, partIndex) => {
         const stripped = part.replace(/\[selfie\b[^\]\r\n]*\]/gi, "").trim();
-        return formatTextQuotes(
-          resolveMessageMacros(stripped, macroContext, {
-            randomSeed: `${message.id}:${message.activeSwipeIndex ?? 0}:${partIndex}`,
-          }),
-          quoteFormat,
-        );
+        const randomSeed = `${message.id}:${message.activeSwipeIndex ?? 0}:${partIndex}`;
+        const resolveDisplayMacros = (value: string) => resolveMessageMacros(value, macroContext, { randomSeed });
+        if (!isUser && !isSystem) {
+          return resolveDisplayMacros(
+            applyToAIOutput(stripped, {
+              depth: messageDepth,
+              resolveMacros: resolveDisplayMacros,
+              scopedMode: scopedRegexMode,
+              characterId: message.characterId,
+            }),
+          );
+        }
+        return formatTextQuotes(resolveDisplayMacros(stripped), quoteFormat);
       });
-  }, [contentParts, macroContext, message.activeSwipeIndex, message.id, quoteFormat, visiblePartCount]);
+  }, [
+    applyToAIOutput,
+    contentParts,
+    isSystem,
+    isUser,
+    macroContext,
+    message.activeSwipeIndex,
+    message.characterId,
+    message.id,
+    messageDepth,
+    quoteFormat,
+    scopedRegexMode,
+    visiblePartCount,
+  ]);
+  const showTranslationOnly =
+    translationDisplayOnly &&
+    !!translatedText &&
+    !isTranslating &&
+    (translationSource === renderedContent || translationSource === message.content);
+  const displayedContent = showTranslationOnly ? translatedText : renderedContent;
+  const displayedContentParts = showTranslationOnly ? null : renderedContentParts;
 
   // ── Attachment removal ──
   const qc = useQueryClient();
@@ -471,12 +526,12 @@ export const ConversationMessage = memo(function ConversationMessage({
   }, [scopedCharacterMap]);
 
   const groupedSegments = useMemo(() => {
-    if (isUser || !renderedContent) return null;
+    if (isUser || !displayedContent) return null;
     const knownNames = charByName ? new Set(charByName.keys()) : new Set<string>();
     const leadingCharacter = message.characterId ? scopedCharacterMap?.get(message.characterId) : null;
     const leadingSpeaker = leadingCharacter?.convoDisplayName?.trim() || leadingCharacter?.name || null;
-    return parseGroupedSpeakerSegments(renderedContent, knownNames, leadingSpeaker);
-  }, [isUser, renderedContent, charByName, message.characterId, scopedCharacterMap]);
+    return parseGroupedSpeakerSegments(displayedContent, knownNames, leadingSpeaker);
+  }, [isUser, displayedContent, charByName, message.characterId, scopedCharacterMap]);
 
   // Segment-targeted reactions render inline under their speaker's segment; the
   // remainder (whole-message entries + orphans from a re-segmentation) keeps the
@@ -508,7 +563,8 @@ export const ConversationMessage = memo(function ConversationMessage({
 
   // ── Staggered reveal for multi-speaker segments ──
   const segmentCount = groupedSegments?.length ?? 0;
-  const prevContentRef = useRef(renderedContent);
+  const prevContentRef = useRef(displayedContent);
+  const prevTranslationOnlyRef = useRef(showTranslationOnly);
   const initialRenderRef = useRef(true);
   const [internalVisibleSegments, setInternalVisibleSegments] = useState(segmentCount);
 
@@ -516,11 +572,18 @@ export const ConversationMessage = memo(function ConversationMessage({
     if (initialRenderRef.current) {
       initialRenderRef.current = false;
       setInternalVisibleSegments(segmentCount);
-      prevContentRef.current = renderedContent;
+      prevContentRef.current = displayedContent;
+      prevTranslationOnlyRef.current = showTranslationOnly;
       return;
     }
-    if (renderedContent !== prevContentRef.current && segmentCount > 1) {
-      prevContentRef.current = renderedContent;
+    if (prevTranslationOnlyRef.current !== showTranslationOnly) {
+      prevTranslationOnlyRef.current = showTranslationOnly;
+      prevContentRef.current = displayedContent;
+      setInternalVisibleSegments(segmentCount);
+      return;
+    }
+    if (displayedContent !== prevContentRef.current && segmentCount > 1) {
+      prevContentRef.current = displayedContent;
       setInternalVisibleSegments(1);
       let count = 1;
       const reveal = () => {
@@ -532,8 +595,9 @@ export const ConversationMessage = memo(function ConversationMessage({
       return () => timers.forEach(clearTimeout);
     }
     setInternalVisibleSegments(segmentCount);
-    prevContentRef.current = renderedContent;
-  }, [renderedContent, segmentCount]);
+    prevContentRef.current = displayedContent;
+    prevTranslationOnlyRef.current = showTranslationOnly;
+  }, [displayedContent, segmentCount, showTranslationOnly]);
   const visibleSegments =
     segmentCount > 0 ? Math.max(1, Math.min(visibleSegmentCount ?? internalVisibleSegments, segmentCount)) : 0;
 
@@ -626,14 +690,14 @@ export const ConversationMessage = memo(function ConversationMessage({
 
   // ── Copy / translate ──
   const handleCopy = useCallback(() => {
-    copyToClipboard(renderedContent);
+    copyToClipboard(displayedContent);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
-  }, [renderedContent]);
+  }, [displayedContent]);
 
   const handleTranslate = useCallback(
-    () => translate(message.id, renderedContent, message.chatId),
-    [message.id, message.chatId, renderedContent, translate],
+    () => translate(message.id, renderedContent, message.chatId, [message.content]),
+    [message.content, message.id, message.chatId, renderedContent, translate],
   );
 
   // ── Mobile tap (show actions / multi-select) ──
@@ -677,7 +741,7 @@ export const ConversationMessage = memo(function ConversationMessage({
 
   // ── Bubble-specific derived values ──
   const streamingBubbleDraftContent =
-    isBubbleStyle && !!isStreaming && renderedContentParts?.length ? renderedContentParts.join("\n\n") : null;
+    isBubbleStyle && !!isStreaming && displayedContentParts?.length ? displayedContentParts.join("\n\n") : null;
   const shouldHideUserAvatar = (isUser && !!hideUserAvatar) || (isBubbleStyle && isUser);
   const bubbleCornerClass = isUser
     ? bubbleGroupPosition === "single"
@@ -740,8 +804,8 @@ export const ConversationMessage = memo(function ConversationMessage({
     mentionNames,
     charByName,
     quoteFormat,
-    renderedContent,
-    renderedContentParts,
+    renderedContent: displayedContent,
+    renderedContentParts: displayedContentParts,
     emojiMap: emojiMap ?? EMPTY_CUSTOM_EMOJI_MAP,
     stickerMap: stickerMap ?? EMPTY_CUSTOM_STICKER_MAP,
     groupedSegments,
@@ -777,6 +841,7 @@ export const ConversationMessage = memo(function ConversationMessage({
     isLastAssistantMessage,
     translatedText,
     isTranslating,
+    showTranslationOnly,
     hasSwipes: (message.swipeCount ?? 0) > 1,
     swipeCount: message.swipeCount ?? 0,
     multiSelectMode,

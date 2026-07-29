@@ -99,7 +99,6 @@ const TEXT_ATTACHMENT_EXTENSIONS = new Set([
 const PDF_ATTACHMENT_MIME_TYPE = "application/pdf";
 
 const CONVERSATION_HIDDEN_SLASH_COMMANDS = new Set(["impersonate", "impersonate_prompt"]);
-const QUOTE_INPUT_TRIGGER_RE = /["'\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f]/;
 
 type MobilePickerTab = ConversationMediaPickerTabId;
 
@@ -139,13 +138,6 @@ const CONVERSATION_STATUS_COMPLETIONS = [
 
 function isConversationHiddenSlashCommand(command: SlashCommand): boolean {
   return CONVERSATION_HIDDEN_SLASH_COMMANDS.has(command.name);
-}
-
-function shouldFormatQuoteInput(event: FormEvent<HTMLTextAreaElement> | undefined, value: string): boolean {
-  const inputEvent = event?.nativeEvent as InputEvent | undefined;
-  const inputType = typeof inputEvent?.inputType === "string" ? inputEvent.inputType : "";
-  if (inputType.startsWith("delete")) return false;
-  return QUOTE_INPUT_TRIGGER_RE.test(value);
 }
 
 function quoteSlashArgument(value: string): string {
@@ -1479,7 +1471,11 @@ export function ConversationInput({
         id: `custom-${entry.id}`,
         label,
         description: "Send a saved custom quick reply",
-        icon: <Sparkles size="0.875rem" />,
+        icon: (
+          <span className="text-sm leading-none" aria-hidden="true">
+            {entry.icon?.trim() || "✨"}
+          </span>
+        ),
         disabled: !activeChatId || isSendBlocked || isReadingAttachments,
         disabledReason: !activeChatId
           ? "Select or create a chat first."
@@ -1617,7 +1613,7 @@ export function ConversationInput({
     (event: FormEvent<HTMLTextAreaElement>) => {
       const el = textareaRef.current;
       if (!el) return;
-      const formatted = shouldFormatQuoteInput(event, el.value) ? applyTextareaQuoteFormat(el, quoteFormat) : el.value;
+      const formatted = applyTextareaQuoteFormat(el, quoteFormat, event.nativeEvent as InputEvent);
       // Debounced resize to reduce layout reflows during fast typing
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
       resizeTimerRef.current = setTimeout(() => {
@@ -2227,6 +2223,7 @@ export function ConversationInput({
 
         <textarea
           ref={textareaRef}
+          data-chat-composer="true"
           placeholder={inputPlaceholder}
           rows={1}
           onInput={handleInput}

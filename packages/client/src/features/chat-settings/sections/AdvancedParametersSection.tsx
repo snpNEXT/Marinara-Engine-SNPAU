@@ -15,6 +15,7 @@ import { useSaveConnectionDefaults } from "../../../hooks/use-connections";
 import { isLanguageGenerationConnection, type ConnectionProviderLike } from "../../../lib/connection-filters";
 import { cn } from "../../../lib/utils";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { parseConnectionImageCaptioningDefaults } from "@marinara-engine/shared";
 
 const EDITABLE_PARAMETER_KEYS: Array<keyof EditableGenerationParameters> = [
   "temperature",
@@ -49,7 +50,7 @@ interface AdvancedParametersSectionProps {
   onContextMessageLimitChange: (value: number | null) => void;
   onExcludePastReasoningChange: (value: boolean) => void;
   onDisableMessageMergeChange: (value: boolean) => void;
-  onImageCaptioningChange: (patch: {
+  onImageCaptioningChange: (value: {
     imageCaptioningEnabled?: boolean;
     imageCaptioningConnectionId?: string | null;
   }) => void;
@@ -80,6 +81,7 @@ export function AdvancedParametersSection({
   const conn = connectionId ? connections.find((connection) => connection.id === connectionId) : null;
   const canSaveConnectionDefaults = !!connectionId && connectionId !== "random" && conn?.isLocalSidecar !== true;
   const defaults = getEditableGenerationParameters(strictModeDefaults, conn?.defaultParameters);
+  const imageCaptioningDefaults = parseConnectionImageCaptioningDefaults(conn?.defaultParameters);
   const saveDefaults = useSaveConnectionDefaults();
   const [expanded, setExpanded] = useState(false);
   const params = (metadata.chatParameters as Record<string, unknown>) ?? {};
@@ -87,7 +89,10 @@ export function AdvancedParametersSection({
   const excludeReasoningEnabled = excludePastReasoning !== false;
   const disableMergeEnabled =
     disableMessageMerge ?? (params.disableMessageMerge as boolean) ?? false;
-  const captioningEnabled = imageCaptioningEnabled === true;
+  const captioningEnabled =
+    typeof imageCaptioningEnabled === "boolean"
+      ? imageCaptioningEnabled
+      : imageCaptioningDefaults.imageCaptioningEnabled === true;
   const chatConnectionCanCaption = !!conn && isLanguageGenerationConnection(conn);
   const connectionOptions = useMemo(
     () =>
@@ -102,13 +107,20 @@ export function AdvancedParametersSection({
     [connections],
   );
   const hasCaptioningConnection = chatConnectionCanCaption || connectionOptions.length > 0;
-  const selectedCaptioningConnectionId = connectionOptions.some((option) => option.id === imageCaptioningConnectionId)
-    ? imageCaptioningConnectionId
+  const effectiveCaptioningConnectionId =
+    imageCaptioningConnectionId !== undefined
+      ? imageCaptioningConnectionId
+      : (imageCaptioningDefaults.imageCaptioningConnectionId ?? null);
+  const selectedCaptioningConnectionId = connectionOptions.some(
+    (option) => option.id === effectiveCaptioningConnectionId,
+  )
+    ? effectiveCaptioningConnectionId
     : null;
   const fallbackCaptioningConnectionId = chatConnectionCanCaption ? null : (connectionOptions[0]?.id ?? null);
 
   useEffect(() => {
     if (!captioningEnabled) return;
+    if (imageCaptioningConnectionId === undefined) return;
     const storedId = typeof imageCaptioningConnectionId === "string" ? imageCaptioningConnectionId : null;
     const storedIsValid = !!storedId && connectionOptions.some((option) => option.id === storedId);
     if (storedId && !storedIsValid) {
@@ -297,7 +309,11 @@ export function AdvancedParametersSection({
               onClick={() => {
                 saveDefaults.mutate({
                   id: connectionId,
-                  params: effectiveParams as unknown as Record<string, unknown>,
+                  params: {
+                    ...(effectiveParams as unknown as Record<string, unknown>),
+                    imageCaptioningEnabled: captioningEnabled,
+                    imageCaptioningConnectionId: selectedCaptioningConnectionId,
+                  },
                 });
               }}
               className="w-full rounded-lg bg-[var(--primary)]/10 px-3 py-1.5 text-[0.625rem] font-medium text-[var(--primary)] ring-1 ring-[var(--primary)]/20 transition-colors hover:bg-[var(--primary)]/20"

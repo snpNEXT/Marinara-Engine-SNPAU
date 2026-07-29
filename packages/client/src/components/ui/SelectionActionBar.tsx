@@ -1,9 +1,12 @@
 import { Trash2, Upload } from "lucide-react";
+import type { ReactNode } from "react";
 import { cn } from "../../lib/utils";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
 interface SelectionActionBarProps {
   selectedCount: number;
+  /** Optional extra button rendered before Export (e.g. "Move to folder"). */
+  extraAction?: ReactNode;
   onExport: () => void;
   onDelete: () => void;
   deleteTone?: "accent" | "danger";
@@ -16,6 +19,7 @@ interface SelectionActionBarProps {
 
 export function SelectionActionBar({
   selectedCount,
+  extraAction,
   onExport,
   onDelete,
   deleteTone = "danger",
@@ -40,6 +44,7 @@ export function SelectionActionBar({
       <div className="mb-2 text-center text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
         {selectedCount} {localizeUi("ui.agents.agenteditor.selected")}</div>
       <div className="flex gap-2">
+        {extraAction}
         <button
           type="button"
           onClick={onExport}

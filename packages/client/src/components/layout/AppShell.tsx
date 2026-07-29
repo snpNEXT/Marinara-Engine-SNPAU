@@ -237,7 +237,13 @@ export function AppShell() {
     const root = document.documentElement;
     let frame = 0;
     let focusTimers: number[] = [];
+    let orientationTimers: number[] = [];
     let largestViewportHeight = window.visualViewport?.height ?? window.innerHeight;
+    const supportsVirtualKeyboard =
+      navigator.maxTouchPoints > 0 || window.matchMedia("(any-pointer: coarse)").matches;
+    const isIOSWebKit =
+      /iP(?:ad|hone|od)/i.test(navigator.userAgent) ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
     const updateVisualViewportGeometry = () => {
       if (frame) cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
@@ -248,14 +254,20 @@ export function AppShell() {
         );
         const height = heightCandidates.length > 0 ? Math.min(...heightCandidates) : window.innerHeight;
         const maxOffsetTop = Math.max(0, window.innerHeight - height);
-        const offsetTop = Math.min(maxOffsetTop, Math.max(0, viewport?.offsetTop ?? 0));
+        const visualViewportOffsetTop = Math.min(maxOffsetTop, Math.max(0, viewport?.offsetTop ?? 0));
+        // iOS Safari already positions the layout viewport when its software
+        // keyboard opens. Applying visualViewport.offsetTop again translates
+        // the entire app and leaves the top of the conversation off-screen.
+        const offsetTop = isIOSWebKit ? 0 : visualViewportOffsetTop;
         largestViewportHeight = Math.max(largestViewportHeight, height);
         root.style.setProperty("--mari-visual-viewport-height", `${Math.max(0, Math.round(height))}px`);
         root.style.setProperty("--mari-visual-viewport-offset-top", `${Math.round(offsetTop)}px`);
+        const keyboardOpen = supportsVirtualKeyboard && largestViewportHeight - height >= 80;
+        root.toggleAttribute("data-mari-software-keyboard-open", keyboardOpen);
         dispatchChatVisualViewportChange({
           height,
           offsetTop,
-          keyboardOpen: largestViewportHeight - height >= 80,
+          keyboardOpen,
         });
       });
     };
@@ -268,26 +280,41 @@ export function AppShell() {
       focusTimers.push(window.setTimeout(updateVisualViewportGeometry, 80));
       focusTimers.push(window.setTimeout(updateVisualViewportGeometry, 320));
     };
+    const refreshAfterOrientationChange = () => {
+      orientationTimers.forEach((timer) => window.clearTimeout(timer));
+      orientationTimers = [];
+      const resetViewportBaseline = () => {
+        // A shorter landscape viewport is not necessarily a software keyboard.
+        // Re-establish the baseline while browser chrome and safe areas settle.
+        largestViewportHeight = 0;
+        updateVisualViewportGeometry();
+      };
+      resetViewportBaseline();
+      orientationTimers.push(window.setTimeout(resetViewportBaseline, 80));
+      orientationTimers.push(window.setTimeout(resetViewportBaseline, 320));
+    };
 
     updateVisualViewportGeometry();
     window.visualViewport?.addEventListener("resize", updateVisualViewportGeometry);
     window.visualViewport?.addEventListener("scroll", updateVisualViewportGeometry);
     window.addEventListener("resize", updateVisualViewportGeometry);
-    window.addEventListener("orientationchange", updateVisualViewportGeometry);
+    window.addEventListener("orientationchange", refreshAfterOrientationChange);
     document.addEventListener("focusin", refreshAfterFocusChange);
     document.addEventListener("focusout", refreshAfterFocusChange);
 
     return () => {
       if (frame) cancelAnimationFrame(frame);
       focusTimers.forEach((timer) => window.clearTimeout(timer));
+      orientationTimers.forEach((timer) => window.clearTimeout(timer));
       window.visualViewport?.removeEventListener("resize", updateVisualViewportGeometry);
       window.visualViewport?.removeEventListener("scroll", updateVisualViewportGeometry);
       window.removeEventListener("resize", updateVisualViewportGeometry);
-      window.removeEventListener("orientationchange", updateVisualViewportGeometry);
+      window.removeEventListener("orientationchange", refreshAfterOrientationChange);
       document.removeEventListener("focusin", refreshAfterFocusChange);
       document.removeEventListener("focusout", refreshAfterFocusChange);
       root.style.removeProperty("--mari-visual-viewport-height");
       root.style.removeProperty("--mari-visual-viewport-offset-top");
+      root.removeAttribute("data-mari-software-keyboard-open");
     };
   }, []);
 
@@ -1028,10 +1055,11 @@ export function AppShell() {
     trackerPanelWidth,
   ]);
 
-  const trackerPanelHudClearance =
-    !shellOverlayMode && trackerPanelAnchoredForMotion && trackerPanelHideHudWidgets && trackerPanelSurfaceAvailable
+  const trackerPanelOverlayClearance =
+    !shellOverlayMode && trackerPanelAnchoredForMotion && trackerPanelSurfaceAvailable
       ? trackerPanelResolvedWidth + TRACKER_PANEL_HUD_GAP
       : 0;
+  const trackerPanelHudClearance = trackerPanelHideHudWidgets ? trackerPanelOverlayClearance : 0;
   const trackerPanelContentScale = resolveTrackerPanelContentScale(trackerPanelWidth, trackerPanelResolvedWidth);
   const trackerPanelPortal =
     trackerPanelActive &&
@@ -1238,6 +1266,7 @@ export function AppShell() {
               {
                 "--tracker-panel-hud-clear-left": `${trackerPanelSide === "left" ? trackerPanelHudClearance : 0}px`,
                 "--tracker-panel-hud-clear-right": `${trackerPanelSide === "right" ? trackerPanelHudClearance : 0}px`,
+                "--tracker-panel-overlay-clearance": `${trackerPanelOverlayClearance}px`,
               } as CSSProperties
             }
           >

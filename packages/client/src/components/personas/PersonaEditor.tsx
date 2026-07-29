@@ -1695,9 +1695,7 @@ function PersonaSpritesTab({
   const pendingExpressionRef = useRef("");
 
   const allSprites = (sprites as SpriteInfo[] | undefined) ?? [];
-  const portraitExpressionNames = allSprites
-    .filter((s) => !s.expression.toLowerCase().startsWith("full_"))
-    .map((s) => s.expression);
+  const portraitExpressionSprites = allSprites.filter((s) => !s.expression.toLowerCase().startsWith("full_"));
   const visibleSprites = allSprites.filter((s) =>
     category === "clips"
       ? false
@@ -2422,7 +2420,7 @@ function PersonaSpritesTab({
         onClose={() => setSpriteGenOpen(false)}
         entityId={personaId}
         initialSpriteType={category === "full-body" ? "full-body" : "expressions"}
-        existingExpressionNames={portraitExpressionNames}
+        existingExpressionSprites={portraitExpressionSprites}
         defaultAppearance={defaultAppearance}
         defaultAvatarUrl={defaultAvatarUrl}
         onSpritesGenerated={() => {

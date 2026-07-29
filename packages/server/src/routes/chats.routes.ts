@@ -26,8 +26,10 @@ import {
   normalizeTrackerHiddenFields,
   parseTrackerFieldLocks,
   parseTrackerHiddenFields,
+  characterTrackerCustomFieldDefaultsToRecord,
   normalizeTextForMatch,
   formatRpgStatsForPrompt,
+  normalizeRpgStatPools,
   localAuthProviderBaseUrl,
 } from "@marinara-engine/shared";
 import type {
@@ -40,6 +42,7 @@ import type {
   ExportEnvelope,
   GameNpc,
   LorebookEntryTimingState,
+  PresentCharacter,
   RPGStatsConfig,
   WorldCustomField,
 } from "@marinara-engine/shared";
@@ -415,6 +418,135 @@ async function buildCharacterDisplaySnapshot(app: FastifyInstance, characterId: 
   };
 }
 
+function isPlainStringRecord(value: unknown): value is Record<string, string> {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.values(value).every((entry) => typeof entry === "string")
+  );
+}
+
+async function buildRoleplayTrackerDefaultCharacters(
+  app: FastifyInstance,
+  characterIds: string[],
+): Promise<PresentCharacter[]> {
+  const charactersStore = createCharactersStorage(app.db);
+  const seeds: PresentCharacter[] = [];
+
+  for (const characterId of characterIds) {
+    const row = await charactersStore.getById(characterId);
+    if (!row) continue;
+
+    let data: CharacterData;
+    try {
+      data = (typeof row.data === "string" ? JSON.parse(row.data) : row.data) as CharacterData;
+    } catch {
+      continue;
+    }
+
+    const extensions = (data.extensions ?? {}) as Record<string, unknown>;
+    const customFields = characterTrackerCustomFieldDefaultsToRecord(extensions.trackerCustomFieldDefaults);
+    const rpgStats = extensions.rpgStats as RPGStatsConfig | undefined;
+    const stats = rpgStats?.enabled
+      ? normalizeRpgStatPools(rpgStats).map((pool) => ({
+          name: pool.name,
+          value: pool.value,
+          max: pool.max,
+          color: pool.color,
+        }))
+      : [];
+    if (Object.keys(customFields).length === 0 && stats.length === 0) continue;
+
+    seeds.push({
+      characterId,
+      name: data.name || "Character",
+      emoji: "👤",
+      mood: "",
+      appearance: typeof extensions.appearance === "string" ? extensions.appearance : null,
+      outfit: null,
+      avatarPath: row.avatarPath ?? null,
+      avatarCrop: extensions.avatarCrop ?? null,
+      customFields,
+      stats,
+      thoughts: null,
+    });
+  }
+
+  return seeds;
+}
+
+function mergeRoleplayTrackerDefaultCharacters(currentCharacters: PresentCharacter[], seeds: PresentCharacter[]) {
+  const merged = currentCharacters.map((character) => ({ ...character }));
+  const currentById = new Map<string, number>();
+  for (let index = 0; index < merged.length; index++) {
+    const id = merged[index]?.characterId;
+    if (typeof id === "string" && id.trim()) currentById.set(id, index);
+  }
+
+  for (const seed of seeds) {
+    const characterId = seed.characterId;
+    const existingIndex = characterId ? currentById.get(characterId) : undefined;
+    if (existingIndex === undefined) {
+      currentById.set(characterId, merged.length);
+      merged.push(seed);
+      continue;
+    }
+
+    const existing = merged[existingIndex]!;
+    const seedFields = isPlainStringRecord(seed.customFields) ? seed.customFields : {};
+    const existingFields = isPlainStringRecord(existing.customFields) ? existing.customFields : {};
+    merged[existingIndex] = {
+      ...seed,
+      ...existing,
+      customFields: { ...seedFields, ...existingFields },
+      stats: Array.isArray(existing.stats) && existing.stats.length > 0 ? existing.stats : seed.stats,
+    };
+  }
+
+  return merged;
+}
+
+async function seedNewRoleplayChatTrackerDefaults(
+  app: FastifyInstance,
+  chat: { id: string; mode?: string | null },
+  characterIds: string[],
+) {
+  if (chat.mode !== "roleplay" || characterIds.length === 0) return;
+
+  const seeds = await buildRoleplayTrackerDefaultCharacters(app, characterIds);
+  if (seeds.length === 0) return;
+
+  const gameStateStore = createGameStateStorage(app.db);
+  const latest = await gameStateStore.getLatest(chat.id);
+  const currentCharacters = latest ? parseSnapshotJson<PresentCharacter[]>(latest.presentCharacters, []) : [];
+  const presentCharacters = mergeRoleplayTrackerDefaultCharacters(currentCharacters, seeds);
+
+  if (latest) {
+    await gameStateStore.updateLatest(chat.id, { presentCharacters });
+    return;
+  }
+
+  await gameStateStore.create({
+    chatId: chat.id,
+    messageId: "",
+    swipeIndex: 0,
+    date: null,
+    time: null,
+    location: null,
+    weather: null,
+    temperature: null,
+    worldCustomFields: [],
+    presentCharacters,
+    recentEvents: [],
+    playerStats: null,
+    personaStats: null,
+    fieldLocks: null,
+    hiddenTrackerFields: null,
+    committed: false,
+  });
+}
+
 function resolveEntryStateOverrides(value: unknown): EntryStateOverrides | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
 
@@ -715,6 +847,12 @@ export async function chatsRoutes(app: FastifyInstance) {
     );
     if (!chat) return chat;
 
+    try {
+      await seedNewRoleplayChatTrackerDefaults(app, chat, input.characterIds);
+    } catch (err) {
+      logger.warn(err, "Failed to seed Character Tracker defaults for new Roleplay chat");
+    }
+
     return normalizeChatForResponse(chat);
   });
 
@@ -728,6 +866,7 @@ export async function chatsRoutes(app: FastifyInstance) {
     if (data.characterIds?.includes(PROFESSOR_MARI_ID) && !hasProfessorMariCharacter(existing)) {
       return reply.status(400).send({ error: "Professor Mari is only available from the Home screen." });
     }
+    let roleplayTrackerCharacterIdsToSeed: string[] = [];
     if (data.characterIds !== undefined) {
       const previousIds = resolveChatCharacterIds(existing.characterIds);
       const nextIds = data.characterIds;
@@ -742,6 +881,9 @@ export async function chatsRoutes(app: FastifyInstance) {
         const hasStartedChat =
           existingMetadata.conversationSetupComplete === true ||
           existingMessages.some((message) => message.role === "user" || message.role === "assistant");
+        if (existing.mode === "roleplay" && !hasStartedChat && addedIds.length > 0) {
+          roleplayTrackerCharacterIdsToSeed = addedIds;
+        }
         const snapshots: Record<string, unknown> = {};
         const eventNames = new Map<string, string>();
         for (const id of [...removedIds, ...addedIds]) {
@@ -784,6 +926,13 @@ export async function chatsRoutes(app: FastifyInstance) {
       }
     }
     const updated = await storage.update(req.params.id, data);
+    if (updated && roleplayTrackerCharacterIdsToSeed.length > 0) {
+      try {
+        await seedNewRoleplayChatTrackerDefaults(app, updated, roleplayTrackerCharacterIdsToSeed);
+      } catch (err) {
+        logger.warn(err, "Failed to seed Character Tracker defaults while setting up Roleplay chat");
+      }
+    }
     return updated ? normalizeChatForResponse(updated) : updated;
   });
 

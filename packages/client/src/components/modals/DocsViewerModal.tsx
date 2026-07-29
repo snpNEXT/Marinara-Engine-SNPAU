@@ -14,8 +14,8 @@ import { useTranslation as useUiTranslation } from "react-i18next";
  * language): a user can run an English UI with Spanish docs, and the headers
  * must match the content they sit above. Unlisted folders fall back to the
  * English map, then to title-cased folder names, so new categories and new
- * languages degrade gracefully. Spanish and German terms follow their docs
- * translation glossaries (loanwords like "roleplay"/"lorebooks"/"prompts" and
+ * languages degrade gracefully. Each language's labels follow its docs
+ * translation glossary (loanwords like "roleplay"/"lorebooks"/"prompts" and
  * the mode names stay English, matching the UI).
  */
 const DIR_LABELS_BY_DOCS_LANG: Record<string, Record<string, string>> = {
@@ -67,6 +67,50 @@ const DIR_LABELS_BY_DOCS_LANG: Record<string, Record<string, string>> = {
     extending: "Erweiterungen",
     integrations: "Integrationen",
     development: "Entwicklung",
+  },
+  fr: {
+    "": "Guides",
+    home: "Accueil",
+    installation: "Installation",
+    connections: "Connexions",
+    conversation: "Conversation",
+    roleplay: "Roleplay",
+    game: "Game Mode",
+    characters: "Personnages",
+    chats: "Chats",
+    lorebooks: "Lorebooks",
+    agents: "Agents",
+    media: "Médias",
+    prompts: "Prompts",
+    noodle: "Noodle",
+    appearance: "Apparence",
+    settings: "Paramètres",
+    data: "Données",
+    extending: "Extensions",
+    integrations: "Intégrations",
+    development: "Développement",
+  },
+  "pt-br": {
+    "": "Guias",
+    home: "Início",
+    installation: "Instalação",
+    connections: "Conexões",
+    conversation: "Conversation",
+    roleplay: "Roleplay",
+    game: "Game Mode",
+    characters: "Personagens",
+    chats: "Chats",
+    lorebooks: "Lorebooks",
+    agents: "Agentes",
+    media: "Mídia",
+    prompts: "Prompts",
+    noodle: "Noodle",
+    appearance: "Aparência",
+    settings: "Configurações",
+    data: "Dados",
+    extending: "Extensões",
+    integrations: "Integrações",
+    development: "Desenvolvimento",
   },
 };
 

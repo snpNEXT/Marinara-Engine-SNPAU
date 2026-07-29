@@ -106,6 +106,7 @@ Regression guards:
 
 - `pnpm regression:prompt` runs fast deterministic checks for prompt assembly, lorebook keyword matching, macros, summaries, and mode-specific generation gates.
 - `pnpm smoke:ui` runs the Playwright browser smoke suite against isolated temporary app data.
+  Each run clears `.tmp/playwright-data` before starting a fresh test server. Stop any process already using the configured Playwright ports before running it; existing fixture state is disposable and the smoke suite does not reuse a running development server.
 - `pnpm regression` runs both lanes.
 
 These checks are intentionally small and do not replace manual verification. When you change behavior, include the manual verification you performed and add or update a regression guard for the bug class when practical.
@@ -206,6 +207,8 @@ The overlay is not a substitute for this guide. When instructions conflict, foll
 - Translate prose, headings, table text, and link text only. Code blocks, inline code, file paths, URLs, and link targets (including `#fragments`) stay byte-identical to English, and every file keeps its leading `# ` heading. Per-language conventions, in both cases with in-app UI labels kept in English bold plus a one-time native-language gloss:
   - Spanish: neutral international Spanish ("tú", no regionalisms).
   - German: natural standard High German (lowercase "du", en dashes `–`, Duden-style compound hyphenation for English loanwords such as "Lorebook-Eintrag"; mode names Conversation/Roleplay/Game Mode stay English).
+  - French: natural standard French (tutoiement; no anglicisms or colloquialisms like "l'appli"/"checker"; plain ASCII spaces before `:` `;` `!` `?` and straight quotes/apostrophes — never `«»` or non-breaking spaces, which break the substring search and copy-paste; en dashes `–` for parentheticals, accents kept on capitals such as `É`; mode names Conversation/Roleplay/Game Mode stay English).
+  - Brazilian Portuguese (`pt-br`): natural Brazilian Portuguese, never European forms ("você" with its imperative — "Clique", "Abra"; arquivo/salvar/tela/usuário — never ficheiro/guardar/ecrã/utilizador; current Acordo Ortográfico spelling; straight quotes and en dashes; mode names Conversation/Roleplay/Game Mode stay English).
 - After editing a pack, run `node scripts/docs-i18n/build-manifest.mjs <pack-dir>` to refresh hashes, then `node scripts/docs-i18n/validate-pack.mjs <pack-dir>` from the Engine repo root, before committing to `docs-i18n`.
 
 ## Localization

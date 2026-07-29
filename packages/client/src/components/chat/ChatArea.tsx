@@ -277,8 +277,19 @@ function isMediaPromptPreviewTimeout(error: unknown): boolean {
   return error instanceof DOMException && error.name === "TimeoutError";
 }
 
-const shouldIgnoreIntuitiveSwipeTarget = (target: EventTarget | null): boolean => {
+const shouldIgnoreIntuitiveSwipeTarget = (
+  target: EventTarget | null,
+  { allowEmptyMainComposer = false }: { allowEmptyMainComposer?: boolean } = {},
+): boolean => {
   if (!(target instanceof Element)) return false;
+  if (
+    allowEmptyMainComposer &&
+    target instanceof HTMLTextAreaElement &&
+    target.dataset.chatComposer === "true" &&
+    target.value.length === 0
+  ) {
+    return false;
+  }
   return Boolean(
     target.closest(
       [
@@ -2265,7 +2276,8 @@ export function ChatArea() {
       if (event.defaultPrevented) return;
 
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-      if (shouldIgnoreIntuitiveSwipeTarget(event.target)) return;
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (shouldIgnoreIntuitiveSwipeTarget(event.target, { allowEmptyMainComposer: true })) return;
 
       if (event.repeat && event.key === "ArrowRight" && latestAssistantMessageForSwipes) {
         const swipeCount = latestAssistantMessageForSwipes.swipeCount ?? 1;
@@ -3117,6 +3129,9 @@ export function ChatArea() {
             connectedChatName={connectedChatName}
             onOpenSettings={handleOpenSettingsPanel}
             onCloseSettings={handleCloseSettingsPanel}
+            externalGalleryOpen={galleryOpen}
+            externalGalleryAnchor={galleryAnchor}
+            onCloseExternalGallery={handleCloseGalleryPanel}
             onSwitchChat={chat.connectedChatId ? () => setActiveChatId(chat.connectedChatId!) : undefined}
             onDeleteMessage={handleDelete}
             onPeekPrompt={handlePeekPrompt}
@@ -3128,7 +3143,7 @@ export function ChatArea() {
             chat={chat}
             settingsOpen={settingsOpen}
             settingsAnchor={settingsAnchor}
-            galleryOpen={galleryOpen}
+            galleryOpen={false}
             galleryAnchor={galleryAnchor}
             wizardOpen={wizardOpen}
             peekPromptData={peekPromptData}
@@ -3149,11 +3164,6 @@ export function ChatArea() {
             onCloseSettings={handleCloseSettingsPanel}
             onCloseGallery={handleCloseGalleryPanel}
             onOpenScheduleEditor={handleOpenScheduleEditor}
-            onIllustrate={() =>
-              retryAgents(activeChatId, ["illustrator"], {
-                illustratorRetryTargets: ["illustration"],
-              })
-            }
             onWizardFinish={() => {
               setWizardOpen(false);
               handleOpenSettingsPanel();

@@ -93,6 +93,7 @@ import {
   sanitizeImageGenerationProfile,
   sanitizeVideoGenerationProfile,
   suggestImageStyleProfileIdForModel,
+  parseConnectionImageCaptioningDefaults,
   type APIProvider,
   type ComfyUiLoraSetting,
   type ImageDefaultsService,
@@ -303,6 +304,8 @@ export function ConnectionEditor() {
   const [localDefaultParametersEnabled, setLocalDefaultParametersEnabled] = useState(false);
   const [localDefaultParameters, setLocalDefaultParameters] =
     useState<EditableGenerationParameters>(CONNECTION_PARAMETER_DEFAULTS);
+  const [localImageCaptioningEnabled, setLocalImageCaptioningEnabled] = useState(false);
+  const [localImageCaptioningConnectionId, setLocalImageCaptioningConnectionId] = useState("");
   const [localImageDefaults, setLocalImageDefaults] = useState<ImageGenerationDefaultsProfile | null>(null);
   const [localVideoDefaults, setLocalVideoDefaults] = useState<VideoGenerationDefaultsProfile | null>(null);
   const [imageDefaultsExpanded, setImageDefaultsExpanded] = useState(false);
@@ -417,8 +420,13 @@ export function ConnectionEditor() {
     setLocalMaxTokensOverride(typeof c.maxTokensOverride === "number" ? (c.maxTokensOverride as number) : null);
     setLocalClaudeFastMode(c.claudeFastMode === "true" || c.claudeFastMode === true);
     setLocalTreatAsLocalEndpoint(c.treatAsLocalEndpoint === "true" || c.treatAsLocalEndpoint === true);
-    setLocalDefaultParametersEnabled(!!parseEditableGenerationParameters(c.defaultParameters));
+    const imageCaptioningDefaults = parseConnectionImageCaptioningDefaults(c.defaultParameters);
+    setLocalDefaultParametersEnabled(
+      !!parseEditableGenerationParameters(c.defaultParameters) || Object.keys(imageCaptioningDefaults).length > 0,
+    );
     setLocalDefaultParameters(getEditableGenerationParameters(CONNECTION_PARAMETER_DEFAULTS, c.defaultParameters));
+    setLocalImageCaptioningEnabled(imageCaptioningDefaults.imageCaptioningEnabled === true);
+    setLocalImageCaptioningConnectionId(imageCaptioningDefaults.imageCaptioningConnectionId ?? "");
     setLocalImageDefaults(
       defaultsService ? (storedImageDefaults ?? createDefaultImageGenerationProfile(defaultsService)) : null,
     );
@@ -476,6 +484,9 @@ export function ConnectionEditor() {
             { token: "%height%", label: "%height%", critical: false },
             { token: "%seed%", label: "%seed%", critical: false },
             { token: "%length%", label: "%length%", critical: false },
+            { token: "%length_s%", label: "%length_s%", critical: false },
+            { token: "%fps%", label: "%fps%", critical: false },
+            { token: "%duration_seconds%", label: "%duration_seconds%", critical: false },
             { token: "%reference_image_name%", label: "%reference_image_name%", critical: false },
           ]
         : [
@@ -703,7 +714,13 @@ export function ConnectionEditor() {
       if (!isMediaProvider) {
         await saveConnectionDefaults.mutateAsync({
           id: connectionDetailId,
-          params: localDefaultParametersEnabled ? (localDefaultParameters as unknown as Record<string, unknown>) : null,
+          params: localDefaultParametersEnabled
+            ? buildLanguageDefaultParameters(
+                localDefaultParameters,
+                localImageCaptioningEnabled,
+                localImageCaptioningConnectionId,
+              )
+            : null,
         });
       } else if (isImageProvider) {
         const nextImageDefaults =
@@ -781,6 +798,8 @@ export function ConnectionEditor() {
     localTreatAsLocalEndpoint,
     localDefaultParametersEnabled,
     localDefaultParameters,
+    localImageCaptioningEnabled,
+    localImageCaptioningConnectionId,
     selectedImageService,
     selectedImageDefaultsService,
     selectedVideoProvider,
@@ -839,7 +858,11 @@ export function ConnectionEditor() {
               : null,
           )
         : localDefaultParametersEnabled
-          ? (localDefaultParameters as unknown as Record<string, unknown>)
+          ? buildLanguageDefaultParameters(
+              localDefaultParameters,
+              localImageCaptioningEnabled,
+              localImageCaptioningConnectionId,
+            )
           : null;
     const imageService = isImageProvider ? localImageGenerationSource || localImageService || null : null;
     const videoProvider = isVideoProvider ? selectedVideoProvider || null : null;
@@ -897,6 +920,8 @@ export function ConnectionEditor() {
     localPromptPresetId,
     localDefaultParametersEnabled,
     localDefaultParameters,
+    localImageCaptioningEnabled,
+    localImageCaptioningConnectionId,
     localEnableCaching,
     localCachingAtDepth,
     localDefaultForAgents,
@@ -2133,6 +2158,58 @@ export function ConnectionEditor() {
                       markDirty();
                     }}
                   />
+                  <div className="mt-4 space-y-3 border-t border-[var(--border)] pt-4">
+                    <SettingsSwitch
+                      label={localizeUi("ui.connections.connectioneditor.imageCaptioning")}
+                      description={localizeUi(
+                        "ui.connections.connectioneditor.describeImageAttachmentsBeforeSendingThemToTextOnlyModels",
+                      )}
+                      checked={localImageCaptioningEnabled}
+                      onChange={(checked) => {
+                        setLocalImageCaptioningEnabled(checked);
+                        markDirty();
+                      }}
+                    />
+                    {localImageCaptioningEnabled && (
+                      <label className="block space-y-1.5">
+                        <span className="text-xs font-medium text-[var(--muted-foreground)]">
+                          {localizeUi("ui.connections.connectioneditor.captioningConnection")}
+                        </span>
+                        <select
+                          value={localImageCaptioningConnectionId}
+                          onChange={(event) => {
+                            setLocalImageCaptioningConnectionId(event.target.value);
+                            markDirty();
+                          }}
+                          className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm ring-1 ring-[var(--border)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                        >
+                          <option value="">{localizeUi("ui.connections.connectioneditor.useThisConnection")}</option>
+                          {((allConnections ?? []) as Record<string, unknown>[])
+                            .filter(
+                              (connection) =>
+                                connection.id !== connectionDetailId &&
+                                connection.provider !== "image_generation" &&
+                                connection.provider !== "video_generation",
+                            )
+                            .map((connection) => (
+                              <option key={connection.id as string} value={connection.id as string}>
+                                {connection.name as string}
+                                {connection.model
+                                  ? localizeUi("ui.connections.connectioneditor.value1", {
+                                      value1: connection.model,
+                                    })
+                                  : ""}
+                              </option>
+                            ))}
+                        </select>
+                        <p className="text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
+                          {localizeUi(
+                            "ui.connections.connectioneditor.chooseADifferentVisionCapableConnectionWhenThisModelCannotSeeImages",
+                          )}
+                        </p>
+                      </label>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <p className="rounded-xl bg-[var(--secondary)]/40 px-3 py-2 text-[0.625rem] text-[var(--muted-foreground)] ring-1 ring-[var(--border)]">{localizeUi("ui.connections.connectioneditor.thisConnectionIsUsingTheModeDefaultsFromConversation")}</p>
@@ -2466,7 +2543,7 @@ export function ConnectionEditor() {
               {localProvider === "image_generation" && (
                 <>
                   {" "}
-                  <strong>{localizeUi("ui.connections.connectioneditor.testImage")}</strong> {localizeUi("ui.connections.connectioneditor.generatesA512512TestImageRequiresSavingFirst")}</>
+                  <strong>{localizeUi("ui.connections.connectioneditor.testImage")}</strong> {localizeUi("ui.connections.connectioneditor.generatesA10241024TestImageRequiresSavingFirst")}</>
               )}
               {localProvider === "video_generation" && (
                 <>
@@ -3202,7 +3279,7 @@ function VideoGenerationDefaultsPanel({
             : service === "seedance"
               ? `${value.seedance.durationSeconds}s, ${value.seedance.aspectRatio}, ${value.seedance.resolution}`
               : service === "comfyui"
-                ? `${value.comfyui.durationSeconds}s, ${value.comfyui.aspectRatio}, ${value.comfyui.resolution}`
+                ? `${value.comfyui.durationSeconds}s, ${value.comfyui.fps} FPS, ${value.comfyui.aspectRatio}, ${value.comfyui.resolution}`
                 : `${value.geminiOmni.durationSeconds}s, ${value.geminiOmni.aspectRatio}`;
   const serviceLabel =
     service === "xai"
@@ -3325,7 +3402,7 @@ function VideoGenerationDefaultsPanel({
             service === "seedance" ||
             service === "comfyui" ? (
               <>
-                <div className="grid gap-2 sm:grid-cols-3">
+                <div className={cn("grid gap-2", service === "comfyui" ? "sm:grid-cols-2" : "sm:grid-cols-3")}>
                   <NumberSetting
                     label={localizeUi("ui.connections.videogenerationdefaultspanel.durationSeconds")}
                     value={
@@ -3356,6 +3433,15 @@ function VideoGenerationDefaultsPanel({
                       } else updateOpenRouter({ durationSeconds });
                     }}
                   />
+                  {service === "comfyui" && (
+                    <NumberSetting
+                      label={localizeUi("ui.connections.videogenerationdefaultspanel.framesPerSecondFps")}
+                      value={value.comfyui.fps}
+                      min={1}
+                      max={120}
+                      onCommit={(fps) => updateComfyUi({ fps })}
+                    />
+                  )}
                   <label className="block">
                     <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">{localizeUi("ui.connections.videogenerationdefaultspanel.aspectRatio")}</span>
                     <select
@@ -3444,7 +3530,7 @@ function VideoGenerationDefaultsPanel({
                         : service === "seedance"
                           ?localizeUi("ui.connections.videogenerationdefaultspanel.seedanceAccepts415SecondsReferenceImageJobsSend")
                           : service === "comfyui"
-                            ?localizeUi("ui.connections.videogenerationdefaultspanel.comfyuiReceivesWidthHeightAndA16FpsFrame")
+                            ?localizeUi("ui.connections.videogenerationdefaultspanel.comfyuiReceivesDimensionsDurationFpsAndFrameCount")
                             :localizeUi("ui.connections.videogenerationdefaultspanel.theseValuesAreSentToOpenrouterSAsynchronousVideos")}
                 </p>
               </>
@@ -3649,6 +3735,18 @@ function getStoredImageGenerationDefaults(
   const root = parseDefaultParametersRoot(raw);
   if (!root[IMAGE_DEFAULTS_STORAGE_KEY]) return null;
   return normalizeImageGenerationProfile(root[IMAGE_DEFAULTS_STORAGE_KEY], service).profile;
+}
+
+function buildLanguageDefaultParameters(
+  parameters: EditableGenerationParameters,
+  imageCaptioningEnabled: boolean,
+  imageCaptioningConnectionId: string,
+): Record<string, unknown> {
+  return {
+    ...(parameters as unknown as Record<string, unknown>),
+    imageCaptioningEnabled,
+    imageCaptioningConnectionId: imageCaptioningConnectionId || null,
+  };
 }
 
 function buildImageDefaultParameters(

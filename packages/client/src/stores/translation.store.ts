@@ -80,7 +80,11 @@ export const useTranslationStore = create<TranslationStore>((set) => ({
             !s.hiddenTranslationIds[msg.id]
           ) {
             seeded[msg.id] = extra.translation;
-            if (typeof msg.content === "string") seededSources[msg.id] = msg.content;
+            if (typeof extra.translationSource === "string") {
+              seededSources[msg.id] = extra.translationSource;
+            } else if (typeof msg.content === "string") {
+              seededSources[msg.id] = msg.content;
+            }
           }
         } catch {
           // Skip messages with malformed extra JSON

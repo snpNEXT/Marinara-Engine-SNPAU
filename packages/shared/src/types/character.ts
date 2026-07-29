@@ -46,6 +46,8 @@ export interface CharacterExtensions {
   boxColor?: string;
   /** Marinara Engine: RPG stats toggle + custom attributes */
   rpgStats?: RPGStatsConfig;
+  /** Marinara Engine: per-character Tracker fields copied into each new Roleplay chat. */
+  trackerCustomFieldDefaults?: CharacterTrackerCustomFieldDefault[];
   /** Marinara Engine: Conversation-mode availability status */
   conversationStatus?: import("./chat.js").ConversationPresenceStatus;
   /** Marinara Engine: pronunciation override used when sending this character's name to TTS. */
@@ -104,6 +106,12 @@ export interface RPGStatsConfig {
   hp: { value: number; max: number };
   /** HP-like bars such as HP, MP, EP, Sanity, etc. */
   pools?: RPGStatPool[];
+}
+
+/** A character-profile default for a text-valued Character Tracker field. */
+export interface CharacterTrackerCustomFieldDefault {
+  name: string;
+  value: string;
 }
 
 /** Depth-injected prompt attached to a character. */

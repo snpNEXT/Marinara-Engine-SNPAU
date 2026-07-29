@@ -3170,10 +3170,12 @@ export async function noodleRoutes(app: FastifyInstance) {
     const conn = await connections.getWithKey(connectionId);
     if (!conn) return reply.code(404).send({ error: "Noodle generation connection not found" });
     const imageCaptioning = await resolveImageCaptioningRuntime({
-      chatMeta: {
-        imageCaptioningEnabled: settings.imageCaptioningEnabled,
-        imageCaptioningConnectionId: settings.imageCaptioningConnectionId,
-      },
+      chatMeta: settings.imageCaptioningUseConnectionDefault
+        ? {}
+        : {
+            imageCaptioningEnabled: settings.imageCaptioningEnabled,
+            imageCaptioningConnectionId: settings.imageCaptioningConnectionId,
+          },
       fallbackConnectionId: connectionId,
       connections,
     });

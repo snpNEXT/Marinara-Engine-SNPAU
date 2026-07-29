@@ -446,6 +446,18 @@ function canRunAccentAnimation(reducedMotionQuery: MediaQueryList, forcePaused =
   return document.visibilityState === "visible" && document.hasFocus() && !reducedMotionQuery.matches && !forcePaused;
 }
 
+function isTextEntryFocused() {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement)) return false;
+  if (active instanceof HTMLTextAreaElement) return true;
+  if (active instanceof HTMLInputElement) {
+    return !["button", "checkbox", "color", "file", "hidden", "radio", "range", "reset", "submit"].includes(
+      active.type,
+    );
+  }
+  return active.isContentEditable;
+}
+
 async function recoverFromVersionSkew(serverVersion: string) {
   if (sessionStorage.getItem(VERSION_RECOVERY_KEY) === serverVersion) {
     return;
@@ -750,6 +762,14 @@ export function App() {
       applyStaticAccent();
     };
 
+    const pauseAccentAnimation = () => {
+      if (accentAnimationTimer !== null) {
+        window.clearTimeout(accentAnimationTimer);
+        accentAnimationTimer = null;
+      }
+      delete root.dataset.marinaraAccentAnimation;
+    };
+
     const queueAccentAnimationTick = () => {
       if (accentAnimationTimer !== null) return;
 
@@ -769,14 +789,20 @@ export function App() {
       root.dataset.marinaraAccentAnimation =
         animatedAccentIsGradient && animatedGradientStops.length > 1 ? "gradient" : "solid";
       if (usesTimerDrivenAccentAnimation) {
-        applyLiveAccent();
         queueAccentAnimationTick();
       }
     };
 
     const syncAccentAnimationState = () => {
       if (accentAnimationEnabled && canRunAccentAnimation(reducedMotionQuery, pauseChromeEffectsForAppearance)) {
-        startAccentAnimation();
+        if (isTextEntryFocused()) {
+          // Root accent ticks invalidate styles across the entire Roleplay
+          // surface in Firefox. Freeze the current accent while the user is
+          // typing, then resume from the next tick after focus leaves.
+          pauseAccentAnimation();
+        } else {
+          startAccentAnimation();
+        }
       } else {
         stopAccentAnimation();
       }
@@ -795,6 +821,8 @@ export function App() {
     window.addEventListener("blur", syncAccentAnimationState);
     window.addEventListener("pageshow", syncAccentAnimationState);
     window.addEventListener("pagehide", syncAccentAnimationState);
+    document.addEventListener("focusin", syncAccentAnimationState);
+    document.addEventListener("focusout", syncAccentAnimationState);
     if (customCursorEnabled) {
       window.addEventListener("wheel", freezeCursorRecolorDuringScroll, { capture: true, passive: true });
     }
@@ -806,6 +834,8 @@ export function App() {
       window.removeEventListener("blur", syncAccentAnimationState);
       window.removeEventListener("pageshow", syncAccentAnimationState);
       window.removeEventListener("pagehide", syncAccentAnimationState);
+      document.removeEventListener("focusin", syncAccentAnimationState);
+      document.removeEventListener("focusout", syncAccentAnimationState);
       if (customCursorEnabled) {
         window.removeEventListener("wheel", freezeCursorRecolorDuringScroll, true);
       }

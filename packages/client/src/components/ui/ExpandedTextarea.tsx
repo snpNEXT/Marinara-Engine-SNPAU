@@ -21,6 +21,7 @@ interface ExpandedTextareaProps {
   title: string;
   value: string;
   onChange: (value: string) => void;
+  readOnly?: boolean;
   placeholder?: string;
   surface?: "default" | "chat";
   closeLabel?: string;
@@ -34,6 +35,7 @@ export function ExpandedTextarea({
   title,
   value,
   onChange,
+  readOnly = false,
   placeholder,
   surface = "default",
   closeLabel = "Collapse",
@@ -116,13 +118,15 @@ export function ExpandedTextarea({
               ref={textareaRef}
               value={value}
               onChange={(e) => onChange(e.target.value)}
-              onKeyDown={handleTextareaTab}
+              readOnly={readOnly}
+              onKeyDown={readOnly ? undefined : handleTextareaTab}
               placeholder={placeholder}
               className={cn(
                 "h-full w-full resize-none rounded-xl p-5 text-sm leading-relaxed outline-none transition-colors",
                 isChatSurface
                   ? "border border-[var(--marinara-chat-chrome-input-border)] bg-[var(--marinara-chat-chrome-input-bg)] text-[var(--marinara-chat-chrome-panel-text)] placeholder:text-[var(--marinara-chat-chrome-panel-muted)] focus:border-[var(--marinara-chat-chrome-input-border-focus)] focus:ring-1 focus:ring-[var(--marinara-chat-chrome-focus-ring)]"
                   : "border border-[var(--border)] bg-[var(--secondary)] placeholder:text-[var(--muted-foreground)]/40 focus:border-[var(--primary)]/40 focus:ring-1 focus:ring-[var(--primary)]/20",
+                readOnly && "cursor-text text-[var(--muted-foreground)]",
               )}
             />
           </div>

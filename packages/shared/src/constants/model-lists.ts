@@ -826,6 +826,12 @@ const IMAGE_GEN_MODELS: KnownModel[] = [
     context: 0,
     maxOutput: 0,
   },
+  {
+    id: "bytedance-seed/seedream-4.5",
+    name: "Seedream 4.5 (OpenRouter)",
+    context: 0,
+    maxOutput: 0,
+  },
   // xAI / Grok Imagine
   { id: "grok-4.1-fast-image", name: "Grok 4.1 Fast Image", context: 0, maxOutput: 0 },
   { id: "grok-imagine-image", name: "Grok Imagine Image", context: 0, maxOutput: 0 },

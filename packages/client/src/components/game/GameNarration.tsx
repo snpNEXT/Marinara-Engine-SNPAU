@@ -38,6 +38,7 @@ import {
   Wand2,
   RotateCcw,
   GitBranch,
+  Languages,
 } from "lucide-react";
 import { cn, copyToClipboard, getAvatarCropStyle, type AvatarCrop, type LegacyAvatarCrop } from "../../lib/utils";
 import { useRenderTimer } from "../../lib/perf-diagnostics";
@@ -588,11 +589,47 @@ function slicePreservingEffects(content: string, maxVisible: number): string {
 }
 
 function getGameTranslationHtml(message: NarrationMessage, translatedText: string, textEffectsEnabled: boolean): string {
-  const content =
+  return animateTextHtml(
+    formatNarration(getGameTranslationSource({ ...message, content: translatedText }), false),
+    textEffectsEnabled,
+  );
+}
+
+function getGameTranslationSource(message: NarrationMessage): string {
+  return (
     message.role === "assistant" || message.role === "narrator" || message.role === "system"
-      ? stripGmTagsKeepReadables(translatedText)
-      : translatedText.replace(/^\[(?:To the party|To the GM)]\s*/i, "");
-  return animateTextHtml(formatNarration(content.trim(), false), textEffectsEnabled);
+      ? stripGmTagsKeepReadables(message.content)
+      : message.content.replace(/^\[(?:To the party|To the GM)]\s*/i, "")
+  ).trim();
+}
+
+function gameTranslationMatchesMessage(message: NarrationMessage, source: string | undefined): boolean {
+  return source === getGameTranslationSource(message) || source === message.content;
+}
+
+function getGameTranslatedSegmentText(
+  message: NarrationMessage,
+  translatedText: string | undefined,
+  speakerColors: Map<string, string>,
+  sourceSegmentIndex: number,
+): string | undefined {
+  if (!translatedText?.trim()) return undefined;
+  if (message.role === "user") {
+    return getGameTranslationSource({ ...message, content: translatedText });
+  }
+
+  const translatedSegments = parseNarrationSegments({ ...message, content: translatedText }, speakerColors);
+  const translatedSegment = translatedSegments[sourceSegmentIndex];
+  if (!translatedSegment) {
+    return sourceSegmentIndex === 0
+      ? getGameTranslationSource({ ...message, content: translatedText })
+      : undefined;
+  }
+  return (
+    translatedSegment.type === "readable"
+      ? (translatedSegment.readableContent ?? translatedSegment.content)
+      : translatedSegment.content
+  ).trim();
 }
 
 function hashVoiceKey(value: string): string {
@@ -1007,12 +1044,14 @@ export function GameNarration({
 }: GameNarrationProps) {
   const { t: localizeUi } = useUiTranslation();
   useRenderTimer("game-narration"); // [#3104 diagnostic]
-  const { translations, translating } = useTranslate();
+  const { translate, translations, translationSources, translating } = useTranslate();
   const { applyToAIOutput } = useApplyRegex();
   // Parse the chat metadata in a memo (not the store selector) so streaming ticks
   // don't re-parse the whole metadata object on every update.
   const activeChatMetadata = useChatStore((s) => s.activeChat?.metadata);
-  const scopedRegexMode = useMemo(() => parseChatMetadata(activeChatMetadata).scopedRegexMode, [activeChatMetadata]);
+  const parsedActiveChatMetadata = useMemo(() => parseChatMetadata(activeChatMetadata), [activeChatMetadata]);
+  const scopedRegexMode = parsedActiveChatMetadata.scopedRegexMode;
+  const translationDisplayOnly = parsedActiveChatMetadata.translationDisplayOnly === true;
   const [activeIndex, setActiveIndex] = useState(0);
   const [visibleChars, setVisibleChars] = useState(0);
   const [logsOpen, setLogsOpen] = useState(false);
@@ -1893,10 +1932,30 @@ export function GameNarration({
   ]);
 
   const active = segments[activeIndex] ?? null;
+  const activeDisplayLen = active ? effectDisplayLength(active.content) : 0;
+  const doneTyping = !!active && visibleChars >= activeDisplayLen;
   const activeSourceMessageId = active ? segmentSourceMessageIdsRef.current[activeIndex] : null;
   const activeSourceMessage = activeSourceMessageId ? (sourceMessagesById.get(activeSourceMessageId) ?? null) : null;
   const activeTranslatedText = activeSourceMessageId ? translations[activeSourceMessageId] : undefined;
+  const activeTranslationSource = activeSourceMessageId ? translationSources[activeSourceMessageId] : undefined;
   const activeIsTranslating = activeSourceMessageId ? !!translating[activeSourceMessageId] : false;
+  const activeSourceSegmentIndex = active?.sourceSegmentIndex ?? 0;
+  const activeTranslatedSegmentText = activeSourceMessage
+    ? getGameTranslatedSegmentText(activeSourceMessage, activeTranslatedText, speakerColors, activeSourceSegmentIndex)
+    : undefined;
+  const showActiveTranslationOnly =
+    translationDisplayOnly &&
+    !!activeSourceMessage &&
+    !!activeTranslatedSegmentText &&
+    !activeIsTranslating &&
+    doneTyping &&
+    gameTranslationMatchesMessage(activeSourceMessage, activeTranslationSource);
+  const activeVisibleContent =
+    active && showActiveTranslationOnly
+      ? activeTranslatedSegmentText!
+      : active
+        ? slicePreservingEffects(active.content, visibleChars)
+        : "";
   const activeCopyKey = active ? `active:${active.id}` : null;
   const activeCopyText = active ? (active.readableContent ?? stripGmTagsKeepReadables(active.content)) : "";
   const gameVoiceEnabled = Boolean(ttsConfig?.enabled && ttsConfig.autoplayGame);
@@ -2221,9 +2280,6 @@ export function GameNarration({
     }
     prevActiveRef.current = { index: activeIndex, content: active.content };
   }, [active, activeIndex]);
-
-  const activeDisplayLen = active ? effectDisplayLength(active.content) : 0;
-  const doneTyping = !!active && visibleChars >= activeDisplayLen;
 
   useLayoutEffect(() => {
     if (!active || editingContent !== null || messageOffset > 0 || !isMobileGameViewport()) return;
@@ -3845,6 +3901,23 @@ export function GameNarration({
       !!onDeleteMessage && !!sourceMessageId && (isUserAuthoredSource || sourceRole === "system");
     const canBranchMessage = !!onBranchMessage && !!sourceMessageId && isUserAuthoredSource;
     const sourceMessage = sourceMessageId ? (sourceMessagesById.get(sourceMessageId) ?? null) : null;
+    const translatedText = sourceMessageId ? translations[sourceMessageId] : undefined;
+    const translationSource = sourceMessageId ? translationSources[sourceMessageId] : undefined;
+    const isTranslating = sourceMessageId ? !!translating[sourceMessageId] : false;
+    const translatedSegmentText = sourceMessage
+      ? getGameTranslatedSegmentText(sourceMessage, translatedText, speakerColors, sourceSegmentIndex)
+      : undefined;
+    const showTranslationOnly =
+      translationDisplayOnly &&
+      !!sourceMessage &&
+      !!translatedSegmentText &&
+      !isTranslating &&
+      gameTranslationMatchesMessage(sourceMessage, translationSource);
+    const segmentDisplayContent = showTranslationOnly
+      ? translatedSegmentText!
+      : seg.type === "readable"
+        ? (seg.readableContent ?? seg.content)
+        : seg.content;
     const canPeekPrompt =
       showMessageActions &&
       !!onPeekPrompt &&
@@ -3900,6 +3973,32 @@ export function GameNarration({
     const peekPromptButton = canPeekPrompt
       ? renderPeekPromptButton(sourceMessageId, stackedActionButtonClass)
       : null;
+    const translateButton =
+      showMessageActions && sourceMessage && sourceRole !== "system" ? (
+        <button
+          type="button"
+          onPointerDown={stopLogActionPointerDown}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void translate(sourceMessageId, getGameTranslationSource(sourceMessage), sourceMessage.chatId);
+          }}
+          disabled={isTranslating}
+          className={stackedActionButtonClass}
+          title={
+            translatedText
+              ? localizeUi("ui.chat.chatmessage.hideTranslation")
+              : localizeUi("ui.chat.chatmessage.translate")
+          }
+          aria-label={
+            translatedText
+              ? localizeUi("ui.chat.chatmessage.hideTranslation")
+              : localizeUi("ui.chat.chatmessage.translate")
+          }
+        >
+          {isTranslating ? <Loader2 size={11} className="animate-spin" /> : <Languages size={11} />}
+        </button>
+      ) : null;
     const deleteButton = showDeleteButton ? (
       <button
         type="button"
@@ -3979,7 +4078,7 @@ export function GameNarration({
       </>
     ) : null;
     const actionButtons =
-      deleteButton || branchButton || peekPromptButton || copyButton || editButtons ? (
+      deleteButton || branchButton || peekPromptButton || translateButton || copyButton || editButtons ? (
         <div
           onPointerDown={stopLogActionPointerDown}
           onClick={(event) => event.stopPropagation()}
@@ -3987,6 +4086,7 @@ export function GameNarration({
         >
           {branchButton}
           {peekPromptButton}
+          {translateButton}
           {deleteButton}
           {copyButton}
           {editButtons}
@@ -4228,10 +4328,17 @@ export function GameNarration({
                 )}
                 style={seg.color ? { ...narrationFontStyle, color: seg.color } : narrationFontStyle}
                 dangerouslySetInnerHTML={{
-                  __html: animateTextHtml(formatNarration(seg.content, false), gameTextEffectsEnabled),
+                  __html: animateTextHtml(formatNarration(segmentDisplayContent, false), gameTextEffectsEnabled),
                 }}
               />
             )}
+            {!showTranslationOnly &&
+              renderTranslationPanel(
+                sourceMessage,
+                translatedSegmentText,
+                showMessageActions && isTranslating,
+                "mt-1",
+              )}
           </div>
         </div>
       );
@@ -4252,7 +4359,7 @@ export function GameNarration({
               className="whitespace-pre-wrap break-words text-xs leading-relaxed"
               style={narrationFontStyle}
               dangerouslySetInnerHTML={{
-                __html: animateTextHtml(formatNarration(seg.content, false), gameTextEffectsEnabled),
+                __html: animateTextHtml(formatNarration(segmentDisplayContent, false), gameTextEffectsEnabled),
               }}
             />
           )}
@@ -4278,12 +4385,19 @@ export function GameNarration({
               style={narrationFontStyle}
               dangerouslySetInnerHTML={{
                 __html: animateTextHtml(
-                  formatNarration(seg.readableContent ?? seg.content, false),
+                  formatNarration(segmentDisplayContent, false),
                   gameTextEffectsEnabled,
                 ),
               }}
             />
           )}
+          {!showTranslationOnly &&
+            renderTranslationPanel(
+              sourceMessage,
+              translatedSegmentText,
+              showMessageActions && isTranslating,
+              "mt-1",
+            )}
         </div>
       );
     }
@@ -4305,10 +4419,17 @@ export function GameNarration({
             className="text-xs leading-relaxed text-[var(--foreground)]/80 dark:text-white/80"
             style={narrationStyle}
             dangerouslySetInnerHTML={{
-              __html: animateTextHtml(formatNarration(seg.content, false), gameTextEffectsEnabled),
+              __html: animateTextHtml(formatNarration(segmentDisplayContent, false), gameTextEffectsEnabled),
             }}
           />
         )}
+        {!showTranslationOnly &&
+          renderTranslationPanel(
+            sourceMessage,
+            translatedSegmentText,
+            showMessageActions && isTranslating,
+            "mt-1",
+          )}
       </div>
     );
   };
@@ -4364,6 +4485,39 @@ export function GameNarration({
                 const voiceEntry = sideVoiceKey ? gameVoiceCacheRef.current.get(sideVoiceKey) : undefined;
                 const voicePaused = gameVoicePausedKey === sideVoiceKey;
                 const voiceActive = gameVoicePlayingKey === sideVoiceKey;
+                const sourceMessageId = line.voiceSourceMessageId ?? active?.sourceMessageId ?? null;
+                const sourceSegmentIndex = line.voiceSourceSegmentIndex ?? active?.sourceSegmentIndex ?? null;
+                const sourceMessage = sourceMessageId ? (sourceMessagesById.get(sourceMessageId) ?? null) : null;
+                const translatedText = sourceMessageId ? translations[sourceMessageId] : undefined;
+                const translationSource = sourceMessageId ? translationSources[sourceMessageId] : undefined;
+                const isTranslating = sourceMessageId ? !!translating[sourceMessageId] : false;
+                const translatedSegmentText =
+                  sourceMessage && sourceSegmentIndex != null
+                    ? getGameTranslatedSegmentText(
+                        sourceMessage,
+                        translatedText,
+                        speakerColors,
+                        sourceSegmentIndex,
+                      )
+                    : undefined;
+                const showTranslationOnly =
+                  translationDisplayOnly &&
+                  !!sourceMessage &&
+                  !!translatedSegmentText &&
+                  !isTranslating &&
+                  gameTranslationMatchesMessage(sourceMessage, translationSource);
+                const displayedLine = showTranslationOnly
+                  ? { ...line, content: translatedSegmentText! }
+                  : line;
+                const translationPanel =
+                  !showTranslationOnly && sourceMessage
+                    ? renderTranslationPanel(
+                        sourceMessage,
+                        translatedSegmentText,
+                        isTranslating,
+                        "mt-1.5",
+                      )
+                    : null;
                 const voiceControl =
                   sideVoiceKey && voiceEntry && voiceEntry.status !== "error" ? (
                     <span
@@ -4420,11 +4574,12 @@ export function GameNarration({
                     style={{ animationDelay: `${i * 80}ms` }}
                   >
                     <PartyOverlayBox
-                      line={line}
+                      line={displayedLine}
                       avatar={charAvatar}
                       color={charColor}
                       nameColor={charNameColor}
                       voiceControl={voiceControl}
+                      translation={translationPanel}
                     />
                   </div>
                 );
@@ -4663,7 +4818,7 @@ export function GameNarration({
                               }
                               dangerouslySetInnerHTML={{
                                 __html: animateTextHtml(
-                                  formatNarration(slicePreservingEffects(active.content, visibleChars), false),
+                                  formatNarration(activeVisibleContent, false),
                                   gameTextEffectsEnabled,
                                 ),
                               }}
@@ -4686,7 +4841,13 @@ export function GameNarration({
               )}
 
               {doneTyping &&
-                renderTranslationPanel(activeSourceMessage, activeTranslatedText, activeIsTranslating, "mt-2")}
+                !showActiveTranslationOnly &&
+                renderTranslationPanel(
+                  activeSourceMessage,
+                  activeTranslatedSegmentText,
+                  activeIsTranslating,
+                  "mt-2",
+                )}
 
               <div className="mt-2 flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
@@ -4750,10 +4911,7 @@ export function GameNarration({
                     )}
                     style={narrationStyle}
                     dangerouslySetInnerHTML={{
-                      __html: animateTextHtml(
-                        formatNarration(slicePreservingEffects(active.content, visibleChars), false),
-                        gameTextEffectsEnabled,
-                      ),
+                      __html: animateTextHtml(formatNarration(activeVisibleContent, false), gameTextEffectsEnabled),
                     }}
                   />
                 )}
@@ -4761,7 +4919,13 @@ export function GameNarration({
               </div>
 
               {doneTyping &&
-                renderTranslationPanel(activeSourceMessage, activeTranslatedText, activeIsTranslating, "mt-2")}
+                !showActiveTranslationOnly &&
+                renderTranslationPanel(
+                  activeSourceMessage,
+                  activeTranslatedSegmentText,
+                  activeIsTranslating,
+                  "mt-2",
+                )}
 
               <div className="mt-2 flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
@@ -4814,10 +4978,7 @@ export function GameNarration({
                   )}
                   style={narrationFontStyle}
                   dangerouslySetInnerHTML={{
-                    __html: animateTextHtml(
-                      formatNarration(slicePreservingEffects(active.content, visibleChars), false),
-                      gameTextEffectsEnabled,
-                    ),
+                    __html: animateTextHtml(formatNarration(activeVisibleContent, false), gameTextEffectsEnabled),
                   }}
                 />
                 {activeCopyKey && (
@@ -4836,7 +4997,13 @@ export function GameNarration({
               </div>
 
               {doneTyping &&
-                renderTranslationPanel(activeSourceMessage, activeTranslatedText, activeIsTranslating, "mt-2")}
+                !showActiveTranslationOnly &&
+                renderTranslationPanel(
+                  activeSourceMessage,
+                  activeTranslatedSegmentText,
+                  activeIsTranslating,
+                  "mt-2",
+                )}
 
               <div className="mt-2 flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
@@ -4983,9 +5150,6 @@ export function GameNarration({
                 </div>
               )}
               {visibleLogEntries.map((entry) => {
-                const sourceMessage = sourceMessagesById.get(entry.messageId) ?? null;
-                const translatedEntryText = sourceMessage ? translations[entry.messageId] : undefined;
-                const entryIsTranslating = sourceMessage ? !!translating[entry.messageId] : false;
                 return (
                   <div key={entry.messageId} className="space-y-1.5">
                     {entry.segments.map((seg, entrySegmentIndex) => {
@@ -4995,6 +5159,31 @@ export function GameNarration({
                       const sourceMessageRole = sourceMessageId
                         ? (sourceMessagesById.get(sourceMessageId)?.role ?? null)
                         : null;
+                      const segmentSourceMessage = sourceMessageId
+                        ? (sourceMessagesById.get(sourceMessageId) ?? null)
+                        : null;
+                      const translatedText = sourceMessageId ? translations[sourceMessageId] : undefined;
+                      const translationSource = sourceMessageId ? translationSources[sourceMessageId] : undefined;
+                      const isTranslating = sourceMessageId ? !!translating[sourceMessageId] : false;
+                      const translatedSegmentText = segmentSourceMessage
+                        ? getGameTranslatedSegmentText(
+                            segmentSourceMessage,
+                            translatedText,
+                            speakerColors,
+                            sourceSegmentIndex,
+                          )
+                        : undefined;
+                      const showTranslationOnly =
+                        translationDisplayOnly &&
+                        !!segmentSourceMessage &&
+                        !!translatedSegmentText &&
+                        !isTranslating &&
+                        gameTranslationMatchesMessage(segmentSourceMessage, translationSource);
+                      const segmentDisplayContent = showTranslationOnly
+                        ? translatedSegmentText!
+                        : seg.type === "readable"
+                          ? (seg.readableContent ?? seg.content)
+                          : seg.content;
                       const sourceRole = seg.sourceRole ?? sourceMessageRole;
                       const isUserAuthoredSource = sourceRole === "user" || sourceMessageRole === "user";
                       const isActiveSeg = active?.id === seg.id;
@@ -5109,6 +5298,40 @@ export function GameNarration({
                       const peekPromptButton = canPeekPrompt
                         ? renderPeekPromptButton(sourceMessageId, LOG_SEGMENT_ACTION_BTN)
                         : null;
+                      const translateButton =
+                        entrySegmentIndex === 0 && segmentSourceMessage && sourceMessageRole !== "system" ? (
+                          <button
+                            type="button"
+                            onPointerDown={stopLogActionPointerDown}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              void translate(
+                                sourceMessageId,
+                                getGameTranslationSource(segmentSourceMessage),
+                                segmentSourceMessage.chatId,
+                              );
+                            }}
+                            disabled={isTranslating}
+                            className={LOG_SEGMENT_ACTION_BTN}
+                            title={
+                              translatedText
+                                ? localizeUi("ui.chat.chatmessage.hideTranslation")
+                                : localizeUi("ui.chat.chatmessage.translate")
+                            }
+                            aria-label={
+                              translatedText
+                                ? localizeUi("ui.chat.chatmessage.hideTranslation")
+                                : localizeUi("ui.chat.chatmessage.translate")
+                            }
+                          >
+                            {isTranslating ? (
+                              <Loader2 size={11} className="animate-spin" />
+                            ) : (
+                              <Languages size={11} />
+                            )}
+                          </button>
+                        ) : null;
                       const deleteButton = showDeleteButton ? (
                         <button
                           type="button"
@@ -5275,7 +5498,7 @@ export function GameNarration({
                       );
 
                       const actionButtons =
-                        deleteButton || branchButton || peekPromptButton || copyButton || editButtons ? (
+                        deleteButton || branchButton || peekPromptButton || translateButton || copyButton || editButtons ? (
                           <div
                             onPointerDown={stopLogActionPointerDown}
                             onClick={(event) => event.stopPropagation()}
@@ -5283,6 +5506,7 @@ export function GameNarration({
                           >
                             {branchButton}
                             {peekPromptButton}
+                            {translateButton}
                             {deleteButton}
                             {copyButton}
                             {editButtons}
@@ -5456,12 +5680,19 @@ export function GameNarration({
                                   style={seg.color ? { ...narrationFontStyle, color: seg.color } : narrationFontStyle}
                                   dangerouslySetInnerHTML={{
                                     __html: animateTextHtml(
-                                      formatNarration(seg.content, false),
+                                      formatNarration(segmentDisplayContent, false),
                                       gameTextEffectsEnabled,
                                     ),
                                   }}
                                 />
                               )}
+                              {!showTranslationOnly &&
+                                renderTranslationPanel(
+                                  segmentSourceMessage,
+                                  translatedSegmentText,
+                                  entrySegmentIndex === 0 && isTranslating,
+                                  "mt-1",
+                                )}
                             </div>
                           </div>
                         );
@@ -5487,7 +5718,10 @@ export function GameNarration({
                               className="whitespace-pre-wrap break-words pr-6 text-xs leading-relaxed text-cyan-50/80"
                               style={narrationFontStyle}
                               dangerouslySetInnerHTML={{
-                                __html: animateTextHtml(formatNarration(seg.content, false), gameTextEffectsEnabled),
+                                __html: animateTextHtml(
+                                  formatNarration(segmentDisplayContent, false),
+                                  gameTextEffectsEnabled,
+                                ),
                               }}
                             />
                           </div>
@@ -5520,12 +5754,19 @@ export function GameNarration({
                                 style={narrationFontStyle}
                                 dangerouslySetInnerHTML={{
                                   __html: animateTextHtml(
-                                    formatNarration(seg.readableContent ?? seg.content, false),
+                                    formatNarration(segmentDisplayContent, false),
                                     gameTextEffectsEnabled,
                                   ),
                                 }}
                               />
                             )}
+                            {!showTranslationOnly &&
+                              renderTranslationPanel(
+                                segmentSourceMessage,
+                                translatedSegmentText,
+                                entrySegmentIndex === 0 && isTranslating,
+                                "mt-1",
+                              )}
                           </div>
                         );
                       }
@@ -5553,14 +5794,23 @@ export function GameNarration({
                               className="text-xs leading-relaxed text-white/80"
                               style={narrationStyle}
                               dangerouslySetInnerHTML={{
-                                __html: animateTextHtml(formatNarration(seg.content, false), gameTextEffectsEnabled),
+                                __html: animateTextHtml(
+                                  formatNarration(segmentDisplayContent, false),
+                                  gameTextEffectsEnabled,
+                                ),
                               }}
                             />
                           )}
+                          {!showTranslationOnly &&
+                            renderTranslationPanel(
+                              segmentSourceMessage,
+                              translatedSegmentText,
+                              entrySegmentIndex === 0 && isTranslating,
+                              "mt-1",
+                            )}
                         </div>
                       );
                     })}
-                    {renderTranslationPanel(sourceMessage, translatedEntryText, entryIsTranslating)}
                     <div className="border-b border-white/5" />
                   </div>
                 );
@@ -5605,12 +5855,14 @@ function PartyOverlayBox({
   color,
   nameColor,
   voiceControl,
+  translation,
 }: {
   line: PartyDialogueLine;
   avatar: SpeakerAvatarInfo | null;
   color?: string;
   nameColor?: string;
   voiceControl?: ReactNode;
+  translation?: ReactNode;
 }) {
   const styleByType: Record<string, { border: string; bg: string; icon: string; labelColor: string }> = {
     side: { border: "border-white/15", bg: "bg-black/75", icon: "💬", labelColor: "text-white/85" },
@@ -5674,6 +5926,7 @@ function PartyOverlayBox({
               __html: formatNarration(line.content, false),
             }}
           />
+          {translation}
         </div>
       </div>
     </div>

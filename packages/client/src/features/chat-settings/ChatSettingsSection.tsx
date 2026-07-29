@@ -13,6 +13,7 @@ interface ChatSettingsSectionProps {
   help?: string;
   style?: CSSProperties;
   initialOpen?: boolean;
+  contentClassName?: string;
   children: ReactNode;
 }
 
@@ -24,6 +25,7 @@ export function ChatSettingsSection({
   help,
   style,
   initialOpen = false,
+  contentClassName,
   children,
 }: ChatSettingsSectionProps) {
   const rememberedOpen = useUIStore((s) => (id ? s.chatSettingsExpandedSections[id] : undefined));
@@ -72,7 +74,7 @@ export function ChatSettingsSection({
           className={cn("text-[var(--muted-foreground)] transition-transform", open && "rotate-180")}
         />
       </div>
-      {open && <div className="px-4 pb-3 pt-3">{children}</div>}
+      {open && <div className={cn("px-4 pb-3", contentClassName ?? "pt-3")}>{children}</div>}
     </div>
   );
 }

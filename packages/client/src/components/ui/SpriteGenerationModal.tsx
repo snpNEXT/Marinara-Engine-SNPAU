@@ -24,8 +24,8 @@ interface SpriteGenerationModalProps {
   entityId: string;
   /** Optional initial mode shown when opening */
   initialSpriteType?: "expressions" | "full-body";
-  /** Existing portrait expression names that full-body generation can mirror */
-  existingExpressionNames?: string[];
+  /** Existing portrait sprites that full-body generation can mirror */
+  existingExpressionSprites?: Array<{ expression: string; url: string }>;
   /** Pre-filled appearance description */
   defaultAppearance?: string;
   /** Pre-filled avatar (base64 data URL) for reference */
@@ -556,7 +556,7 @@ export function SpriteGenerationModal({
   onClose,
   entityId,
   initialSpriteType = "expressions",
-  existingExpressionNames = [],
+  existingExpressionSprites = [],
   defaultAppearance,
   defaultAvatarUrl,
   onSpritesGenerated,
@@ -578,8 +578,8 @@ export function SpriteGenerationModal({
     ...EXPRESSION_PRESETS[DEFAULT_SPRITE_PRESET].expressions,
   ]);
   const [matchExistingExpressions, setMatchExistingExpressions] = useState(false);
-  const [nativeTransparentPng, setNativeTransparentPng] = useState(false);
-  const [noBackground, setNoBackground] = useState(false);
+  const [nativeTransparentPng, setNativeTransparentPng] = useState(true);
+  const [noBackground, setNoBackground] = useState(true);
   const [cleanupStrength, setCleanupStrength] = useState(35);
   const [connectionId, setConnectionId] = useState<string | null>(null);
   const [videoConnectionId, setVideoConnectionId] = useState<string | null>(null);
@@ -588,6 +588,7 @@ export function SpriteGenerationModal({
   const [generatedSheet, setGeneratedSheet] = useState<string | null>(null);
   const [generatedSheets, setGeneratedSheets] = useState<GeneratedSheetPreview[]>([]);
   const [cells, setCells] = useState<SlicedCell[]>([]);
+  const [neutralFullBodyCandidate, setNeutralFullBodyCandidate] = useState<SlicedCell | null>(null);
   const [failedMatchedBatch, setFailedMatchedBatch] = useState<FailedMatchedFullBodyBatch | null>(null);
   const [generationProgress, setGenerationProgress] = useState<string | null>(null);
   const [cleanupApplying, setCleanupApplying] = useState(false);
@@ -629,27 +630,41 @@ export function SpriteGenerationModal({
   }, [connectionsList]);
   const spriteGenerationUnavailable = spriteCapabilities?.spriteGenerationAvailable === false;
   const spriteGenerationReason = spriteCapabilities?.reason ?? "Sprite generation is unavailable on this platform.";
-  const existingPortraitExpressions = useMemo(() => {
+  const existingPortraitSprites = useMemo(() => {
     const seen = new Set<string>();
-    const names: string[] = [];
-    for (const rawName of existingExpressionNames) {
-      const normalized = normalizeSpriteLabel(rawName);
-      if (!normalized || seen.has(normalized)) continue;
-      seen.add(normalized);
-      names.push(normalized);
-    }
-    return names;
-  }, [existingExpressionNames]);
+    return existingExpressionSprites.flatMap((sprite) => {
+      const expression = normalizeSpriteLabel(sprite.expression);
+      if (!expression || !sprite.url || seen.has(expression)) return [];
+      seen.add(expression);
+      return [{ expression, url: sprite.url }];
+    });
+  }, [existingExpressionSprites]);
+  const existingPortraitExpressions = useMemo(
+    () => existingPortraitSprites.map((sprite) => sprite.expression),
+    [existingPortraitSprites],
+  );
   const matchedFullBodyExpressions = useMemo(
-    () => existingPortraitExpressions.slice(0, MATCHED_FULL_BODY_EXPRESSION_LIMIT),
+    () =>
+      ["neutral", ...existingPortraitExpressions.filter((expression) => expression !== "neutral")].slice(
+        0,
+        MATCHED_FULL_BODY_EXPRESSION_LIMIT,
+      ),
     [existingPortraitExpressions],
+  );
+  const matchedPortraitExpressionCount = useMemo(
+    () => matchedFullBodyExpressions.filter((expression) => existingPortraitExpressions.includes(expression)).length,
+    [existingPortraitExpressions, matchedFullBodyExpressions],
   );
   const matchedFullBodyGrid = useMemo(
     () => getMatchedFullBodyGrid(matchedFullBodyExpressions.length),
     [matchedFullBodyExpressions.length],
   );
   const matchedFullBodyBatches = useMemo(
-    () => chunkItems(matchedFullBodyExpressions, MATCHED_FULL_BODY_BATCH_SIZE),
+    () =>
+      chunkItems(
+        matchedFullBodyExpressions.filter((expression) => expression !== "neutral"),
+        MATCHED_FULL_BODY_BATCH_SIZE,
+      ),
     [matchedFullBodyExpressions],
   );
   const matchedFullBodySliceGrid = useMemo(
@@ -755,6 +770,7 @@ export function SpriteGenerationModal({
         setGeneratedSheet(null);
         setGeneratedSheets([]);
         setCells([]);
+        setNeutralFullBodyCandidate(null);
         setFailedMatchedBatch(null);
         setGenerationProgress(null);
         setCleanupApplying(false);
@@ -787,8 +803,8 @@ export function SpriteGenerationModal({
     );
     setMatchExistingExpressions(false);
     setAnimatedPortraits(false);
-    setNativeTransparentPng(false);
-    setNoBackground(false);
+    setNativeTransparentPng(true);
+    setNoBackground(true);
     setAppearance(defaultAppearance ?? "");
     setReferenceImages([]);
     setUseCurrentAvatarReference(!!defaultAvatarUrl);
@@ -796,6 +812,7 @@ export function SpriteGenerationModal({
     setGeneratedSheet(null);
     setGeneratedSheets([]);
     setCells([]);
+    setNeutralFullBodyCandidate(null);
     setFailedMatchedBatch(null);
     setGenerationProgress(null);
     setCleanupApplying(false);
@@ -822,6 +839,7 @@ export function SpriteGenerationModal({
     setGeneratedSheet(null);
     setGeneratedSheets([]);
     setCells([]);
+    setNeutralFullBodyCandidate(null);
     setFailedMatchedBatch(null);
     setGenerationProgress(null);
     setSliceAdjustments(DEFAULT_SLICE_ADJUSTMENTS);
@@ -829,8 +847,8 @@ export function SpriteGenerationModal({
     setFrameAdjustments(DEFAULT_SPRITE_FRAME_ADJUSTMENTS);
     setFramePreviewUrl(null);
     setMatchExistingExpressions(false);
-    setNativeTransparentPng(false);
-    setNoBackground(false);
+    setNativeTransparentPng(true);
+    setNoBackground(true);
     setError(null);
   }, [abortActiveGeneration, defaultAppearance, defaultAvatarUrl, entityId]);
 
@@ -921,7 +939,12 @@ export function SpriteGenerationModal({
   );
 
   const requestGeneratedSheet = useCallback(
-    async (expressions: string[], grid: SpriteGrid, matchedFullBodyMode: boolean): Promise<GenerateSheetResult> => {
+    async (
+      expressions: string[],
+      grid: SpriteGrid,
+      matchedFullBodyMode: boolean,
+      neutralFullBodyReference?: string,
+    ): Promise<GenerateSheetResult> => {
       if (!effectiveConnectionId) throw new Error("Image generation connection is required");
       const signal = generationControllerRef.current?.signal;
       if (signal?.aborted) throw new SpriteGenerationAbortedError();
@@ -938,6 +961,12 @@ export function SpriteGenerationModal({
         nativeTransparentPng,
         noBackground,
         cleanupStrength,
+        neutralFullBodyReference,
+        expressionReferences: matchedFullBodyMode
+          ? existingPortraitSprites
+              .filter((sprite) => expressions.includes(sprite.expression))
+              .map((sprite) => ({ expression: sprite.expression, image: sprite.url }))
+          : undefined,
       };
 
       if (reviewImagePromptsBeforeSend) {
@@ -974,6 +1003,7 @@ export function SpriteGenerationModal({
       nativeTransparentPng,
       noBackground,
       cleanupStrength,
+      existingPortraitSprites,
       openPromptReview,
       reviewImagePromptsBeforeSend,
       spriteType,
@@ -1044,7 +1074,12 @@ export function SpriteGenerationModal({
   );
 
   const generateMatchedFullBodyBatch = useCallback(
-    async (batchExpressions: string[], batchIndex: number, totalBatches: number) => {
+    async (
+      batchExpressions: string[],
+      batchIndex: number,
+      totalBatches: number,
+      neutralFullBodyReference: string,
+    ) => {
       const grid = getMatchedFullBodyBatchGrid(batchExpressions.length);
       let lastError = "Image generation failed";
 
@@ -1057,7 +1092,7 @@ export function SpriteGenerationModal({
         );
 
         try {
-          const result = await requestGeneratedSheet(batchExpressions, grid, true);
+          const result = await requestGeneratedSheet(batchExpressions, grid, true, neutralFullBodyReference);
           if (result.failedExpressions?.length) {
             throw new Error(result.failedExpressions.map((entry) => `${entry.expression}: ${entry.error}`).join("; "));
           }
@@ -1076,17 +1111,49 @@ export function SpriteGenerationModal({
     [requestGeneratedSheet],
   );
 
+  const generateNeutralFullBodyCandidate = useCallback(async () => {
+    let lastError = "Image generation failed";
+    const grid = { cols: 1, rows: 1 };
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (generationControllerRef.current?.signal.aborted) throw new SpriteGenerationAbortedError();
+      setGenerationProgress(
+        attempt === 0
+          ? localizeUi("ui.spriteGeneration.neutral.generating")
+          : localizeUi("ui.spriteGeneration.neutral.retrying"),
+      );
+
+      try {
+        const result = await requestGeneratedSheet(["neutral"], grid, true);
+        if (result.failedExpressions?.length) {
+          throw new Error(result.failedExpressions.map((entry) => `${entry.expression}: ${entry.error}`).join("; "));
+        }
+        if (result.cells.length < 1) {
+          throw new Error("The provider did not return the neutral full-body sprite");
+        }
+        return createGeneratedSpritesFromResult(result, grid, "Neutral full-body");
+      } catch (err) {
+        if (isSpritePromptReviewCancelled(err) || isSpriteGenerationAborted(err)) throw err;
+        lastError = getGenerationErrorMessage(err);
+      }
+    }
+
+    throw new Error(lastError);
+  }, [localizeUi, requestGeneratedSheet]);
+
   const runMatchedFullBodyBatches = useCallback(
     async ({
       batches,
       startIndex,
       initialCells,
       initialSheets,
+      neutralFullBodyReference,
     }: {
       batches: string[][];
       startIndex: number;
       initialCells: SlicedCell[];
       initialSheets: GeneratedSheetPreview[];
+      neutralFullBodyReference: string;
     }) => {
       let nextCells = [...initialCells];
       let nextSheets = [...initialSheets];
@@ -1103,7 +1170,12 @@ export function SpriteGenerationModal({
         if (batchExpressions.length === 0) continue;
 
         try {
-          const generated = await generateMatchedFullBodyBatch(batchExpressions, batchIndex, batches.length);
+          const generated = await generateMatchedFullBodyBatch(
+            batchExpressions,
+            batchIndex,
+            batches.length,
+            neutralFullBodyReference,
+          );
           if (generationControllerRef.current?.signal.aborted) {
             setGenerationProgress(null);
             setStep(0);
@@ -1163,6 +1235,7 @@ export function SpriteGenerationModal({
     setGeneratedSheet(null);
     setGeneratedSheets([]);
     setCells([]);
+    setNeutralFullBodyCandidate(null);
     setFailedMatchedBatch(null);
     setGenerationProgress(null);
     setCleanupApplied(false);
@@ -1197,12 +1270,17 @@ export function SpriteGenerationModal({
       }
 
       if (fullBodyExpressionMode) {
-        await runMatchedFullBodyBatches({
-          batches: matchedFullBodyBatches,
-          startIndex: 0,
-          initialCells: [],
-          initialSheets: [],
-        });
+        const generated = await generateNeutralFullBodyCandidate();
+        if (controller.signal.aborted) throw new SpriteGenerationAbortedError();
+        const candidate = generated.cells[0];
+        if (!candidate) throw new Error("The provider did not return the neutral full-body sprite");
+        setNeutralFullBodyCandidate(candidate);
+        setGeneratedSheet(generated.sheet?.dataUrl ?? null);
+        setGeneratedSheets(generated.sheet ? [generated.sheet] : []);
+        setCells([]);
+        setCleanupApplied(noBackground);
+        setGenerationProgress(null);
+        setStep(2);
         return;
       }
 
@@ -1247,16 +1325,73 @@ export function SpriteGenerationModal({
     animatedExpressionMode,
     requestGeneratedAnimatedExpressions,
     fullBodyExpressionMode,
-    runMatchedFullBodyBatches,
-    matchedFullBodyBatches,
+    generateNeutralFullBodyCandidate,
     requestGeneratedSheet,
     generationGrid,
     spriteType,
     noBackground,
   ]);
 
+  const handleAcceptNeutralFullBody = useCallback(async () => {
+    if (!neutralFullBodyCandidate || spriteGenerationUnavailable || !effectiveConnectionId) return;
+
+    generationControllerRef.current?.abort();
+    const controller = new AbortController();
+    generationControllerRef.current = controller;
+    const runId = generationRunIdRef.current + 1;
+    generationRunIdRef.current = runId;
+    const acceptedNeutral = {
+      ...neutralFullBodyCandidate,
+      expression: "neutral",
+      selected: true,
+    };
+
+    setNeutralFullBodyCandidate(null);
+    setCells([acceptedNeutral]);
+    setStep(1);
+    setError(null);
+    setGenerationProgress(localizeUi("ui.spriteGeneration.neutral.accepted"));
+
+    try {
+      await runMatchedFullBodyBatches({
+        batches: matchedFullBodyBatches,
+        startIndex: 0,
+        initialCells: [acceptedNeutral],
+        initialSheets: generatedSheets,
+        neutralFullBodyReference: acceptedNeutral.dataUrl,
+      });
+    } catch (err) {
+      if (isSpritePromptReviewCancelled(err) || isSpriteGenerationAborted(err)) {
+        setError(null);
+        setStep(0);
+        return;
+      }
+      setError(getGenerationErrorMessage(err));
+      setStep(2);
+    } finally {
+      if (generationRunIdRef.current === runId && generationControllerRef.current === controller) {
+        generationControllerRef.current = null;
+      }
+    }
+  }, [
+    effectiveConnectionId,
+    generatedSheets,
+    localizeUi,
+    matchedFullBodyBatches,
+    neutralFullBodyCandidate,
+    runMatchedFullBodyBatches,
+    spriteGenerationUnavailable,
+  ]);
+
   const handleRetryFailedMatchedBatch = useCallback(async () => {
     if (!failedMatchedBatch || spriteGenerationUnavailable || !effectiveConnectionId) return;
+
+    const neutralReference = cells.find((cell) => normalizeSpriteLabel(cell.expression) === "neutral")?.dataUrl;
+    if (!neutralReference) {
+      setError(localizeUi("ui.spriteGeneration.neutral.missing"));
+      setStep(2);
+      return;
+    }
 
     generationControllerRef.current?.abort();
     const controller = new AbortController();
@@ -1282,6 +1417,7 @@ export function SpriteGenerationModal({
         startIndex: failedMatchedBatch.batchIndex,
         initialCells: cells,
         initialSheets: generatedSheets,
+        neutralFullBodyReference: neutralReference,
       });
     } finally {
       if (generationRunIdRef.current === runId && generationControllerRef.current === controller) {
@@ -1294,6 +1430,7 @@ export function SpriteGenerationModal({
     failedMatchedBatch,
     generatedSheets,
     matchedFullBodyBatches,
+    localizeUi,
     runMatchedFullBodyBatches,
     spriteGenerationUnavailable,
   ]);
@@ -1302,6 +1439,7 @@ export function SpriteGenerationModal({
     abortActiveGeneration();
     setGenerationProgress(null);
     setPromptReviewSubmitting(false);
+    setNeutralFullBodyCandidate(null);
     setStep(0);
     setError(null);
   }, [abortActiveGeneration]);
@@ -1650,6 +1788,7 @@ export function SpriteGenerationModal({
       setGeneratedSheet(null);
       setGeneratedSheets([]);
       setCells([]);
+      setNeutralFullBodyCandidate(null);
       setFailedMatchedBatch(null);
       setGenerationProgress(null);
       handleCloseCellFrame();
@@ -1665,6 +1804,7 @@ export function SpriteGenerationModal({
     setGeneratedSheet(null);
     setGeneratedSheets([]);
     setCells([]);
+    setNeutralFullBodyCandidate(null);
     setFailedMatchedBatch(null);
     setGenerationProgress(null);
     handleCloseCellFrame();
@@ -1973,7 +2113,7 @@ export function SpriteGenerationModal({
                         {matchedFullBodyBatches.length} {localizeUi("ui.ui.spritegenerationmodal.batch")}{matchedFullBodyBatches.length === 1 ? "" :localizeUi("ui.lorebooks.lorebookeditor.es")} {localizeUi("ui.ui.spritegenerationmodal.ofUpTo")}{" "}
                         {MATCHED_FULL_BODY_BATCH_SIZE}
                       </span>
-                      {existingPortraitExpressions.length > matchedFullBodyExpressions.length && (
+                      {existingPortraitExpressions.length > matchedPortraitExpressionCount && (
                         <span className="text-[0.625rem] text-[var(--muted-foreground)]">{localizeUi("ui.ui.spritegenerationmodal.first")} {MATCHED_FULL_BODY_EXPRESSION_LIMIT} {localizeUi("ui.ui.spritegenerationmodal.used")}</span>
                       )}
                     </div>
@@ -1987,7 +2127,9 @@ export function SpriteGenerationModal({
                         </span>
                       ))}
                     </div>
-                    <p className="mt-2 text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">{localizeUi("ui.ui.spritegenerationmodal.eachBatchGeneratesA22IdleFullBody")}</p>
+                    <p className="mt-2 text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
+                      {localizeUi("ui.spriteGeneration.matched.referenceFlow")}
+                    </p>
                   </div>
                 )}
 
@@ -2117,8 +2259,51 @@ export function SpriteGenerationModal({
           </div>
         )}
 
+        {/* Neutral full-body approval gate */}
+        {step === 2 && neutralFullBodyCandidate && (
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <h3 className="text-sm font-semibold text-[var(--foreground)]">
+                {localizeUi("ui.spriteGeneration.neutral.reviewTitle")}
+              </h3>
+              <p className="max-w-[70ch] text-xs leading-relaxed text-[var(--muted-foreground)]">
+                {localizeUi("ui.spriteGeneration.neutral.reviewDescription")}
+              </p>
+            </div>
+
+            <div className="mx-auto w-full max-w-sm overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--secondary)]/60 p-3">
+              <div className="mx-auto aspect-[2/3] max-h-[56vh] overflow-hidden rounded-lg bg-[var(--background)] ring-1 ring-[var(--border)]">
+                <img
+                  src={neutralFullBodyCandidate.dataUrl}
+                  alt={localizeUi("ui.spriteGeneration.neutral.previewAlt")}
+                  className="h-full w-full object-contain"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border)]/30 pt-4">
+              <button
+                type="button"
+                onClick={handleGenerate}
+                className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-colors hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"
+              >
+                <RotateCcw size={13} />
+                {localizeUi("ui.spriteGeneration.neutral.regenerate")}
+              </button>
+              <button
+                type="button"
+                onClick={handleAcceptNeutralFullBody}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-white transition-colors hover:opacity-90"
+              >
+                <Check size={14} />
+                {localizeUi("ui.spriteGeneration.neutral.useAndContinue")}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Step 2: Preview & Label */}
-        {step === 2 && (
+        {step === 2 && !neutralFullBodyCandidate && (
           <div className="space-y-4">
             {error && (
               <div className="rounded-lg bg-[var(--destructive)]/10 px-3 py-2 text-xs text-[var(--destructive)]">

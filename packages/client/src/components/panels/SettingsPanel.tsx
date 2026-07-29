@@ -4,6 +4,7 @@
 import {
   TRACKER_DATA_PANEL_SECTIONS,
   TRACKER_PANEL_DEFAULT_BACKGROUND_COLOR,
+  QUICK_REPLIES_SETTINGS_CONTROL_ID,
   useUIStore,
   getDefaultAppAccentColor,
   getDefaultAppBackgroundColor,
@@ -119,6 +120,7 @@ import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packa
 import { useDocsLanguage, useFixDocsLanguage, useSetDocsLanguage } from "../../hooks/use-docs-language";
 import { HelpTooltip } from "../ui/HelpTooltip";
 import { ColorPicker } from "../ui/ColorPicker";
+import { EmojiPicker } from "../ui/EmojiPicker";
 import { TrackerPanelIcon } from "../ui/TrackerPanelIcon";
 import { TrackerSizeTierIcon } from "../ui/TrackerSizeTierIcon";
 import {
@@ -520,7 +522,7 @@ const SETTINGS_SEARCHABLE_CONTROLS: readonly SettingsSearchableControlMeta[] = [
     sectionId: "application",
     label: "Documentation Language",
     description: "Choose the language for Marinara's built-in guides.",
-    aliases: ["documentation", "guides", "docs", "manual", "spanish", "español", "german", "deutsch"],
+    aliases: ["documentation", "guides", "docs", "manual", "spanish", "español", "german", "deutsch", "french", "français", "portuguese", "português", "brazilian"],
     kind: "Select",
   },
   {
@@ -1136,7 +1138,7 @@ const SETTINGS_SEARCHABLE_CONTROLS: readonly SettingsSearchableControlMeta[] = [
     kind: "Input",
   },
   {
-    id: "quick-replies",
+    id: QUICK_REPLIES_SETTINGS_CONTROL_ID,
     sectionId: "input-editing",
     label: "Quick replies",
     description: "Show alternate draft actions beside Send.",
@@ -2345,6 +2347,8 @@ export function SettingsPanel() {
   const localize = useLocalizedUiText();
   const rawSettingsTab = useUIStore((s) => s.settingsTab);
   const setSettingsTab = useUIStore((s) => s.setSettingsTab);
+  const settingsTargetControlId = useUIStore((s) => s.settingsTargetControlId);
+  const setSettingsTargetControlId = useUIStore((s) => s.setSettingsTargetControlId);
   const settingsTab = normalizeSettingsTab(rawSettingsTab);
   const [settingsSearch, setSettingsSearch] = useState("");
   const [quickAccessOpen, setQuickAccessOpen] = useState(false);
@@ -2400,6 +2404,16 @@ export function SettingsPanel() {
     },
     [setSettingsTab],
   );
+
+  useEffect(() => {
+    if (!settingsTargetControlId) return;
+    const control = SETTINGS_SEARCHABLE_CONTROLS.find((entry) => entry.id === settingsTargetControlId);
+    const section = control ? SETTINGS_SECTION_BY_ID.get(control.sectionId) : null;
+    if (control && section) {
+      jumpToSearchResult({ type: "control", control, section });
+    }
+    setSettingsTargetControlId(null);
+  }, [jumpToSearchResult, setSettingsTargetControlId, settingsTargetControlId]);
 
   return (
     <div className="mari-settings-panel-chrome flex h-full flex-col overflow-hidden">
@@ -2602,7 +2616,7 @@ function QuickRepliesSetting() {
 
   return (
     <div
-      id={getSettingsControlAnchorId("quick-replies")}
+      id={getSettingsControlAnchorId(QUICK_REPLIES_SETTINGS_CONTROL_ID)}
       className={cn(
         "scroll-mt-3 overflow-hidden rounded-xl border transition-colors",
         showQuickRepliesMenu
@@ -2753,6 +2767,43 @@ function QuickRepliesSetting() {
   );
 }
 
+function CustomQuickReplyIconButton({
+  icon,
+  onSelect,
+}: {
+  icon: string | undefined;
+  onSelect: (icon: string) => void;
+}) {
+  const localize = useLocalizedUiText();
+  const [open, setOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-[var(--secondary)]/60 text-sm leading-none outline-none ring-1 ring-transparent transition-colors hover:bg-[var(--secondary)] focus-visible:ring-[var(--primary)]/40"
+        title={localize("Choose quick reply icon")}
+        aria-label={localize("Choose quick reply icon")}
+        aria-expanded={open}
+      >
+        {icon?.trim() || "✨"}
+      </button>
+      <EmojiPicker
+        open={open}
+        onClose={() => setOpen(false)}
+        onSelect={(emoji) => {
+          onSelect(emoji);
+          setOpen(false);
+        }}
+        anchorRef={buttonRef}
+      />
+    </>
+  );
+}
+
 function CustomQuickRepliesManager() {
   const localize = useLocalizedUiText();
   const customQuickReplies = useUIStore((s) => s.customQuickReplies);
@@ -2790,6 +2841,10 @@ function CustomQuickRepliesManager() {
               className="grid gap-1 rounded-md border border-[var(--border)]/60 bg-[var(--background)]/30 p-1.5"
             >
               <div className="flex items-center gap-1.5">
+                <CustomQuickReplyIconButton
+                  icon={entry.icon}
+                  onSelect={(icon) => updateCustomQuickReply(entry.id, { icon })}
+                />
                 <input
                   value={entry.label}
                   onChange={(event) => updateCustomQuickReply(entry.id, { label: event.target.value })}
@@ -5167,18 +5222,9 @@ function AppearanceSettings() {
       >
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium inline-flex items-center gap-1">{localizeUi("ui.panels.appearancesettings.chatBackground")}{" "}
-                <HelpTooltip text={localizeUi("ui.panels.appearancesettings.importOneOrMoreCustomImagesOrChooseFrom")} />
-              </span>
-              {chatBackground && (
-                <button
-                  onClick={() => setChatBackground(null)}
-                  className="flex items-center gap-1 rounded-md px-2 py-0.5 text-[0.625rem] text-[var(--destructive)] transition-colors hover:bg-[var(--destructive)]/10"
-                >
-                  <X size="0.625rem" /> {localizeUi("settings.notifications.customSound.actions.remove")}</button>
-              )}
-            </div>
+            <span className="text-xs font-medium inline-flex items-center gap-1">{localizeUi("ui.panels.appearancesettings.chatBackground")}{" "}
+              <HelpTooltip text={localizeUi("ui.panels.appearancesettings.importOneOrMoreCustomImagesOrChooseFrom")} />
+            </span>
             <label className="flex flex-col gap-1 rounded-lg bg-[var(--secondary)]/45 p-3 ring-1 ring-[var(--border)]/70">
               <span className="inline-flex items-center gap-1 text-[0.6875rem] font-medium">{localizeUi("ui.panels.appearancesettings.backgroundBlur")}<HelpTooltip text={localizeUi("ui.panels.appearancesettings.softensSelectedRoleplayAndGameModeBackgroundImagesBehind")} />
               </span>

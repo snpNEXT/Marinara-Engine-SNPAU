@@ -289,7 +289,12 @@ async function validateResolvedAddresses(
   policy: OutboundUrlPolicy,
   originalUrl?: string,
 ): Promise<Array<{ address: string; family: 4 | 6 }>> {
-  const addresses = await resolveHostname(hostname);
+  const resolvedAddresses = await resolveHostname(hostname);
+  // Some local inference servers expose an IPv4-only proxy on their public
+  // port even when their ordinary server is dual-stack (KoboldCPP Router Mode
+  // is one example). Prefer IPv4 for ambiguous loopback names such as
+  // `localhost`; explicit IPv6 loopback URLs remain IPv6.
+  const addresses = isLoopbackHostname(hostname) ? preferIpv4Records(resolvedAddresses) : resolvedAddresses;
   if (policy.allowMdns && isMdnsHostname(hostname)) {
     const preferred = preferIpv4Records(addresses);
     if (preferred.length === 0) {

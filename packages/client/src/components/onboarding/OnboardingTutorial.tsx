@@ -526,11 +526,15 @@ function OnboardingTutorialInner() {
   // Pre-select the user's existing choice whenever one has been made, so an
   // untouched picker is a guaranteed no-op on tutorial replays. Only on a
   // genuinely fresh install (nothing configured yet) suggest the UI language.
-  const uiLanguageBase = uiLanguage?.toLowerCase().split("-")[0] ?? "en";
+  // Match the full lowercased UI locale first (pt-BR → the "pt-br" pack), then
+  // fall back to a base-language match ("pt" would still find "pt-br").
+  const uiLanguageLower = uiLanguage?.toLowerCase() ?? "en";
+  const uiLanguageBase = uiLanguageLower.split("-")[0];
+  const uiMatchedDocsLanguage =
+    docsLanguageOptions.find((option) => option.code === uiLanguageLower)?.code ??
+    docsLanguageOptions.find((option) => option.code.split("-")[0] === uiLanguageBase)?.code;
   const suggestedDocsLanguage =
-    docsLanguageStatus?.configured || !docsLanguageOptions.some((option) => option.code === uiLanguageBase)
-      ? activeDocsLanguage
-      : uiLanguageBase;
+    docsLanguageStatus?.configured || !uiMatchedDocsLanguage ? activeDocsLanguage : uiMatchedDocsLanguage;
   const effectiveDocsLanguagePick = docsLanguagePick ?? suggestedDocsLanguage;
 
   /**

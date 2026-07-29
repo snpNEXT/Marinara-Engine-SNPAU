@@ -93,6 +93,15 @@ assert.equal(isUnsupportedNoodleVisionInputError(new Error("Provider rate limit 
 assert.equal(normalizeNoodleSettings({ maxImagePromptsPerDay: 7 }).maxImagesPerRefresh, 7);
 assert.equal(normalizeNoodleSettings({ maxImagePromptsPerDay: 7, maxImagesPerRefresh: 4 }).maxImagesPerRefresh, 4);
 assert.equal(normalizeNoodleSettings({}).imageCaptioningEnabled, false);
+assert.equal(normalizeNoodleSettings({ imageCaptioningEnabled: false }).imageCaptioningUseConnectionDefault, true);
 assert.equal(normalizeNoodleSettings({ imageCaptioningEnabled: true }).imageCaptioningEnabled, true);
+assert.equal(normalizeNoodleSettings({ imageCaptioningEnabled: true }).imageCaptioningUseConnectionDefault, false);
+assert.equal(
+  normalizeNoodleSettings({
+    imageCaptioningEnabled: false,
+    imageCaptioningUseConnectionDefault: false,
+  }).imageCaptioningUseConnectionDefault,
+  false,
+);
 
 process.stdout.write("Noodle vision regression passed.\n");

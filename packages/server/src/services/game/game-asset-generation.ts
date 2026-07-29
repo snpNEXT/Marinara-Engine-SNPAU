@@ -91,7 +91,7 @@ type GameBackgroundImage = {
   ext: string;
 };
 
-type ChatBackgroundMeta = Record<string, { originalName?: string; tags: string[] }>;
+type ChatBackgroundMeta = Record<string, { tags: string[] }>;
 
 function atomicWriteBuffer(filePath: string, buffer: Buffer): void {
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
@@ -593,6 +593,7 @@ function compileGameImagePrompt(
     appearance?: string | null;
     preserveFullScenePrompt?: boolean;
     omitProfileStyleText?: boolean;
+    omitProfileSubjectTags?: boolean;
   },
   kind: "portrait" | "background" | "illustration",
   prompt: string,
@@ -631,6 +632,7 @@ function compileGameImagePrompt(
         generatedStyle: req.artStyle,
         applyPromptModeToSourcePrompt: false,
         omitProfileStyleText: req.omitProfileStyleText,
+        omitProfileSubjectTags: req.omitProfileSubjectTags,
       });
     // The preliminary prefix determines how much preserved source text can actually fit.
     // Compare against only that guaranteed slice so truncation cannot remove the sole style copy.
@@ -658,6 +660,7 @@ function compileGameImagePrompt(
     generatedStyle: req.artStyle,
     applyPromptModeToSourcePrompt: kind === "background" || (kind === "illustration" && !req.preserveFullScenePrompt),
     omitProfileStyleText: req.omitProfileStyleText,
+    omitProfileSubjectTags: req.omitProfileSubjectTags,
   });
   return {
     prompt: prependCanonicalAppearanceIfMissing(
@@ -696,7 +699,10 @@ function promptContainsCanonicalAppearance(prompt: string, canonicalAppearance: 
 }
 
 function normalizedPromptText(value: string): string {
-  return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  return value
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
 }
 
 async function maybeGenerateDynamicGameImagePrompt(
@@ -848,6 +854,8 @@ export interface BackgroundGenRequest {
   providerReadyPrompt?: boolean;
   /** The prompt-writing model already incorporated the selected style profile. */
   omitProfileStyleText?: boolean;
+  /** The prompt writer already owns the selected output format and composition. */
+  omitProfileSubjectTags?: boolean;
   /** When true, overwrite an existing generated background for this slug instead of reusing it. */
   force?: boolean;
   /** Optional request-scoped abort signal. */
@@ -1058,9 +1066,7 @@ async function buildSceneIllustrationRawPrompt(req: SceneIllustrationGenRequest)
     : "";
   const useGamePromptTemplate = req.useGamePromptTemplate !== false;
   const scopedScenePrompt = req.prompt.trim();
-  const finalVisibilityRuleMatch = scopedScenePrompt.match(
-    /(?:^|\s+)(Final visibility rule:[\s\S]*)$/iu,
-  );
+  const finalVisibilityRuleMatch = scopedScenePrompt.match(/(?:^|\s+)(Final visibility rule:[\s\S]*)$/iu);
   const directScenePrompt = finalVisibilityRuleMatch
     ? scopedScenePrompt.slice(0, finalVisibilityRuleMatch.index).trim()
     : scopedScenePrompt;
@@ -1312,7 +1318,6 @@ export async function generateChatBackground(req: ChatBackgroundGenRequest): Pro
 
     const meta = readChatBackgroundMeta();
     meta[filename] = {
-      originalName: `Generated: ${req.locationSlug || baseSlug}`,
       tags: chatBackgroundTags(req, baseSlug),
     };
     writeChatBackgroundMeta(meta);

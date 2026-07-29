@@ -828,7 +828,8 @@ function PromptsTab({
   const { t: localizeUi } = useUiTranslation();
   const quoteFormat = useUIStore((s) => s.quoteFormat);
   const formatPrompt = useCallback(
-    (textarea: HTMLTextAreaElement) => applyTextareaQuoteFormat(textarea, quoteFormat),
+    (textarea: HTMLTextAreaElement, inputEvent: InputEvent) =>
+      applyTextareaQuoteFormat(textarea, quoteFormat, inputEvent),
     [quoteFormat],
   );
 
@@ -1218,7 +1219,7 @@ function SectionsTab({
                     <button
                       key={agent.id}
                       onClick={() => handleAddSection({ agentType: agent.type, agentName: agent.name })}
-                      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs text-[var(--marinara-editor-text)] hover:bg-[var(--marinara-editor-control-bg-hover)]"
+                      className="flex w-full items-center justify-start gap-2 rounded-lg px-3 py-2 text-left text-xs text-[var(--marinara-editor-text)] hover:bg-[var(--marinara-editor-control-bg-hover)]"
                     >
                       <Sparkles size="0.8125rem" className="mari-chrome-accent-icon mari-accent-animated" />{" "}
                       {agent.name} {localizeUi("ui.presets.sectionstab.agent")}</button>
@@ -2664,7 +2665,6 @@ function SectionContentTextarea({
   const [local, setLocal] = useState(value);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusedRef = useRef(false);
-  const formatQuotes = useQuoteFormatter();
   const quoteFormat = useUIStore((s) => s.quoteFormat);
 
   // Only sync from parent when not actively editing
@@ -2682,7 +2682,7 @@ function SectionContentTextarea({
 
   // Debounced auto-save while typing (800ms)
   const handleChange = (nextRawValue: string) => {
-    const nextValue = formatQuotes(nextRawValue);
+    const nextValue = nextRawValue;
     setLocal(nextValue);
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     timeoutRef.current = setTimeout(() => {
@@ -2715,7 +2715,7 @@ function SectionContentTextarea({
       onBlur={handleBlur}
       onFocus={handleFocus}
       onExpandedClose={commit}
-      formatOnChange={(textarea) => applyTextareaQuoteFormat(textarea, quoteFormat)}
+      formatOnChange={(textarea, inputEvent) => applyTextareaQuoteFormat(textarea, quoteFormat, inputEvent)}
       title={sectionName ?localizeUi("ui.presets.sectioncontenttextarea.editValue1", { value1: sectionName }) :localizeUi("ui.presets.sectioncontenttextarea.editPrompt")}
       className="mari-editor-field min-h-[7.5rem] w-full p-2.5 font-mono text-xs"
       placeholder={localizeUi("ui.presets.sectioncontenttextarea.promptContentSupportsUserCharCommentTrimMacros")}

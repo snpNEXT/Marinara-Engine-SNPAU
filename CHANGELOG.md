@@ -6,6 +6,9 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Added
 
+- Added the **Brazilian Portuguese** documentation language pack, covering all 123 in-app guides (developer docs included) in natural Brazilian Portuguese ("você", Brazilian vocabulary and current orthography), with English UI control names preserved for following instructions against the interface and Portuguese sidebar category labels in the docs viewer. Select it under **Settings → General → Documentation Language** via **Download & Replace**. The tutorial's language suggestion now also matches region-suffixed locales, so a pt-BR interface proposes the pt-br guides on first run (#4229).
+
+- Added the **French** documentation language pack, covering all 123 in-app guides (developer docs included) in natural standard French with informal address, English UI control names preserved for following instructions against the interface, and French sidebar category labels in the docs viewer. Select it under **Settings → General → Documentation Language** via **Download & Replace** (#4191).
 - Added the **German** documentation language pack, covering all 123 in-app guides (developer docs included) in natural standard German with informal address, English UI control names preserved for following instructions against the interface, and German sidebar category labels in the docs viewer. Select it under **Settings → General → Documentation Language** via **Download & Replace** (#4157).
 - Added a **Documentation Language** selector under **Settings → General** and at the end of the first-time tutorial. Languages ship as downloadable packs from the repository's `docs-i18n` branch: **Download & Replace** fetches the selected language into the data folder with per-file integrity verification and live progress, then removes the previous language's pack, so installs carry only one language and checkouts carry none. Guides without a translation open in English with an `EN` badge, the in-app docs search works in the active language, the choice survives every update path, the first start after an update automatically refreshes the pack when its translations changed, and a **Fix documentation** failsafe verifies, re-downloads, or resets a broken pack. Forks and mirrors can point `DOCS_I18N_BASE_URL` at their own copy of the branch (#4100).
 - Added the first documentation language pack: **Spanish**, covering all 123 in-app guides (developer docs included) in neutral international Spanish, with UI control names kept in English so instructions can be followed against the English interface. Contributor docs now require keeping every language pack on `docs-i18n` in step when guides change (#4100).
@@ -16,7 +19,11 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Changed
 
+- Capitalized the native language names in the **Settings → General → Language** dropdown (Español, Français, Polski, Português (Brasil), Русский) to match the Documentation Language selector (#4191).
 - Renamed reusable Chat Settings Presets to **Settings Profiles** throughout Chat Settings, Roleplay quick setup, import/export, localization, and documentation. The word **preset** now identifies prompt presets in these flows, while existing exported profile files remain importable.
+- Added a Post/Impersonate quick toggle to CYOA choices and kept centered choices clear of the Tracker panel.
+- Tracker panels now appear as soon as their matching tracker agents are active, allowing starting data to be entered before the first agent run.
+- Refined **Impersonate** with server-backed prompt templates shared across browsers, read-only built-in previews, full-view editing, and a direct link to Quick Replies settings.
 - Made the Game dynamic-image prompt timeout configurable with `GAME_DYNAMIC_IMAGE_PROMPT_TIMEOUT_MS`, retaining 45 seconds as the default and accepting values from 10 seconds to 1 hour (#4052).
 - Made Game session conclusions prepare the next playable arc with refreshed goals, quest seeds, pressure clocks, factions, and named NPCs so the following session does not inherit a stale scenario plan (#4059).
 

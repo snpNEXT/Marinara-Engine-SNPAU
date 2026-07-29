@@ -147,6 +147,7 @@ import {
   illustratorRequestedBackground,
   illustratorTrackerLocationChanged,
   resolveIllustratorImageConnectionId,
+  resolveIllustratorPromptStyle,
 } from "../services/generation/illustrator-background-generation.js";
 import { npcAvatarSlug, sanitizeGameNpcAvatarUrls } from "../services/game/npc-avatar-utils.js";
 import {
@@ -176,7 +177,7 @@ import {
   stripConversationResponseEnvelope,
 } from "../services/conversation/transcript-sanitize.js";
 import { normalizePromptTimeZone, toZonedWallClockDate } from "../services/conversation/timezone.js";
-import { countUserMessagesAfterSummaryAnchor } from "../services/conversation/auto-summary.service.js";
+import { countConversationMessagesAfterSummaryAnchor } from "../services/conversation/auto-summary.service.js";
 import { executeKnowledgeRetrieval } from "../services/agents/knowledge-retrieval.js";
 import { executeKnowledgeRouter } from "../services/agents/knowledge-router.js";
 import { extractFileText, getSourceFilePath } from "./knowledge-sources.routes.js";
@@ -457,7 +458,10 @@ import {
 } from "../services/generation/agent-prompt-runtime.js";
 import { resolveAgentPipelineAgents } from "../services/generation/agent-resolution.js";
 import { createReplyFallbackNotifier } from "./generate/fallback-notification.js";
-import { resolveGenerationTools } from "../services/generation/tool-resolution-runtime.js";
+import {
+  resolveGenerationTools,
+  resolveMainGenerationToolChoice,
+} from "../services/generation/tool-resolution-runtime.js";
 import {
   buildCharacterMacroProfilesById,
   injectIdentityFallbackMessages,
@@ -3513,6 +3517,22 @@ export async function generateRoutes(app: FastifyInstance) {
           resolvedAgents.splice(resolvedAgents.indexOf(illustratorAgentForInterval), 1);
         }
 
+        const illustratorPromptAgent = resolvedAgents.find((agent) => agent.type === "illustrator");
+        if (illustratorPromptAgent) {
+          try {
+            const { styleInstruction } = await resolveIllustratorPromptStyle({
+              db: app.db,
+              connections,
+              illustratorAgent: illustratorPromptAgent,
+              chatMode: requestChatMode,
+              chatMetadata: chatMeta,
+            });
+            agentContext.memory._illustratorImageStyleInstruction = styleInstruction;
+          } catch (error) {
+            logger.warn(error, "[illustrator] Failed to resolve image style instruction for the prompt writer");
+          }
+        }
+
         // Populate writable lorebook IDs for the lorebook-keeper agent
         if (resolvedAgents.some((a) => a.type === "lorebook-keeper")) {
           const { writableLorebookIds, targetLorebookId, targetLorebookName } = await resolveLorebookKeeperTarget({
@@ -3653,8 +3673,8 @@ export async function generateRoutes(app: FastifyInstance) {
               const exts = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"]);
               const files = readdirSync(bgDir).filter((f: string) => exts.has(extname(f).toLowerCase()));
 
-              // Load metadata (tags + original names)
-              let meta: Record<string, { originalName?: string; tags: string[] }> = {};
+              // Load metadata (tags)
+              let meta: Record<string, { tags: string[] }> = {};
               const metaPath = join(bgDir, "meta.json");
               if (existsSync(metaPath)) {
                 try {
@@ -3666,7 +3686,6 @@ export async function generateRoutes(app: FastifyInstance) {
 
               agentContext.memory._availableBackgrounds = files.map((f: string) => ({
                 filename: f,
-                originalName: meta[f]?.originalName ?? null,
                 tags: meta[f]?.tags ?? [],
               }));
             }
@@ -5538,6 +5557,7 @@ export async function generateRoutes(app: FastifyInstance) {
                     minP: minP || undefined,
                     stop: stopSequences.length ? stopSequences : undefined,
                     tools: toolDefs,
+                    toolChoice: resolveMainGenerationToolChoice(chatMeta, round),
                     enableCaching: conn.enableCaching === "true",
                     anthropicExtendedCacheTtl: conn.anthropicExtendedCacheTtl === "true",
                     cachingAtDepth: conn.cachingAtDepth ?? 5,
@@ -6960,7 +6980,7 @@ export async function generateRoutes(app: FastifyInstance) {
             typeof chatMeta.lastAutomaticSummaryMessageId === "string" && chatMeta.lastAutomaticSummaryMessageId.trim()
               ? chatMeta.lastAutomaticSummaryMessageId.trim()
               : null;
-          const messagesSinceLastSummary = countUserMessagesAfterSummaryAnchor(
+          const messagesSinceLastSummary = countConversationMessagesAfterSummaryAnchor(
             freshMessages,
             lastAutomaticSummaryMessageId,
           );
@@ -8689,11 +8709,15 @@ export async function generateRoutes(app: FastifyInstance) {
                         styleProfileId,
                         imageDefaults,
                         generatedStyle: style,
+                        omitProfileStyleText:
+                          typeof agentContext.memory._illustratorImageStyleInstruction === "string",
+                        omitProfileSubjectTags: true,
                       });
                       fullPrompt = compiledPrompt.prompt;
                       const finalNegativePrompt = mergeIllustratorNegativePrompt(
                         compiledPrompt.prompt,
                         compiledPrompt.negativePrompt,
+                        requestedNegativePrompt,
                       );
 
                       const imageResults = await generateIllustratorImageVariants({

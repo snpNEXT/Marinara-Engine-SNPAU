@@ -2154,7 +2154,8 @@ export function openRouterModalities(model?: string): string[] {
     lower.startsWith("black-forest-labs/") ||
     lower.startsWith("sourceful/") ||
     lower.startsWith("recraft/") ||
-    lower.startsWith("krea/")
+    lower.startsWith("krea/") ||
+    lower.startsWith("bytedance-seed/seedream-")
   ) {
     return ["image"];
   }
@@ -2162,7 +2163,8 @@ export function openRouterModalities(model?: string): string[] {
 }
 
 export function usesOpenRouterImagesApi(model?: string): boolean {
-  return model?.trim().toLowerCase().startsWith("krea/") === true;
+  const lower = model?.trim().toLowerCase() ?? "";
+  return lower.startsWith("krea/") || lower.startsWith("bytedance-seed/seedream-");
 }
 
 export function openRouterImagesUrl(baseUrl: string): string {

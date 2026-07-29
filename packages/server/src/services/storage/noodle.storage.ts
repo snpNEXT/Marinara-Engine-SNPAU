@@ -414,11 +414,18 @@ export function normalizeNoodleSettings(raw: unknown): NoodleSettings {
     rawRecord.noodlerGenerationGuidance ??
     rawRecord.privateGenerationGuidance ??
     DEFAULT_NOODLE_SETTINGS.noodlerGenerationGuidance;
+  const migratedImageCaptioningUseConnectionDefault =
+    typeof rawRecord.imageCaptioningUseConnectionDefault === "boolean"
+      ? rawRecord.imageCaptioningUseConnectionDefault
+      : rawRecord.imageCaptioningEnabled === true
+        ? false
+        : DEFAULT_NOODLE_SETTINGS.imageCaptioningUseConnectionDefault;
   const candidate: Record<string, unknown> = {
     ...DEFAULT_NOODLE_SETTINGS,
     ...rawRecord,
     maxImagesPerRefresh: migratedMaxImagesPerRefresh,
     noodlerGenerationGuidance: migratedNoodlerGenerationGuidance,
+    imageCaptioningUseConnectionDefault: migratedImageCaptioningUseConnectionDefault,
   };
   let parsed = noodleSettingsSchema.safeParse(candidate);
   if (!parsed.success) {

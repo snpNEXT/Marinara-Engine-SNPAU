@@ -392,7 +392,10 @@ export function ConversationMessageGrouped({
 
           {!isHiddenCollapsed && (
             <div className="ml-14">
-              <ConversationMessageTranslation translatedText={translatedText} isTranslating={isTranslating} />
+              <ConversationMessageTranslation
+                translatedText={ctx.showTranslationOnly ? null : translatedText}
+                isTranslating={isTranslating}
+              />
             </div>
           )}
 
