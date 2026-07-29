@@ -63,10 +63,8 @@ export const NOODLE_IMAGE_POST: PromptOverrideKeyDef<NoodleImagePostCtx> = {
     [
       ctx.draftPrompt.trim() || `A social-media-ready image posted by ${ctx.authorName}.`,
       ctx.characterDescription,
-      ctx.characterPersonality
-        ? `Character personality and traits: ${ctx.characterPersonality}\nLet these traits naturally influence the subject, image quality, camera habits, mood, and composition.`
-        : "",
-      ctx.characterImageInstructions ? `Character-specific image instructions: ${ctx.characterImageInstructions}` : "",
+      ctx.characterPersonality,
+      ctx.characterImageInstructions,
       ctx.userInstructions,
       ctx.connectionHint,
     ]

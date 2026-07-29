@@ -347,6 +347,10 @@ export async function generateNoodlerPost(
     return { post, imagePromptReview: null };
   }
 
+  const promptConnection = settings.generationConnectionId
+    ? await connections.getWithKey(settings.generationConnectionId)
+    : null;
+
   const imageInput = {
     account,
     linkedPublicAccount,
@@ -357,6 +361,7 @@ export async function generateNoodlerPost(
     characters: createCharactersStorage(db),
     promptOverrides: createPromptOverridesStorage(db),
     imageConnection,
+    promptConnection,
     db,
     debugMode,
   };

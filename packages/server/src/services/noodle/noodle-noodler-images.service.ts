@@ -20,6 +20,8 @@ import { generateNoodleImageWithRetry } from "./noodle-image-retry.js";
 import { characterAppearanceFromRow, characterNoodleImageContextFromRow } from "./noodle-public-images.service.js";
 import type { NoodleImagePromptReviewItem, ReviewedNoodleImagePrompt } from "./noodle-public-images.service.js";
 import { characterNameFromRow } from "./noodle-public-support.js";
+import { createLLMProvider } from "../llm/provider-registry.js";
+import { resolveBaseUrl } from "../../routes/generate/generate-route-utils.js";
 
 const REVIEWED_IMAGE_CLAIM_LEASE_MS = 2 * 60 * 1000;
 const REVIEWED_IMAGE_CLAIM_RENEW_MS = 30 * 1000;
@@ -29,6 +31,7 @@ function imageClaimLeaseUntil() {
 }
 
 type ImageConnection = NonNullable<Awaited<ReturnType<ReturnType<typeof createConnectionsStorage>["getWithKey"]>>>;
+type PromptConnection = ImageConnection;
 
 /**
  * NoodleR analog of generateNoodlePostImage. The deliberate difference from public
@@ -48,6 +51,7 @@ export async function generateNoodlerPostImage(input: {
   characters: ReturnType<typeof createCharactersStorage>;
   promptOverrides: ReturnType<typeof createPromptOverridesStorage>;
   imageConnection: ImageConnection;
+  promptConnection?: PromptConnection | null;
   db: DB;
   debugMode: boolean;
   previewOnly?: boolean;
@@ -124,10 +128,49 @@ export async function generateNoodlerPostImage(input: {
     characterDescription,
     characterImageInstructions,
     characterPersonality,
+    connectionHint:
+      typeof input.imageConnection.imagePromptHint === "string" ? input.imageConnection.imagePromptHint.trim() : "",
   });
+
+  let refinedPrompt = postPrompt;
+  if (input.promptConnection && !input.promptOverride) {
+    try {
+      const promptProvider = createLLMProvider(
+        input.promptConnection.provider,
+        resolveBaseUrl(input.promptConnection),
+        input.promptConnection.apiKey,
+        input.promptConnection.maxContext,
+        input.promptConnection.openrouterProvider,
+        input.promptConnection.maxTokensOverride,
+        input.promptConnection.claudeFastMode === "true",
+        input.promptConnection.treatAsLocalEndpoint === "true",
+      );
+      const llmResult = await promptProvider.chatComplete(
+        [
+          {
+            role: "system",
+            content:
+              "Rewrite the user content as a concise image-generation prompt. Output only the visual prompt text. Do not output JSON, labels, explanations, instructions, or meta-commentary.",
+          },
+          { role: "user", content: postPrompt },
+        ],
+        {
+          model: input.promptConnection.model,
+          temperature: input.settings.generationTemperature,
+          topP: input.settings.generationTopP,
+          maxTokens: 1024,
+        },
+      );
+      const llmPrompt = (llmResult.content ?? "").trim();
+      if (llmPrompt) refinedPrompt = llmPrompt;
+    } catch (err) {
+      logger.warn(err, "[noodler] Image prompt refinement failed; using template directly");
+    }
+  }
+
   const compiledPrompt = compileImagePrompt({
     kind: "illustration",
-    prompt: postPrompt,
+    prompt: refinedPrompt,
     styleProfiles: imageSettings.styleProfiles,
     imageDefaults,
   });
