@@ -14,13 +14,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
-import {
-  Loader2,
-  ChevronUp,
-  Settings2,
-  Image as ImageIcon,
-  ArrowRightLeft,
-} from "lucide-react";
+import { Loader2, ChevronUp, Settings2, Image as ImageIcon, ArrowRightLeft } from "lucide-react";
 import { ConversationMessage } from "./ConversationMessage";
 import { ConversationInput } from "./ConversationInput";
 import { ConversationGamesPicker } from "./ConversationGamesPicker";
@@ -61,6 +55,7 @@ import { TURN_GAME_BOT_REQUEST_EVENT } from "../../lib/capability-turn-game-even
 import { useGenerate } from "../../hooks/use-generate";
 import { useActiveLorebookEntries } from "../../hooks/use-lorebooks";
 import {
+  useChatComposerFocused,
   useChatKeyboardOpen,
   useKeepLatestChatMessageVisible,
 } from "../../hooks/use-visual-viewport-chat-bottom";
@@ -341,14 +336,11 @@ export function ConversationView({
   }, [chatId, generateTurnGameBots]);
   const gamesPickerOpen = useConversationGamesStore((s) => s.pickerChatId === chatId);
   const closeGamesPicker = useConversationGamesStore((s) => s.closePicker);
-  const gameSetup = useConversationGamesStore((s) => s.setup?.chatId === chatId ? s.setup : null);
+  const gameSetup = useConversationGamesStore((s) => (s.setup?.chatId === chatId ? s.setup : null));
   const closeGameSetup = useConversationGamesStore((s) => s.closeSetup);
   const { data: installedCapabilities = [] } = useInstalledCapabilityPackages();
   const turnGamePackages = installedCapabilities.filter(
-    (item) =>
-      item.status === "active" &&
-      item.manifest.kind.includes("turn-game") &&
-      item.manifest.entrypoints.client,
+    (item) => item.status === "active" && item.manifest.kind.includes("turn-game") && item.manifest.entrypoints.client,
   );
   const conversationToolbarPackages = installedCapabilities.filter(
     (item) =>
@@ -466,9 +458,7 @@ export function ConversationView({
   const hasAutonomousMessaging = !!chatMeta.autonomousMessages || !!chatMeta.characterExchanges;
   const callsPackage = installedCapabilities.find(
     (item) =>
-      item.status === "active" &&
-      item.manifest.kind.includes("conversation-calls") &&
-      item.manifest.entrypoints.client,
+      item.status === "active" && item.manifest.kind.includes("conversation-calls") && item.manifest.entrypoints.client,
   );
   const callCapabilityProps = { chatId, metadata: chatMeta, characterMap, chatCharIds, personaInfo };
   const renderToolbarActions = (compact = false) => (
@@ -507,9 +497,7 @@ export function ConversationView({
     </>
   );
   const renderHeader = () => (
-    <div
-      className="sticky top-0 z-30 flex items-center justify-between px-4 py-2"
-    >
+    <div className="sticky top-0 z-30 flex items-center justify-between px-4 py-2">
       <ConversationPresenceCard
         chatId={chatId}
         chatMeta={chatMeta}
@@ -573,7 +561,9 @@ export function ConversationView({
   const openedAtBottomChatIdRef = useRef<string | null>(null);
   const streamScrollFrameRef = useRef(0);
   const keyboardOpen = useChatKeyboardOpen();
-  const shouldKeepMobileComposerOpen = keyboardOpen || hasLiveStream || hasDraftInput || isFetchingNextPage;
+  const composerFocused = useChatComposerFocused();
+  const shouldKeepMobileComposerOpen =
+    keyboardOpen || composerFocused || hasLiveStream || hasDraftInput || isFetchingNextPage;
 
   const scrollToMessagesBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     const el = scrollRef.current;
@@ -1212,7 +1202,9 @@ export function ConversationView({
               disabled={isFetchingNextPage}
               className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-3 py-1.5 text-xs font-medium text-[var(--muted-foreground)] transition-all hover:bg-[var(--accent)] disabled:opacity-50"
             >
-              {isFetchingNextPage ? <Loader2 size="0.75rem" className="animate-spin" /> : <ChevronUp size="0.75rem" />}{localizeUi("ui.chat.chatroleplaysurface.loadMore")}</button>
+              {isFetchingNextPage ? <Loader2 size="0.75rem" className="animate-spin" /> : <ChevronUp size="0.75rem" />}
+              {localizeUi("ui.chat.chatroleplaysurface.loadMore")}
+            </button>
           </div>
         )}
 
@@ -1231,7 +1223,8 @@ export function ConversationView({
         {/* Welcome message at the start of a conversation */}
         {!isLoading && !hasNextPage && messages && messages.length === 0 && (
           <div className="px-4 pt-2">
-            <p className="text-xs text-[var(--marinara-chat-chrome-panel-muted)]">{localizeUi("ui.chat.conversationview.thisIsTheStartOfYourConversationWith")}{" "}
+            <p className="text-xs text-[var(--marinara-chat-chrome-panel-muted)]">
+              {localizeUi("ui.chat.conversationview.thisIsTheStartOfYourConversationWith")}{" "}
               <span className="font-medium text-[var(--marinara-chat-chrome-panel-title)]">
                 {(() => {
                   const names = chatCharIds.map((id) => characterMap.get(id)?.name).filter(Boolean) as string[];
@@ -1239,7 +1232,9 @@ export function ConversationView({
                   if (names.length === 1) return names[0];
                   return names.slice(0, -1).join(", ") + " & " + names[names.length - 1];
                 })()}
-              </span>{localizeUi("ui.chat.conversationview.sayHi")}</p>
+              </span>
+              {localizeUi("ui.chat.conversationview.sayHi")}
+            </p>
           </div>
         )}
 
@@ -1412,8 +1407,14 @@ export function ConversationView({
           <div className="flex items-center gap-2 px-4 py-1.5 text-[0.8125rem] text-[var(--text-secondary)]">
             <span className="italic">
               {delayedCharacterInfo.status === "dnd"
-                ?localizeUi("ui.chat.conversationview.value1Value2BusyTheyLlRespondWhenTheyRe", { value1: delayedDisplayName, value2: delayedDisplayVerb })
-                :localizeUi("ui.chat.conversationview.value1Value2AwayTheyLlRespondInAMoment", { value1: delayedDisplayName, value2: delayedDisplayVerb })}
+                ? localizeUi("ui.chat.conversationview.value1Value2BusyTheyLlRespondWhenTheyRe", {
+                    value1: delayedDisplayName,
+                    value2: delayedDisplayVerb,
+                  })
+                : localizeUi("ui.chat.conversationview.value1Value2AwayTheyLlRespondInAMoment", {
+                    value1: delayedDisplayName,
+                    value2: delayedDisplayVerb,
+                  })}
             </span>
           </div>
         )}
@@ -1437,8 +1438,8 @@ export function ConversationView({
 
         {/* Scene banner — inline at bottom of messages (origin variant only); hidden during a turn-game */}
         {sceneInfo?.variant === "origin" && (
-            <SceneBanner variant="origin" sceneChatId={sceneInfo.sceneChatId} sceneChatName={sceneInfo.sceneChatName} />
-          )}
+          <SceneBanner variant="origin" sceneChatId={sceneInfo.sceneChatId} sceneChatName={sceneInfo.sceneChatName} />
+        )}
 
         <div ref={messagesEndRef} className="h-1" />
       </div>
@@ -1469,12 +1470,7 @@ export function ConversationView({
 
       {/* Downloaded games own their board and setup UI. The base client only provides stable slots. */}
       {turnGamePackages.map((game) => (
-        <CapabilityElement
-          key={`${game.id}-surface`}
-          packageId={game.id}
-          view="surface"
-          capabilityProps={{ chatId }}
-        />
+        <CapabilityElement key={`${game.id}-surface`} packageId={game.id} view="surface" capabilityProps={{ chatId }} />
       ))}
       {callsPackage && (
         <CapabilityElement

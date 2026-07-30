@@ -3483,6 +3483,16 @@ try {
     /role="checkbox"[\s\S]{0,100}aria-checked=\{effectiveValue\}/u,
     "Memory Recall must expose its switch state to assistive technology",
   );
+  assert.match(
+    chatSettingsSource,
+    /const openLorebookFromSettings = useCallback\([\s\S]{0,220}onClose\(\);[\s\S]{0,80}openLorebookDetail\(lorebookId\);/u,
+    "Opening linked Maps lore from Chat Settings must close the drawer before navigating",
+  );
+  assert.equal(
+    chatSettingsSource.match(/onOpenLorebook: openLorebookFromSettings/gu)?.length,
+    2,
+    "Every Chat Settings Maps host must use the close-and-open lorebook callback",
+  );
 
   const generateHookSource = readFileSync(join(REPOSITORY_ROOT, "packages/client/src/hooks/use-generate.ts"), "utf8");
   const clearStreamIndex = generateHookSource.indexOf("clearStreamBuffer(params.chatId);");
@@ -3742,6 +3752,22 @@ try {
     presetEditorSource,
     /injectableAgents\.map[\s\S]{0,700}justify-start[\s\S]{0,120}text-left/u,
     "Agent section choices must align with the preset editor's other add-section choices",
+  );
+}
+
+// Issue #4277 — the Secret Plot interval remains editable after Narrative
+// Director is installed instead of passing a string through a number-only
+// normalizer and immediately restoring the previous value.
+{
+  assert.match(
+    chatSettingsDrawerSource,
+    /<DraftNumberInput\s+value=\{narrativeDirectorSecretPlotRunInterval\}\s+min=\{1\}\s+max=\{100\}\s+onCommit=\{\(value\) =>\s+updateMeta\.mutate\(\{\s+id: chat\.id,\s+narrativeDirectorSecretPlotRunInterval: value,/u,
+    "Secret Plot run interval must use a draft number input that commits the edited numeric value",
+  );
+  assert.doesNotMatch(
+    chatSettingsDrawerSource,
+    /narrativeDirectorSecretPlotRunInterval:\s*normalizePositiveInteger\(\s*event\.target\.value/u,
+    "Secret Plot run interval must not reject the browser's string input value",
   );
 }
 

@@ -60,6 +60,12 @@ import { extname } from "path";
 import { pipeline } from "stream/promises";
 import { newId } from "../utils/id-generator.js";
 import { createReplyFallbackNotifier } from "./generate/fallback-notification.js";
+import {
+  findGalleryRowByFilename,
+  galleryFileHasReferences,
+  resolveStoredGalleryFile,
+  unlinkGalleryFileIfUnreferenced,
+} from "../services/image/gallery-file-lifecycle.js";
 
 const CHARACTER_GALLERY_ROOT = join(DATA_DIR, "gallery", "characters");
 const PERSONA_GALLERY_ROOT = join(DATA_DIR, "gallery", "personas");
@@ -87,10 +93,17 @@ const ALLOWED_CALL_VIDEO_CLIP_UPLOAD_EXTS = new Set([".mp4"]);
 const renameCardVersionSchema = z.object({ version: z.string().trim().min(1).max(100) });
 type UploadedMultipartFile = NonNullable<Awaited<ReturnType<FastifyRequest["file"]>>>;
 
-function applyTrackerCardPaint(currentValue: unknown, paint: Record<string, unknown>) {
+function applyTrackerCardPaint(
+  currentValue: unknown,
+  paint: Record<string, unknown>,
+  preserveStatIcons = true,
+) {
   const current = parseCharacterDataRecord(currentValue);
   const next = { ...paint };
-  for (const key of ["portraitFocusX", "portraitFocusY", "portraitZoom"] as const) {
+  const preservedKeys = preserveStatIcons
+    ? (["portraitFocusX", "portraitFocusY", "portraitZoom", "statIcons"] as const)
+    : (["portraitFocusX", "portraitFocusY", "portraitZoom"] as const);
+  for (const key of preservedKeys) {
     if (Object.hasOwn(current, key)) next[key] = current[key];
     else delete next[key];
   }
@@ -886,11 +899,23 @@ export async function charactersRoutes(app: FastifyInstance) {
     if (req.params.id === PROFESSOR_MARI_ID) {
       return reply.status(403).send({ error: "Professor Mari is a built-in character and cannot be deleted" });
     }
+    const galleryImages = await characterGallery.listByCharacterId(req.params.id);
+    await storage.remove(req.params.id);
+    for (const image of galleryImages) {
+      await unlinkGalleryFileIfUnreferenced({ db: app.db, filePath: image.filePath });
+    }
+    const localPathPrefix = `characters/${req.params.id}/`;
+    const hasSharedLocalFile = (
+      await Promise.all(
+        galleryImages
+          .filter((image) => image.filePath.replace(/\\/g, "/").startsWith(localPathPrefix))
+          .map((image) => galleryFileHasReferences(app.db, image.filePath)),
+      )
+    ).some(Boolean);
     const galleryDir = join(CHARACTER_GALLERY_ROOT, req.params.id);
-    if (existsSync(galleryDir)) {
+    if (!hasSharedLocalFile && existsSync(galleryDir)) {
       rmSync(galleryDir, { recursive: true, force: true });
     }
-    await storage.remove(req.params.id);
     return reply.status(204).send();
   });
 
@@ -1307,16 +1332,24 @@ export async function charactersRoutes(app: FastifyInstance) {
 
   app.get<{ Params: { id: string; filename: string } }>("/:id/gallery/file/:filename", async (req, reply) => {
     const { id, filename } = req.params;
-    if (filename.includes("..") || filename.includes("/") || id.includes("..") || id.includes("/")) {
+    if (
+      filename.includes("..") ||
+      filename.includes("/") ||
+      filename.includes("\\") ||
+      id.includes("..") ||
+      id.includes("/") ||
+      id.includes("\\")
+    ) {
       return reply.status(400).send({ error: "Invalid path" });
     }
 
-    const filePath = join(CHARACTER_GALLERY_ROOT, id, filename);
-    if (!existsSync(filePath)) {
+    const image = findGalleryRowByFilename(await characterGallery.listByCharacterId(id), filename);
+    const storedFile = image ? resolveStoredGalleryFile(image.filePath) : null;
+    if (!storedFile || !existsSync(storedFile.absolutePath)) {
       return reply.status(404).send({ error: "Not found" });
     }
 
-    return reply.sendFile(filename, join(CHARACTER_GALLERY_ROOT, id));
+    return reply.sendFile(storedFile.filename, storedFile.directory);
   });
 
   app.delete<{ Params: { id: string; imageId: string } }>("/:id/gallery/:imageId", async (req, reply) => {
@@ -1326,12 +1359,8 @@ export async function charactersRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Not found" });
     }
 
-    const filePath = join(DATA_DIR, "gallery", image.filePath);
-    if (existsSync(filePath)) {
-      unlinkSync(filePath);
-    }
-
     await characterGallery.remove(imageId);
+    await unlinkGalleryFileIfUnreferenced({ db: app.db, filePath: image.filePath });
     return { success: true };
   });
 
@@ -1811,7 +1840,9 @@ export async function charactersRoutes(app: FastifyInstance) {
       if (!currentPersona) return null;
       return storage.updatePersona(req.params.id, {
         ...body,
-        trackerCardColors: JSON.stringify(applyTrackerCardPaint(currentPersona.trackerCardColors, parsedPaint)),
+        trackerCardColors: JSON.stringify(
+          applyTrackerCardPaint(currentPersona.trackerCardColors, parsedPaint, false),
+        ),
       });
     });
     if (!updated) return reply.status(404).send({ error: "Persona not found" });
@@ -1926,11 +1957,23 @@ export async function charactersRoutes(app: FastifyInstance) {
     const persona = await storage.getPersona(id);
     if (!persona) return reply.status(404).send({ error: "Persona not found" });
 
+    const galleryImages = await personaGallery.listByPersonaId(id);
+    await storage.removePersona(id);
+    for (const image of galleryImages) {
+      await unlinkGalleryFileIfUnreferenced({ db: app.db, filePath: image.filePath });
+    }
+    const localPathPrefix = `personas/${id}/`;
+    const hasSharedLocalFile = (
+      await Promise.all(
+        galleryImages
+          .filter((image) => image.filePath.replace(/\\/g, "/").startsWith(localPathPrefix))
+          .map((image) => galleryFileHasReferences(app.db, image.filePath)),
+      )
+    ).some(Boolean);
     const galleryDir = assertInsideDir(PERSONA_GALLERY_ROOT, join(PERSONA_GALLERY_ROOT, id));
-    if (existsSync(galleryDir)) {
+    if (!hasSharedLocalFile && existsSync(galleryDir)) {
       rmSync(galleryDir, { recursive: true, force: true });
     }
-    await storage.removePersona(id);
     return reply.status(204).send();
   });
 
@@ -2362,13 +2405,13 @@ export async function charactersRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Invalid path" });
     }
 
-    const galleryDir = assertInsideDir(PERSONA_GALLERY_ROOT, join(PERSONA_GALLERY_ROOT, id));
-    const filePath = assertInsideDir(galleryDir, join(galleryDir, filename));
-    if (!existsSync(filePath)) {
+    const image = findGalleryRowByFilename(await personaGallery.listByPersonaId(id), filename);
+    const storedFile = image ? resolveStoredGalleryFile(image.filePath) : null;
+    if (!storedFile || !existsSync(storedFile.absolutePath)) {
       return reply.status(404).send({ error: "Not found" });
     }
 
-    return reply.sendFile(filename, galleryDir);
+    return reply.sendFile(storedFile.filename, storedFile.directory);
   });
 
   app.delete<{ Params: { id: string; imageId: string } }>("/personas/:id/gallery/:imageId", async (req, reply) => {
@@ -2378,18 +2421,8 @@ export async function charactersRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Not found" });
     }
 
-    // assertInsideDir guards against a poisoned stored filePath escaping the gallery dir.
-    try {
-      const galleryRoot = join(DATA_DIR, "gallery");
-      const filePath = assertInsideDir(galleryRoot, join(galleryRoot, image.filePath));
-      if (existsSync(filePath)) {
-        unlinkSync(filePath);
-      }
-    } catch (err) {
-      logger.warn(err, "Skipped persona gallery file unlink for %s: path escapes gallery dir", imageId);
-    }
-
     await personaGallery.remove(imageId);
+    await unlinkGalleryFileIfUnreferenced({ db: app.db, filePath: image.filePath });
     return { success: true };
   });
 

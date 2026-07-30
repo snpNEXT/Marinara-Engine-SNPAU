@@ -17,6 +17,7 @@ import {
 import { isMessageShadowedByLiveStream } from "../../lib/generation-stream-policy";
 import {
   normalizeChatSummaryEntries,
+  isLongTermMemoryChatSummaryPromptAllowed,
   type ChatSummaryEntry,
   type MarkerConfig,
   type PromptGroup,
@@ -49,7 +50,7 @@ import { useUIStore } from "../../stores/ui.store";
 import { useChatStore } from "../../stores/chat.store";
 import { useGameStateStore } from "../../stores/game-state.store";
 import { useThrottledStreamBuffer } from "../../hooks/use-throttled-stream-buffer";
-import { useChatKeyboardOpen } from "../../hooks/use-visual-viewport-chat-bottom";
+import { useChatComposerFocused, useChatKeyboardOpen } from "../../hooks/use-visual-viewport-chat-bottom";
 import { useActiveLorebookEntries, useLorebooks } from "../../hooks/use-lorebooks";
 import { usePresetFull, usePresets } from "../../hooks/use-presets";
 import { ChatMessage } from "./ChatMessage";
@@ -576,13 +577,7 @@ function ActiveContextLinksButton({
         {visibleLorebookIds.map((id, index) => {
           const entries = triggeredEntriesByLorebook.get(id) ?? [];
           return (
-            <button
-              key={id}
-              type="button"
-              role="menuitem"
-              className={itemClassName}
-              onClick={() => openLorebook(id)}
-            >
+            <button key={id} type="button" role="menuitem" className={itemClassName} onClick={() => openLorebook(id)}>
               <BookOpen size="0.8125rem" className={iconClassName} />
               <span className="min-w-0 flex-1 truncate">
                 {lorebookNameById.get(id) ?? t("chat.toolbar.lorebookFallback", { number: index + 1 })}
@@ -686,6 +681,7 @@ function SummaryButton({
   summaryContextSize,
   summaryPromptTemplates,
   activeSummaryPromptTemplateId,
+  longTermMemorySummaryPromptAvailable,
   summaryConnectionId,
   summaryMaxTokens,
   automaticSummaryEnabled,
@@ -703,6 +699,7 @@ function SummaryButton({
   summaryContextSize: number;
   summaryPromptTemplates?: ComponentProps<typeof SummaryPopover>["promptTemplates"];
   activeSummaryPromptTemplateId?: string | null;
+  longTermMemorySummaryPromptAvailable: boolean;
   summaryConnectionId?: string | null;
   summaryMaxTokens?: number;
   automaticSummaryEnabled: boolean;
@@ -814,6 +811,7 @@ function SummaryButton({
             contextSize={summaryContextSize}
             promptTemplates={summaryPromptTemplates}
             activePromptTemplateId={activeSummaryPromptTemplateId}
+            longTermMemorySummaryPromptAvailable={longTermMemorySummaryPromptAvailable}
             summaryConnectionId={summaryConnectionId}
             summaryMaxTokens={summaryMaxTokens}
             automaticSummaryEnabled={automaticSummaryEnabled}
@@ -1095,11 +1093,7 @@ type RoleplaySurfaceProps = {
   onEdit: (messageId: string, content: string) => void;
   onSetActiveSwipe: (messageId: string, index: number) => void;
   onToggleConversationStart: (messageId: string, current: boolean) => void;
-  onToggleHiddenFromAI: (
-    messageId: string,
-    hiddenFromAll: boolean,
-    hiddenFromAICharacterIds?: string[],
-  ) => void;
+  onToggleHiddenFromAI: (messageId: string, hiddenFromAll: boolean, hiddenFromAICharacterIds?: string[]) => void;
   onPeekPrompt: () => void;
   onBranch?: (messageId: string) => void;
   onCloneSceneFromHere?: (messageId: string) => void;
@@ -1290,9 +1284,11 @@ export function ChatRoleplaySurface({
   const expandedAuthorNotesOpen = authorNotesOpenOwner === "expanded";
   const compactAuthorNotesOpen = authorNotesOpenOwner === "compact";
   const keyboardOpen = useChatKeyboardOpen();
+  const composerFocused = useChatComposerFocused();
   const ambientVisualsPaused =
-    generationVisualsPaused || (isMobileToolbarViewport && (keyboardOpen || hasMobileDraftInput));
-  const shouldKeepMobileComposerOpen = keyboardOpen || hasLiveStream || hasMobileDraftInput || isFetchingNextPage;
+    generationVisualsPaused || (isMobileToolbarViewport && (keyboardOpen || composerFocused || hasMobileDraftInput));
+  const shouldKeepMobileComposerOpen =
+    keyboardOpen || composerFocused || hasLiveStream || hasMobileDraftInput || isFetchingNextPage;
 
   useEffect(() => {
     if (shouldKeepMobileComposerOpen) setMobileHistoryComposerCollapsed(false);
@@ -1319,18 +1315,12 @@ export function ChatRoleplaySurface({
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
   }, [scrollRef, shouldKeepMobileComposerOpen]);
-  const setExpandedAuthorNotesOpen = useCallback(
-    (open: boolean) => {
-      setAuthorNotesOpenOwner(open ? "expanded" : null);
-    },
-    [],
-  );
-  const setCompactAuthorNotesOpen = useCallback(
-    (open: boolean) => {
-      setAuthorNotesOpenOwner(open ? "compact" : null);
-    },
-    [],
-  );
+  const setExpandedAuthorNotesOpen = useCallback((open: boolean) => {
+    setAuthorNotesOpenOwner(open ? "expanded" : null);
+  }, []);
+  const setCompactAuthorNotesOpen = useCallback((open: boolean) => {
+    setAuthorNotesOpenOwner(open ? "compact" : null);
+  }, []);
   const hideEchoChamberOnMobile = sidebarOpen || rightPanelOpen || settingsOpen || galleryOpen || wizardOpen;
   const showSpriteOverlay = expressionAgentEnabled && spriteCharacterIds.length > 0 && spriteDisplayModes.length > 0;
 
@@ -1488,6 +1478,10 @@ export function ChatRoleplaySurface({
   const summaryActiveAgentIds = Array.isArray(chatMeta.activeAgentIds)
     ? chatMeta.activeAgentIds.filter((agentId): agentId is string => typeof agentId === "string")
     : [];
+  const longTermMemorySummaryPromptAvailable = isLongTermMemoryChatSummaryPromptAllowed({
+    enableAgents: chatMeta.enableAgents,
+    activeAgentIds: summaryActiveAgentIds,
+  });
   const automaticSummaryEnabled =
     chatMeta.automaticSummaryEnabled === true ||
     (chatMeta.enableAgents === true && summaryActiveAgentIds.includes("chat-summary"));
@@ -1599,6 +1593,7 @@ export function ChatRoleplaySurface({
                           ? chatMeta.activeSummaryPromptTemplateId
                           : null
                       }
+                      longTermMemorySummaryPromptAvailable={longTermMemorySummaryPromptAvailable}
                       summaryConnectionId={
                         typeof chatMeta.summaryConnectionId === "string" ? chatMeta.summaryConnectionId : null
                       }
@@ -1713,6 +1708,7 @@ export function ChatRoleplaySurface({
                               ? chatMeta.activeSummaryPromptTemplateId
                               : null
                           }
+                          longTermMemorySummaryPromptAvailable={longTermMemorySummaryPromptAvailable}
                           summaryConnectionId={
                             typeof chatMeta.summaryConnectionId === "string" ? chatMeta.summaryConnectionId : null
                           }
@@ -1794,6 +1790,7 @@ export function ChatRoleplaySurface({
                             ? chatMeta.activeSummaryPromptTemplateId
                             : null
                         }
+                        longTermMemorySummaryPromptAvailable={longTermMemorySummaryPromptAvailable}
                         summaryConnectionId={
                           typeof chatMeta.summaryConnectionId === "string" ? chatMeta.summaryConnectionId : null
                         }
@@ -1882,7 +1879,9 @@ export function ChatRoleplaySurface({
                         <Loader2 size="0.75rem" className="animate-spin" />
                       ) : (
                         <ChevronUp size="0.75rem" />
-                      )}{localizeUi("ui.chat.chatroleplaysurface.loadMore")}</button>
+                      )}
+                      {localizeUi("ui.chat.chatroleplaysurface.loadMore")}
+                    </button>
                   </div>
                 )}
 

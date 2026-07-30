@@ -940,10 +940,7 @@ export class OpenAIProvider extends BaseLLMProvider {
     if (isOpenAIGpt56Model(normalizedModel) && options.excludePastReasoning !== undefined) {
       reasoning.context = options.excludePastReasoning ? "current_turn" : "all_turns";
     }
-    if (
-      (options.enableThinking || options.captureReasoning) &&
-      !this.hasExplicitReasoningDisable(options.reasoningEffort)
-    ) {
+    if (!this.hasExplicitReasoningDisable(options.reasoningEffort)) {
       reasoning.summary = "auto";
     }
     if (Object.keys(reasoning).length > 0) {
@@ -2101,6 +2098,7 @@ export class OpenAIProvider extends BaseLLMProvider {
     let yieldedAny = false;
     let currentEvent = "";
     let emittedReasoningSummary = "";
+    let streamedReasoningSummary = "";
 
     try {
       while (true) {
@@ -2149,12 +2147,17 @@ export class OpenAIProvider extends BaseLLMProvider {
             }
             case "response.reasoning_summary_text.delta": {
               const delta = parsed.delta as string | undefined;
-              if (delta && options.onThinking) {
-                emittedReasoningSummary += delta;
-                options.onThinking(delta);
+              if (delta) {
+                streamedReasoningSummary += delta;
+                emittedReasoningSummary = this.emitMissingResponsesReasoningSummaryText(
+                  streamedReasoningSummary,
+                  options,
+                  emittedReasoningSummary,
+                );
               }
               break;
             }
+            case "response.reasoning_summary_part.added":
             case "response.reasoning_summary_text.done":
             case "response.reasoning_summary_part.done": {
               emittedReasoningSummary = this.emitMissingResponsesReasoningSummaryText(
@@ -2348,6 +2351,7 @@ export class OpenAIProvider extends BaseLLMProvider {
     const fnCallArgs = new Map<string, { id: string; name: string; arguments: string }>();
     let currentEvent = "";
     let emittedReasoningSummary = "";
+    let streamedReasoningSummary = "";
 
     try {
       while (true) {
@@ -2405,13 +2409,18 @@ export class OpenAIProvider extends BaseLLMProvider {
 
             case "response.reasoning_summary_text.delta": {
               const delta = parsed.delta as string | undefined;
-              if (delta && options.onThinking) {
-                emittedReasoningSummary += delta;
-                options.onThinking(delta);
+              if (delta) {
+                streamedReasoningSummary += delta;
+                emittedReasoningSummary = this.emitMissingResponsesReasoningSummaryText(
+                  streamedReasoningSummary,
+                  options,
+                  emittedReasoningSummary,
+                );
               }
               break;
             }
 
+            case "response.reasoning_summary_part.added":
             case "response.reasoning_summary_text.done":
             case "response.reasoning_summary_part.done": {
               emittedReasoningSummary = this.emitMissingResponsesReasoningSummaryText(

@@ -15,7 +15,9 @@ import {
   isAgentConfigDeleted,
   isExternallyImportedAgent,
   isBuiltInAgentRuntimeDisabled,
+  isBuiltInAgentHostManaged,
   isRetiredBuiltInAgentId,
+  normalizeBuiltInAgentEnabledTools,
   normalizeWorldCustomFields,
   normalizeAgentPhaseValue,
   normalizeAgentPromptTemplateSelectionMap,
@@ -250,7 +252,10 @@ function applyDefaultBuiltInAgentTools(agentType: string, settings: unknown): Re
     return next;
   }
 
-  if (agentType === "spotify" && currentTools.length === 0) {
+  const normalizedTools = normalizeBuiltInAgentEnabledTools(agentType, currentTools) ?? [];
+  next.enabledTools = normalizedTools;
+
+  if (agentType === "spotify" && normalizedTools.length === 0) {
     next.enabledTools = [...(DEFAULT_AGENT_TOOLS.spotify ?? [])];
   }
 
@@ -1223,6 +1228,7 @@ async function resolveRetryAgents(args: {
     (config: any) =>
       !isAgentConfigDeleted(config.settings) &&
       !isBuiltInAgentRuntimeDisabled(config.type) &&
+      !isBuiltInAgentHostManaged(config.type) &&
       !isRetiredBuiltInAgentId(config.type) &&
       agentTypeSet.has(config.type),
   );
@@ -1232,6 +1238,7 @@ async function resolveRetryAgents(args: {
       agentTypeSet.has(agent.id) &&
       !resolvedTypeSet.has(agent.id) &&
       !isBuiltInAgentRuntimeDisabled(agent.id) &&
+      !isBuiltInAgentHostManaged(agent.id) &&
       !isRetiredBuiltInAgentId(agent.id),
   );
 
@@ -3427,7 +3434,7 @@ async function applyRetryResultEffects(args: {
             });
 
             for (const [variantIndex, imageResult] of imageResults.entries()) {
-              const filePath = saveImageToDisk(chatId, imageResult.base64, imageResult.ext);
+              const filePath = saveImageToDisk(chatId, imageResult.base64, imageResult.ext, { shared: true });
               // A fallback connection may have rendered this variant; record
               // the connection that actually produced it.
               const effectiveImageProvider =
@@ -3444,6 +3451,7 @@ async function applyRetryResultEffects(args: {
               });
               await persistGeneratedImageToEntityGalleries({
                 sourceFilePath: filePath,
+                sourceChatImageId: galleryEntry?.id,
                 characterIds: referenceResolution.characterIds,
                 personaIds: referenceResolution.personaId ? [referenceResolution.personaId] : [],
                 characterGallery: createCharacterGalleryStorage(app.db),

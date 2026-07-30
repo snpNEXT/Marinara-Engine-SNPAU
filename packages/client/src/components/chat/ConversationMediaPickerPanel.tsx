@@ -6,6 +6,7 @@ import { GifPicker } from "../ui/GifPicker";
 import { StickerPicker } from "./StickerPicker";
 import { CustomEmojiTab } from "./CustomEmojiTab";
 import { useTranslation } from "react-i18next";
+import { rememberRecentMedia } from "../../hooks/use-recent-media";
 
 export type ConversationMediaPickerTabId = "emoji" | "kaomoji" | "gifs" | "stickers" | "tools";
 export type ConversationMediaPickerTab = { id: ConversationMediaPickerTabId; label: string };
@@ -75,8 +76,25 @@ export function ConversationMediaPickerPanel({
             customTab={{
               icon: "⭐",
               label: t("ui.noodle.media.customEmojis"),
-              render: (query) => <CustomEmojiTab onInsert={onEmojiSelect} query={query} />,
-              renderSearch: (query) => <CustomEmojiTab onInsert={onEmojiSelect} query={query} searchResultsOnly />,
+              render: (query) => (
+                <CustomEmojiTab
+                  onInsert={(token) => {
+                    rememberRecentMedia("emoji", { value: token, label: token });
+                    onEmojiSelect(token);
+                  }}
+                  query={query}
+                />
+              ),
+              renderSearch: (query) => (
+                <CustomEmojiTab
+                  onInsert={(token) => {
+                    rememberRecentMedia("emoji", { value: token, label: token });
+                    onEmojiSelect(token);
+                  }}
+                  query={query}
+                  searchResultsOnly
+                />
+              ),
             }}
           />
         )}

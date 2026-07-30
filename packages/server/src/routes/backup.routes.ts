@@ -494,6 +494,22 @@ for (const candidate of Object.values(schema)) {
 }
 
 export function sanitizeProfileTableRows(tableName: string, rows: Array<Record<string, unknown>>) {
+  if (tableName === "chats") {
+    return rows.map((row) => {
+      if (typeof row.metadata !== "string") return row;
+      try {
+        const metadata = JSON.parse(row.metadata) as unknown;
+        if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return row;
+        const sanitized = { ...(metadata as Record<string, unknown>) };
+        delete sanitized.branchParentChatId;
+        delete sanitized.branchParentMessageId;
+        delete sanitized.branchMessageId;
+        return { ...row, metadata: JSON.stringify(sanitized) };
+      } catch {
+        return row;
+      }
+    });
+  }
   if (tableName === "api_connections") {
     return rows.map((row) => ({ ...row, apiKeyEncrypted: "" }));
   }

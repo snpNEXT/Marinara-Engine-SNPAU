@@ -3293,9 +3293,7 @@ strong {
   }
 
   [data-chat-mode="roleplay"] .marinara-chat-input-shell {
-    background:
-      linear-gradient(var(--card), var(--card)),
-      var(--background) !important;
+    background: linear-gradient(var(--card), var(--card)), var(--background) !important;
     contain: layout paint;
     isolation: isolate;
   }
@@ -4838,11 +4836,16 @@ strong {
     padding-right: env(safe-area-inset-right);
   }
 
-  .mari-app {
+  /* Scoped to conversation/roleplay/game (each sets data-chat-mode on its
+     root) so the keyboard-viewport tracking from AppShell.tsx only affects
+     the app shell while one of those surfaces is actually showing. */
+  .mari-app[data-chat-surface-active="true"]:has([data-chat-mode]) {
     top: var(--mari-visual-viewport-offset-top, 0px);
     bottom: auto;
     height: var(--mari-visual-viewport-height, 100dvh);
     min-height: 0;
+    /* Counters the iOS scroll-drag bug described in AppShell.tsx. */
+    transform: translateY(var(--mari-app-scroll-compensate, 0px)) translateZ(0);
   }
 
   .app-sidebar-mobile {

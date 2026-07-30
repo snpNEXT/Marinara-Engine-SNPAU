@@ -843,7 +843,7 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
         });
         toast.error(error instanceof Error ? error.message :localizeUi("ui.noodle.noodlehome.couldNotMarkNoodleNotificationsAsRead"));
       });
-  }, [activeNoodleView, notificationReadOverrides, patchAccountSettings, personaAccount]);
+  }, [activeNoodleView, localizeUi, notificationReadOverrides, patchAccountSettings, personaAccount]);
 
   useEffect(() => {
     if (navigation.mode !== "public" || navigation.view !== "profile" || !viewedProfileAccountId) return;

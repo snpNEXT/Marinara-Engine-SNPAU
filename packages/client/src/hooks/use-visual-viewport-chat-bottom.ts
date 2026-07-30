@@ -44,6 +44,33 @@ function focusedElementAcceptsText(): boolean {
   return active.isContentEditable;
 }
 
+export function useChatComposerFocused(): boolean {
+  const [focused, setFocused] = useState(
+    () => typeof document !== "undefined" && document.activeElement?.matches("[data-chat-composer]") === true,
+  );
+
+  useEffect(() => {
+    let frame = 0;
+    const update = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        setFocused(document.activeElement?.matches("[data-chat-composer]") === true);
+      });
+    };
+    document.addEventListener("focusin", update);
+    document.addEventListener("focusout", update);
+    update();
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      document.removeEventListener("focusin", update);
+      document.removeEventListener("focusout", update);
+    };
+  }, []);
+
+  return focused;
+}
+
 /**
  * Preserve the user's bottom anchor when a mobile software keyboard changes
  * the visual viewport. Readers who intentionally scrolled upward are left

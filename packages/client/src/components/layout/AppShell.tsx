@@ -31,10 +31,7 @@ import { getCssBackgroundStyle } from "../../lib/css-colors";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import { cn } from "../../lib/utils";
 import { parseChatMetadata } from "../../lib/chat-display";
-import {
-  resolveTrackerPanelContentScale,
-  resolveTrackerPanelDesktopWidth,
-} from "../../lib/tracker-panel-layout";
+import { resolveTrackerPanelContentScale, resolveTrackerPanelDesktopWidth } from "../../lib/tracker-panel-layout";
 import {
   closeTrackerPanelWindow,
   openTrackerPanelWindow,
@@ -169,7 +166,11 @@ function getViewportWidth() {
 
 function MainPaneFallback() {
   const { t: localizeUi } = useUiTranslation();
-  return <div className="mari-chrome-text-muted flex flex-1 items-center justify-center text-sm">{localizeUi("ui.characters.characterlibraryview.loading")}</div>;
+  return (
+    <div className="mari-chrome-text-muted flex flex-1 items-center justify-center text-sm">
+      {localizeUi("ui.characters.characterlibraryview.loading")}
+    </div>
+  );
 }
 /** Mounts children once `open` becomes true, then keeps them mounted so state persists.
  *  `overlay` mode uses framer-motion slide-in and never unmounts. */
@@ -211,7 +212,11 @@ function MountOnceWhenOpened({
 
 function SidePanelFallback() {
   const { t: localizeUi } = useUiTranslation();
-  return <div className="mari-chrome-text-muted flex h-full items-center justify-center text-sm">{localizeUi("ui.characters.characterlibraryview.loading")}</div>;
+  return (
+    <div className="mari-chrome-text-muted flex h-full items-center justify-center text-sm">
+      {localizeUi("ui.characters.characterlibraryview.loading")}
+    </div>
+  );
 }
 
 export function AppShell() {
@@ -223,8 +228,7 @@ export function AppShell() {
   const musicDjInstalled = (installedCapabilities.data ?? []).some(
     (capability) => capability.id === "spotify" && capability.status === "active",
   );
-  const showMusicDjUnavailablePlayer =
-    musicPlayerEnabled && !installedCapabilities.isLoading && !musicDjInstalled;
+  const showMusicDjUnavailablePlayer = musicPlayerEnabled && !installedCapabilities.isLoading && !musicDjInstalled;
 
   // Background autonomous polling for inactive conversation chats
   useBackgroundAutonomousPolling();
@@ -239,11 +243,15 @@ export function AppShell() {
     let focusTimers: number[] = [];
     let orientationTimers: number[] = [];
     let largestViewportHeight = window.visualViewport?.height ?? window.innerHeight;
-    const supportsVirtualKeyboard =
-      navigator.maxTouchPoints > 0 || window.matchMedia("(any-pointer: coarse)").matches;
+    const supportsVirtualKeyboard = navigator.maxTouchPoints > 0 || window.matchMedia("(any-pointer: coarse)").matches;
     const isIOSWebKit =
       /iP(?:ad|hone|od)/i.test(navigator.userAgent) ||
       (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    // iOS doesn't track the keyboard's visualViewport.offsetTop/height
+    // reliably, so we force offsetTop to 0 and instead counter the scroll
+    // drift iOS applies with a `transform: translateY()` (a GPU compositor
+    // update, unlike window.scrollTo() it doesn't fight WebKit's own
+    // animation).
     const updateVisualViewportGeometry = () => {
       if (frame) cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
@@ -255,13 +263,13 @@ export function AppShell() {
         const height = heightCandidates.length > 0 ? Math.min(...heightCandidates) : window.innerHeight;
         const maxOffsetTop = Math.max(0, window.innerHeight - height);
         const visualViewportOffsetTop = Math.min(maxOffsetTop, Math.max(0, viewport?.offsetTop ?? 0));
-        // iOS Safari already positions the layout viewport when its software
-        // keyboard opens. Applying visualViewport.offsetTop again translates
-        // the entire app and leaves the top of the conversation off-screen.
         const offsetTop = isIOSWebKit ? 0 : visualViewportOffsetTop;
         largestViewportHeight = Math.max(largestViewportHeight, height);
         root.style.setProperty("--mari-visual-viewport-height", `${Math.max(0, Math.round(height))}px`);
         root.style.setProperty("--mari-visual-viewport-offset-top", `${Math.round(offsetTop)}px`);
+        if (isIOSWebKit) {
+          root.style.setProperty("--mari-app-scroll-compensate", `${Math.round(window.scrollY)}px`);
+        }
         const keyboardOpen = supportsVirtualKeyboard && largestViewportHeight - height >= 80;
         root.toggleAttribute("data-mari-software-keyboard-open", keyboardOpen);
         dispatchChatVisualViewportChange({
@@ -314,6 +322,7 @@ export function AppShell() {
       document.removeEventListener("focusout", refreshAfterFocusChange);
       root.style.removeProperty("--mari-visual-viewport-height");
       root.style.removeProperty("--mari-visual-viewport-offset-top");
+      root.style.removeProperty("--mari-app-scroll-compensate");
       root.removeAttribute("data-mari-software-keyboard-open");
     };
   }, []);
@@ -768,6 +777,12 @@ export function AppShell() {
   const trackerPanelSurfaceAvailable =
     trackerPanelModeAvailable && !botBrowserOpen && !gameAssetsBrowserOpen && !noodleOpen && !hasDetailView;
   const trackerPanelVisible = trackerPanelActive && trackerPanelSurfaceAvailable && !trackerPanelDetached;
+  const chatSurfaceActive =
+    !botBrowserOpen &&
+    !gameAssetsBrowserOpen &&
+    !noodleOpen &&
+    !hasDetailView &&
+    (!shellOverlayMode || (!sidebarOpen && !rightPanelOpen && !trackerPanelVisible));
   const trackerWindowHost = trackerPanelWindowTarget?.popup ?? window;
 
   const dockTrackerPanel = useCallback(() => {
@@ -1071,9 +1086,7 @@ export function AppShell() {
           data-component={trackerPanelDetached ? "TrackerDataSidebarDetached" : undefined}
           aria-label={trackerPanelDetached ? localizeUi("ui.layout.appshell.trackerDataPanel") : undefined}
           className={
-            trackerPanelDetached
-              ? "mari-tracker-panel h-screen w-screen overflow-hidden bg-zinc-950/95"
-              : "contents"
+            trackerPanelDetached ? "mari-tracker-panel h-screen w-screen overflow-hidden bg-zinc-950/95" : "contents"
           }
           style={trackerPanelDetached ? trackerPanelBackgroundStyle : undefined}
         >
@@ -1159,6 +1172,7 @@ export function AppShell() {
   return (
     <div
       data-component="AppShell"
+      data-chat-surface-active={chatSurfaceActive ? "true" : undefined}
       className={cn(
         "mari-app mari-app-background-paint fixed inset-0 flex overflow-hidden",
         showAmbientDecor && "retro-scanlines noise-bg geometric-grid",
@@ -1243,7 +1257,10 @@ export function AppShell() {
         data-center-compact={centerCompact ? "true" : undefined}
         data-shell-overlay-mode={shellOverlayMode ? "true" : undefined}
         aria-label={localizeUi("ui.layout.appshell.mainContent")}
-        className="@container mari-main mari-app-background-paint relative flex min-w-0 flex-1 flex-col overflow-hidden"
+        className={cn(
+          "@container mari-main mari-app-background-paint relative flex min-w-0 flex-1 flex-col overflow-hidden",
+          shellOverlayMode && hasDetailView && "z-50",
+        )}
       >
         {/* iOS safe area spacer — pushes TopBar below status bar and fills that gap with topbar bg */}
         <div className="flex-shrink-0 md:hidden h-[env(safe-area-inset-top)] bg-[var(--marinara-topbar-surface)] backdrop-blur-sm" />
@@ -1260,7 +1277,8 @@ export function AppShell() {
           <div
             className={cn(
               "mari-app-background-paint flex flex-1 flex-col overflow-hidden",
-              (botBrowserOpen || gameAssetsBrowserOpen) && "hidden",
+              (botBrowserOpen || gameAssetsBrowserOpen || (!shellOverlayMode && hasDetailView && !noodleOpen)) &&
+                "hidden",
             )}
             style={
               {
@@ -1271,19 +1289,35 @@ export function AppShell() {
             }
           >
             <Suspense fallback={<MainPaneFallback />}>
-              {shellOverlayMode ? (
-                noodleOpen ? (
-                  <NoodleView />
-                ) : (
-                  <ChatArea />
-                )
-              ) : noodleOpen ? (
-                <NoodleView />
-              ) : (
-                (detailView ?? <ChatArea />)
-              )}
+              {noodleOpen ? <NoodleView /> : (shellOverlayMode || !hasDetailView) && <ChatArea />}
             </Suspense>
           </div>
+          {/* Keep the detail host at one React tree position across the mobile breakpoint.
+              Moving an editor between separate desktop/mobile branches remounts it and
+              discards component-local unsaved form state. */}
+          <AnimatePresence mode="wait">
+            {detailView && (shellOverlayMode || !noodleOpen) && (
+              <motion.aside
+                key="detail-editor"
+                initial={shellOverlayMode ? { opacity: 0, x: 24 } : false}
+                animate={{ opacity: 1, x: 0 }}
+                exit={shellOverlayMode ? { opacity: 0, x: 24 } : undefined}
+                transition={{ type: "spring", damping: 30, stiffness: 360 }}
+                data-component={shellOverlayMode ? "MobileDetailSheet" : "DetailEditor"}
+                aria-label={localizeUi("ui.layout.appshell.detailEditor")}
+                className={cn(
+                  "mari-app-background-paint flex min-h-0 flex-1 flex-col overflow-hidden",
+                  shellOverlayMode &&
+                    cn(
+                      "mari-mobile-detail-sheet !fixed bottom-0 right-0 z-50 !w-full bg-[var(--background)]/95 pb-[max(env(safe-area-inset-bottom),0.5rem)] shadow-2xl backdrop-blur-xl",
+                      MOBILE_SHELL_PANEL_TOP_CLASS,
+                    ),
+                )}
+              >
+                <Suspense fallback={<MainPaneFallback />}>{detailView}</Suspense>
+              </motion.aside>
+            )}
+          </AnimatePresence>
         </div>
         {/* Floating avatar notification bubbles (right edge) */}
         <Suspense fallback={null}>
@@ -1407,25 +1441,6 @@ export function AppShell() {
         </aside>
       )}
 
-      {shellOverlayMode && detailView && (
-        <AnimatePresence mode="wait">
-          <motion.aside
-            key="mobile-detail"
-            initial={{ opacity: 0, x: 24 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 24 }}
-            transition={{ type: "spring", damping: 30, stiffness: 360 }}
-            data-component="MobileDetailSheet"
-            aria-label={localizeUi("ui.layout.appshell.detailEditor")}
-            className={cn(
-              "mari-mobile-detail-sheet !fixed bottom-0 right-0 z-40 flex min-h-0 !w-full flex-col overflow-hidden bg-[var(--background)]/95 pb-[max(env(safe-area-inset-bottom),0.5rem)] shadow-2xl backdrop-blur-xl",
-              MOBILE_SHELL_PANEL_TOP_CLASS,
-            )}
-          >
-            <Suspense fallback={<MainPaneFallback />}>{detailView}</Suspense>
-          </motion.aside>
-        </AnimatePresence>
-      )}
       {!shellOverlayMode && rightPanelOpen && (
         <div
           role="separator"
@@ -1448,6 +1463,8 @@ export function AppShell() {
           view="workspace"
           capabilityProps={{
             chatId: spatialMapDetailChatId,
+            chatName: activeChat?.id === spatialMapDetailChatId ? activeChat.name : null,
+            chatMode: activeChat?.id === spatialMapDetailChatId ? activeChat.mode : null,
             debugMode,
             pendingDraftReview: pendingSpatialMapDraftReview,
             confirmAction: showConfirmDialog,

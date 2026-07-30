@@ -129,7 +129,7 @@ The main access-control settings are:
 | `TRUSTED_PRIVATE_NETWORKS`              | built-in defaults | Replaces the default private-network ranges. Include any defaults you still want.                                                                         |
 | `BYPASS_AUTH_TAILSCALE`                 | `true`            | Lets Tailscale traffic skip the login and allowlist.                                                                                                      |
 | `BYPASS_AUTH_DOCKER`                    | `true`            | Lets Docker bridge traffic and the exact default gateway detected inside Docker skip the login and allowlist.                                             |
-| `REQUIRE_AUTH_FOR_DOCKER_PROXY`         | `false`           | Forces normal login for Docker traffic that looks reverse-proxied.                                                                                        |
+| `REQUIRE_AUTH_FOR_DOCKER_PROXY`         | `true`            | Requires normal login/allowlist checks for proxy-forwarded Docker traffic. Set to `false` only when every upstream client is trusted.                     |
 | `TRUSTED_HOSTS`                         | empty             | Extra public or reverse-proxy hostnames Marinara may answer. Direct IP, localhost, `.local`, `.home.arpa`, and single-label LAN names work automatically. |
 | `SSL_CERT`                              | empty             | Path to a TLS certificate file. Set with `SSL_KEY` to serve HTTPS directly.                                                                               |
 | `SSL_KEY`                               | empty             | Path to the TLS private key file.                                                                                                                         |
@@ -250,7 +250,7 @@ Turn on only the switch you need for a self-hosted service on another private-ne
 | Variable                      | Default | What it does                                                                         |
 | ----------------------------- | ------- | ------------------------------------------------------------------------------------ |
 | `PROVIDER_LOCAL_URLS_ENABLED` | `false` | Allows AI provider URLs to reach private or LAN addresses. On by default on Android. |
-| `IMAGE_LOCAL_URLS_ENABLED`    | `false` | Allows image provider URLs to reach private or LAN addresses.                        |
+| `IMAGE_LOCAL_URLS_ENABLED`    | `false` | Allows image provider URLs to reach private or LAN addresses. Private generated-image result URLs must still match the configured provider's exact origin. |
 | `TTS_LOCAL_URLS_ENABLED`      | `false` | Allows text-to-speech URLs to reach private or LAN addresses.                        |
 | `DEEPLX_LOCAL_URLS_ENABLED`   | `false` | Allows DeepLX translation URLs to reach private or LAN addresses.                    |
 | `WEBHOOK_LOCAL_URLS_ENABLED`  | `false` | Allows custom tool webhooks to reach private or LAN addresses.                       |

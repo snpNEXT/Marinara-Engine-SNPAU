@@ -7,7 +7,9 @@ import { writeFile } from "fs/promises";
 import { basename, extname, join } from "path";
 import { z } from "zod";
 import {
+  findImageStyleProfile,
   LOCAL_SIDECAR_CONNECTION_ID,
+  resolveGameSetupArtStylePrompt,
   VIDEO_GENERATION_SETTINGS_KEY,
   normalizeVideoGenerationUserSettings,
   type GameSceneVideoAspectRatio,
@@ -44,9 +46,16 @@ import {
   resolveImagePromptReviewSize,
   resolveReviewedImagePromptSubmission,
 } from "../services/image/image-prompt-review.js";
+import { buildBackgroundProviderPrompt } from "../services/game/game-asset-generation.js";
 import { runImageGenerationRequest } from "../services/image/image-generation-queue.js";
 import { generateIllustratorImageVariants } from "../services/image/illustrator-image-variants.js";
 import { persistGeneratedImageToEntityGalleries } from "../services/image/generated-image-entity-gallery.js";
+import { deleteChatGalleryImageEverywhere } from "../services/image/chat-gallery-cascade-deletion.js";
+import {
+  findGalleryRowByFilename,
+  resolveStoredGalleryFile,
+  storedGalleryFilename,
+} from "../services/image/gallery-file-lifecycle.js";
 import {
   resolveImageConnectionFallback,
   resolveVideoConnectionFallback,
@@ -128,10 +137,50 @@ const generateConversationSelfieSchema = z.object({
   debugMode: z.boolean().optional().default(false),
 });
 
+const mapsArtworkContextSchema = z
+  .object({
+    locationName: z.string().trim().max(200),
+    locationDescription: z.string().trim().max(7_000),
+    locationType: z.string().trim().max(120),
+    parentLocationName: z.string().trim().max(200),
+    parentLocationDescription: z.string().trim().max(7_000),
+    locationPath: z.string().trim().max(2_000),
+  })
+  .strict();
+
 const generateGalleryImageSchema = z.object({
   prompt: z.string().trim().min(1).max(7_000),
+  title: z.string().trim().min(1).max(200).optional(),
+  mapsArtworkContext: mapsArtworkContextSchema.optional(),
+  promptOverride: z.string().trim().min(1).max(200_000).optional(),
+  negativePromptOverride: z.string().max(200_000).optional(),
   debugMode: z.boolean().optional().default(false),
 });
+
+const previewGalleryImagesSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        id: z.string().trim().min(1).max(200),
+        title: z.string().trim().min(1).max(200),
+        prompt: z.string().trim().min(1).max(7_000),
+        mapsArtworkContext: mapsArtworkContextSchema.optional(),
+      }),
+    )
+    .min(1)
+    .max(500),
+  debugMode: z.boolean().optional().default(false),
+});
+
+class GalleryImageRequestError extends Error {
+  constructor(
+    readonly statusCode: 400 | 404,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GalleryImageRequestError";
+  }
+}
 
 function sceneVideoUrl(chatId: string, filePath: string): string {
   const filename = filePath.split(/[\\/]/).pop() ?? "";
@@ -190,10 +239,9 @@ function parseChatMetadata(raw: unknown): Record<string, unknown> {
   return typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
 }
 
-function buildGalleryImageUrl(image: { filePath: string }, fallbackChatId: string) {
-  const parts = image.filePath.split("/").filter(Boolean);
-  const ownerChatId = parts.length > 1 ? parts[0]! : fallbackChatId;
-  const filename = parts[parts.length - 1] ?? image.filePath;
+function buildGalleryImageUrl(image: { chatId?: string; filePath: string }, fallbackChatId: string) {
+  const ownerChatId = image.chatId || fallbackChatId;
+  const filename = storedGalleryFilename(image.filePath);
   return `/api/gallery/file/${encodeURIComponent(ownerChatId)}/${encodeURIComponent(filename)}`;
 }
 
@@ -458,6 +506,131 @@ export async function galleryRoutes(app: FastifyInstance) {
   const characterGallery = createCharacterGalleryStorage(app.db);
   const personaGallery = createPersonaGalleryStorage(app.db);
 
+  async function resolveGalleryImageGenerationContext(chatId: string, debugMode: boolean) {
+    const chat = await chats.getById(chatId);
+    if (!chat) throw new GalleryImageRequestError(404, "Chat not found");
+    if (!new Set(["roleplay", "visual_novel", "game"]).has(chat.mode)) {
+      throw new GalleryImageRequestError(400, "Gallery image generation is available in Roleplay and Game modes.");
+    }
+
+    const metadata = parseChatMetadata(chat.metadata);
+    if (chat.mode === "game" && metadata.enableSpriteGeneration !== true) {
+      throw new GalleryImageRequestError(400, "Enable Game Illustrator in Chat Settings before creating map artwork.");
+    }
+    if (chat.mode === "game" && !readTrimmedString(metadata.gameImageConnectionId)) {
+      throw new GalleryImageRequestError(400, "Choose the Game Illustrator image connection in Chat Settings first.");
+    }
+    const { connection: imageConnection, connections } = await resolveGalleryImageConnection(app, chat.mode, metadata);
+    if (!imageConnection) {
+      throw new GalleryImageRequestError(
+        400,
+        "Choose an image connection for Illustrator or set a default Images connection first.",
+      );
+    }
+
+    const debugOverrideEnabled = debugMode || isDebugAgentsEnabled();
+    const debugLog = (message: string, ...args: unknown[]) => {
+      logDebugOverride(debugOverrideEnabled, message, ...args);
+    };
+    const imageSettings = await loadImageGenerationUserSettings(app.db);
+    const imageDefaults = resolveConnectionImageDefaults(imageConnection);
+    const setupConfig = parseJsonRecord(metadata.gameSetupConfig);
+    const styleProfileId =
+      readTrimmedString(setupConfig.imageStyleProfileId) ??
+      readTrimmedString(metadata.imageStyleProfileId) ??
+      imageDefaults?.styleProfileId ??
+      imageSettings.styleProfiles.defaultProfileId;
+    const styleProfile = findImageStyleProfile(imageSettings.styleProfiles, styleProfileId);
+    const artStyle = resolveGameSetupArtStylePrompt(setupConfig);
+    const genre = readTrimmedString(setupConfig.genre);
+    const setting = readTrimmedString(setupConfig.setting);
+    const worldOverview = readTrimmedString(metadata.gameWorldOverview);
+    const imagePromptInstructions = readTrimmedString(metadata.gameImagePromptInstructions);
+    const imageModel = imageConnection.model || "";
+    const imageBaseUrl = imageConnection.baseUrl || "https://image.pollinations.ai";
+    const imageSource = imageConnection.imageGenerationSource || imageModel;
+    const imageServiceHint = imageConnection.imageService || imageSource;
+    const imageFallback = await resolveImageConnectionFallback(connections, imageConnection.id);
+
+    return {
+      chat,
+      imageConnection,
+      imageSettings,
+      imageDefaults,
+      styleProfileId,
+      styleProfile,
+      artStyle,
+      genre,
+      setting,
+      worldOverview,
+      imagePromptInstructions,
+      imageModel,
+      imageBaseUrl,
+      imageSource,
+      imageServiceHint,
+      imageFallback,
+      debugLog,
+      promptOverridesStorage: createPromptOverridesStorage(app.db),
+    };
+  }
+
+  async function compileGalleryImageRequest(
+    context: Awaited<ReturnType<typeof resolveGalleryImageGenerationContext>>,
+    input: {
+      title?: string;
+      prompt: string;
+      mapsArtworkContext?: z.infer<typeof mapsArtworkContextSchema>;
+      promptOverride?: string;
+      negativePromptOverride?: string;
+    },
+  ) {
+    const compiled = await buildBackgroundProviderPrompt({
+      chatId: context.chat.id,
+      locationSlug: input.title?.trim() || "Gallery image",
+      sceneDescription: input.prompt.trim(),
+      mapsArtworkContext: {
+        locationName: input.mapsArtworkContext?.locationName || input.title?.trim() || "Gallery image",
+        locationDescription: input.mapsArtworkContext?.locationDescription || input.prompt.trim(),
+        locationType: input.mapsArtworkContext?.locationType || "Location",
+        parentLocationName: input.mapsArtworkContext?.parentLocationName || "",
+        parentLocationDescription: input.mapsArtworkContext?.parentLocationDescription || "",
+        locationPath:
+          input.mapsArtworkContext?.locationPath || input.mapsArtworkContext?.locationName || input.title?.trim() || "",
+        genre: context.genre ?? "",
+        campaignArtStyle: context.artStyle,
+        imageInstructions: context.imagePromptInstructions ?? "",
+      },
+      imgModel: context.imageModel,
+      imgBaseUrl: context.imageBaseUrl,
+      imgApiKey: context.imageConnection.apiKey || "",
+      imgSource: context.imageSource,
+      imgService: context.imageServiceHint,
+      imgEndpointId: context.imageConnection.imageEndpointId || undefined,
+      imgComfyWorkflow: context.imageConnection.comfyuiWorkflow || undefined,
+      imgDefaults: context.imageDefaults,
+      imgFallback: context.imageFallback,
+      styleProfiles: context.imageSettings.styleProfiles,
+      styleProfileId: context.styleProfileId,
+      promptOverridesStorage: context.promptOverridesStorage,
+      size: context.imageSettings.background,
+      preserveFullBackgroundPrompt: true,
+    });
+    const reviewed = resolveReviewedImagePromptSubmission({
+      generatedPrompt: compiled.prompt,
+      generatedNegativePrompt: compiled.negativePrompt,
+      promptOverride: input.promptOverride,
+      negativePromptOverride: input.negativePromptOverride,
+    });
+    const size = resolveImagePromptReviewSize({
+      connection: context.imageConnection,
+      prompt: reviewed.prompt,
+      width: context.imageSettings.background.width,
+      height: context.imageSettings.background.height,
+      imageDefaults: context.imageDefaults,
+    });
+    return { ...compiled, ...reviewed, ...size };
+  }
+
   async function collectChatAssetParticipants(chat: { id: string; characterIds?: unknown; personaId?: string | null }) {
     const characterIds = new Set(parseStringArray(chat.characterIds));
     const personaIds = new Set<string>();
@@ -633,9 +806,12 @@ export async function galleryRoutes(app: FastifyInstance) {
       if (!ALLOWED_EXTS.has(extname(filename).toLowerCase())) {
         return reply.status(400).send({ error: "Unsupported file type" });
       }
-      const filePath = join(GALLERY_DIR, chatId, filename);
-      if (!existsSync(filePath)) return reply.status(404).send({ error: "Not found" });
-      return reply.sendFile(filename, join(GALLERY_DIR, chatId));
+      const image = findGalleryRowByFilename(await storage.listByChatId(chatId), filename);
+      const storedFile = image ? resolveStoredGalleryFile(image.filePath, GALLERY_DIR) : null;
+      if (!storedFile || !existsSync(storedFile.absolutePath)) {
+        return reply.status(404).send({ error: "Not found" });
+      }
+      return reply.sendFile(storedFile.filename, storedFile.directory);
     }
 
     if (parts[0] === "sprites" && (parts[1] === "facial" || parts[1] === "fullbody") && parts[2]) {
@@ -1176,7 +1352,7 @@ export async function galleryRoutes(app: FastifyInstance) {
       });
       const savedImages = [];
       for (const imageResult of imageResults) {
-        const filePath = saveImageToDisk(chatId, imageResult.base64, imageResult.ext);
+        const filePath = saveImageToDisk(chatId, imageResult.base64, imageResult.ext, { shared: true });
         const image = await storage.create({
           chatId,
           filePath,
@@ -1189,6 +1365,7 @@ export async function galleryRoutes(app: FastifyInstance) {
         if (!image) throw new Error("Generated selfie metadata could not be saved");
         await persistGeneratedImageToEntityGalleries({
           sourceFilePath: filePath,
+          sourceChatImageId: image.id,
           characterIds: [character.id],
           characterGallery,
           personaGallery,
@@ -1219,81 +1396,117 @@ export async function galleryRoutes(app: FastifyInstance) {
     }
   });
 
+  app.post<{ Params: { chatId: string } }>("/:chatId/generate-image/preview", async (req, reply) => {
+    const { chatId } = req.params;
+    if (!isValidChatId(chatId)) return reply.status(400).send({ error: "Invalid chatId" });
+
+    const input = previewGalleryImagesSchema.parse(req.body);
+    try {
+      const context = await resolveGalleryImageGenerationContext(chatId, input.debugMode);
+      const items = await Promise.all(
+        input.items.map(async (item) => {
+          const compiled = await compileGalleryImageRequest(context, item);
+          return {
+            id: item.id,
+            kind: "background" as const,
+            title: item.title,
+            sourcePrompt: item.prompt,
+            prompt: compiled.prompt,
+            negativePrompt: compiled.negativePrompt,
+            width: compiled.width,
+            height: compiled.height,
+          };
+        }),
+      );
+      return {
+        requestCount: items.length,
+        connection: {
+          id: context.imageConnection.id,
+          name: context.imageConnection.name,
+          model: context.imageModel || "Default model",
+          source:
+            context.imageConnection.imageService ||
+            context.imageConnection.imageGenerationSource ||
+            context.imageConnection.provider,
+        },
+        styleProfile: {
+          id: context.styleProfile.id,
+          name: context.styleProfile.name,
+        },
+        campaign: {
+          included: Boolean(context.artStyle),
+          artStyleIncluded: Boolean(context.artStyle),
+        },
+        chatSettings: {
+          imageInstructionsIncluded: Boolean(context.imagePromptInstructions),
+        },
+        width: items[0]?.width ?? context.imageSettings.background.width,
+        height: items[0]?.height ?? context.imageSettings.background.height,
+        items,
+      };
+    } catch (err) {
+      if (err instanceof GalleryImageRequestError) {
+        return reply.status(err.statusCode).send({ error: err.message });
+      }
+      logger.warn(err, "[gallery/generate-image] Failed to preview Gallery image requests for chat %s", chatId);
+      return reply.status(500).send({ error: "Gallery image prompt preview failed" });
+    }
+  });
+
   app.post<{ Params: { chatId: string } }>("/:chatId/generate-image", async (req, reply) => {
     const { chatId } = req.params;
     if (!isValidChatId(chatId)) return reply.status(400).send({ error: "Invalid chatId" });
 
     const input = generateGalleryImageSchema.parse(req.body);
-    const chat = await chats.getById(chatId);
-    if (!chat) return reply.status(404).send({ error: "Chat not found" });
-    if (!new Set(["roleplay", "visual_novel", "game"]).has(chat.mode)) {
-      return reply.status(400).send({ error: "Gallery image generation is available in Roleplay and Game modes." });
+    let context: Awaited<ReturnType<typeof resolveGalleryImageGenerationContext>>;
+    let compiledPrompt: Awaited<ReturnType<typeof compileGalleryImageRequest>>;
+    try {
+      context = await resolveGalleryImageGenerationContext(chatId, input.debugMode);
+      compiledPrompt = await compileGalleryImageRequest(context, input);
+    } catch (err) {
+      if (err instanceof GalleryImageRequestError) {
+        return reply.status(err.statusCode).send({ error: err.message });
+      }
+      logger.warn(err, "[gallery/generate-image] Failed to compile Gallery image request for chat %s", chatId);
+      return reply.status(500).send({ error: "Gallery image prompt compilation failed" });
     }
 
-    const metadata = parseChatMetadata(chat.metadata);
-    const { connection: imageConnection, connections } = await resolveGalleryImageConnection(
-      app,
-      chat.mode,
-      metadata,
-    );
-    if (!imageConnection) {
-      return reply.status(400).send({
-        error: "Choose an image connection for Illustrator or set a default Images connection first.",
-      });
-    }
-
-    const debugOverrideEnabled = input.debugMode === true || isDebugAgentsEnabled();
-    const debugLog = (message: string, ...args: unknown[]) => {
-      logDebugOverride(debugOverrideEnabled, message, ...args);
-    };
-    const imageSettings = await loadImageGenerationUserSettings(app.db);
-    const imageDefaults = resolveConnectionImageDefaults(imageConnection);
-    const setupConfig = parseJsonRecord(metadata.gameSetupConfig);
-    const styleProfileId =
-      readTrimmedString(setupConfig.imageStyleProfileId) ??
-      readTrimmedString(metadata.imageStyleProfileId) ??
-      imageDefaults?.styleProfileId ??
-      imageSettings.styleProfiles.defaultProfileId;
-    const compiledPrompt = compileImagePrompt({
-      kind: "background",
-      prompt: input.prompt,
-      styleProfiles: imageSettings.styleProfiles,
-      styleProfileId,
-      imageDefaults,
-    });
-    const imageModel = imageConnection.model || "";
-    const imageBaseUrl = imageConnection.baseUrl || "https://image.pollinations.ai";
-    const imageSource = imageConnection.imageGenerationSource || imageModel;
-    const imageServiceHint = imageConnection.imageService || imageSource;
-    const imageFallback = await resolveImageConnectionFallback(connections, imageConnection.id);
     const signal = createResponseAbortSignal(reply, SCENE_VIDEO_GENERATION_TIMEOUT_MS, "Gallery image generation");
 
-    debugLog("[debug/gallery/generate-image] prompt:\n%s", compiledPrompt.prompt);
+    context.debugLog("[debug/gallery/generate-image] prompt:\n%s", compiledPrompt.prompt);
     if (compiledPrompt.negativePrompt) {
-      debugLog("[debug/gallery/generate-image] negative prompt:\n%s", compiledPrompt.negativePrompt);
+      context.debugLog("[debug/gallery/generate-image] negative prompt:\n%s", compiledPrompt.negativePrompt);
     }
 
     let savedFilePath: string | null = null;
     let metadataSaved = false;
     try {
-      const connectionKey = imageConnection.id?.trim() || `${imageServiceHint}:${imageBaseUrl}:${imageModel}`;
+      const connectionKey =
+        context.imageConnection.id?.trim() ||
+        `${context.imageServiceHint}:${context.imageBaseUrl}:${context.imageModel}`;
       const generated = await runImageGenerationRequest({
         connectionKey,
         queue: true,
         signal,
         task: () =>
-          generateImage(imageSource, imageBaseUrl, imageConnection.apiKey || "", imageServiceHint, {
-            prompt: compiledPrompt.prompt,
-            negativePrompt: compiledPrompt.negativePrompt || undefined,
-            model: imageModel,
-            width: imageSettings.background.width,
-            height: imageSettings.background.height,
-            imageEndpointId: imageConnection.imageEndpointId || undefined,
-            comfyWorkflow: imageConnection.comfyuiWorkflow || undefined,
-            imageDefaults,
-            signal,
-            fallback: imageFallback,
-          }),
+          generateImage(
+            context.imageSource,
+            context.imageBaseUrl,
+            context.imageConnection.apiKey || "",
+            context.imageServiceHint,
+            {
+              prompt: compiledPrompt.prompt,
+              negativePrompt: compiledPrompt.negativePrompt || undefined,
+              model: context.imageModel,
+              width: compiledPrompt.width,
+              height: compiledPrompt.height,
+              imageEndpointId: context.imageConnection.imageEndpointId || undefined,
+              comfyWorkflow: context.imageConnection.comfyuiWorkflow || undefined,
+              imageDefaults: context.imageDefaults,
+              signal,
+              fallback: context.imageFallback,
+            },
+          ),
       });
       const filePath = saveImageToDisk(chatId, generated.base64, generated.ext);
       savedFilePath = filePath;
@@ -1301,10 +1514,10 @@ export async function galleryRoutes(app: FastifyInstance) {
         chatId,
         filePath,
         prompt: compiledPrompt.prompt,
-        provider: imageConnection.provider ?? "image_generation",
-        model: imageModel || "unknown",
-        width: imageSettings.background.width,
-        height: imageSettings.background.height,
+        provider: context.imageConnection.provider ?? "image_generation",
+        model: context.imageModel || "unknown",
+        width: compiledPrompt.width,
+        height: compiledPrompt.height,
       });
       if (!image) throw new Error("Generated Gallery image metadata could not be saved");
       metadataSaved = true;
@@ -1429,16 +1642,27 @@ export async function galleryRoutes(app: FastifyInstance) {
   // Serve a gallery image
   app.get<{ Params: { chatId: string; filename: string } }>("/file/:chatId/:filename", async (req, reply) => {
     const { chatId, filename } = req.params;
-    if (filename.includes("..") || filename.includes("/") || chatId.includes("..") || chatId.includes("/")) {
+    if (
+      filename.includes("..") ||
+      filename.includes("/") ||
+      filename.includes("\\") ||
+      chatId.includes("..") ||
+      chatId.includes("/") ||
+      chatId.includes("\\")
+    ) {
       return reply.status(400).send({ error: "Invalid path" });
     }
 
-    const filePath = join(GALLERY_DIR, chatId, filename);
-    if (!existsSync(filePath)) {
+    let image = findGalleryRowByFilename(await storage.listByChatId(chatId), filename);
+    if (!image) {
+      image = (await storage.listByFilePath(`${chatId}/${filename}`))[0] ?? null;
+    }
+    const storedFile = image ? resolveStoredGalleryFile(image.filePath, GALLERY_DIR) : null;
+    if (!storedFile || !existsSync(storedFile.absolutePath)) {
       return reply.status(404).send({ error: "Not found" });
     }
 
-    return reply.sendFile(filename, join(GALLERY_DIR, chatId));
+    return reply.sendFile(storedFile.filename, storedFile.directory);
   });
 
   // Delete a gallery image
@@ -1449,26 +1673,7 @@ export async function galleryRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Not found" });
     }
 
-    const filename = getStoredFilename(image.filePath);
-    const fallbackFilePath = `${image.chatId}/${filename}`;
-    const filePathCandidates = new Set([image.filePath, fallbackFilePath]);
-
-    for (const candidate of filePathCandidates) {
-      try {
-        const filePath = assertInsideDir(GALLERY_DIR, join(GALLERY_DIR, candidate));
-        if (existsSync(filePath)) {
-          unlinkSync(filePath);
-        }
-      } catch (err) {
-        logger.warn(err, "Skipped gallery file unlink for %s (%s): path escapes gallery dir", id, candidate);
-      }
-    }
-
-    await storage.removeByChatAndFilePath(image.chatId, image.filePath);
-    if (fallbackFilePath !== image.filePath) {
-      await storage.removeByChatAndFilePath(image.chatId, fallbackFilePath);
-    }
-    await storage.remove(id);
-    return { success: true };
+    const deleted = await deleteChatGalleryImageEverywhere({ db: app.db, image });
+    return { success: true, ...deleted };
   });
 }

@@ -1,5 +1,5 @@
 import { Loader2, Send, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "./Modal";
 import { cn } from "../../lib/utils";
 import { useTranslation as useUiTranslation } from "react-i18next";
@@ -44,11 +44,26 @@ export function ImagePromptReviewModal({
   const { t: localizeUi } = useUiTranslation();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [negativeDrafts, setNegativeDrafts] = useState<Record<string, string>>({});
+  const initializedSourceKeyRef = useRef<string | null>(null);
+  const draftSource = useMemo(() => {
+    const entries = items.map((item) => [item.id, item.prompt, item.negativePrompt ?? ""]);
+    return {
+      key: JSON.stringify(entries),
+      drafts: Object.fromEntries(items.map((item) => [item.id, item.prompt])),
+      negativeDrafts: Object.fromEntries(items.map((item) => [item.id, item.negativePrompt ?? ""])),
+    };
+  }, [items]);
 
   useEffect(() => {
-    setDrafts(Object.fromEntries(items.map((item) => [item.id, item.prompt])));
-    setNegativeDrafts(Object.fromEntries(items.map((item) => [item.id, item.negativePrompt ?? ""])));
-  }, [items]);
+    if (!open) {
+      initializedSourceKeyRef.current = null;
+      return;
+    }
+    if (initializedSourceKeyRef.current === draftSource.key) return;
+    initializedSourceKeyRef.current = draftSource.key;
+    setDrafts(draftSource.drafts);
+    setNegativeDrafts(draftSource.negativeDrafts);
+  }, [draftSource, open]);
 
   const hasEmptyPrompt = useMemo(() => items.some((item) => !(drafts[item.id] ?? item.prompt).trim()), [drafts, items]);
   const mediaLabel = mediaType === "video" ? "video" : "image";

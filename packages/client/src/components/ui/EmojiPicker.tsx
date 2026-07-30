@@ -4,6 +4,7 @@
 import { useState, useRef, useEffect, useCallback, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "../../lib/utils";
+import { rememberRecentMedia, useRecentMedia } from "../../hooks/use-recent-media";
 import { EMOJI_CATEGORIES, EMOJI_SEARCH_NAMES } from "../../lib/emoji-catalog.generated";
 import { EMOJI_KEYWORDS, matchesEmojiQuery } from "../../lib/emoji-search";
 import { useTranslation as useUiTranslation } from "react-i18next";
@@ -741,6 +742,7 @@ export function EmojiPicker({
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState<number | "custom">(0);
   const panelRef = useRef<HTMLDivElement>(null);
+  const recentEmojis = useRecentMedia("emoji");
 
   // Close on outside click
   useEffect(() => {
@@ -857,6 +859,10 @@ export function EmojiPicker({
 
   const handleSelect = useCallback(
     (emoji: string) => {
+      rememberRecentMedia("emoji", {
+        value: emoji,
+        label: EMOJI_SEARCH_NAMES[emoji] ?? EMOJI_KEYWORDS[emoji] ?? emoji,
+      });
       onSelect(emoji);
     },
     [onSelect],
@@ -937,6 +943,27 @@ export function EmojiPicker({
 
       {/* Emoji grid (or the custom-emoji tab content) */}
       <div className="flex-1 overflow-y-auto px-2 py-2">
+        {!searching && recentEmojis.length > 0 && (
+          <section data-recent-media="emoji" className="mb-2 border-b border-foreground/10 pb-2">
+            <p className="mb-1 px-1 text-[0.625rem] font-semibold uppercase tracking-wide text-foreground/45">
+              {localizeUi("ui.mediaPicker.recentlyUsed")}
+            </p>
+            <div className="grid grid-cols-8 gap-0.5">
+              {recentEmojis.map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  onClick={() => handleSelect(item.value)}
+                  aria-label={item.label ?? item.value}
+                  title={item.label ?? item.value}
+                  className="min-w-0 truncate rounded-md p-1 text-xl transition-transform hover:scale-125 hover:bg-foreground/10 active:scale-100"
+                >
+                  {item.value}
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
         {!searching && activeCategory === "custom" && customTab ? (
           customTab.render(search)
         ) : (

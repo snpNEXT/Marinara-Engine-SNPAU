@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import { Search } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { KAOMOJI_CATEGORIES, KAOMOJI_ALL, searchKaomoji } from "../../lib/kaomoji-catalog";
+import { rememberRecentMedia, useRecentMedia } from "../../hooks/use-recent-media";
 
 interface KaomojiPickerProps {
   open: boolean;
@@ -29,11 +30,20 @@ export function KaomojiPicker({ open, onClose, onSelect, anchorRef, containerRef
   const panelRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [pos, setPos] = useState<{ top?: number; left?: number; right?: number; maxHeight?: number }>({});
+  const recentKaomoji = useRecentMedia("kaomoji");
 
   const results = useMemo(() => {
     if (search.trim()) return searchKaomoji(search);
     return KAOMOJI_CATEGORIES[activeCategory]?.items ?? KAOMOJI_ALL;
   }, [search, activeCategory]);
+
+  const handleSelect = useCallback(
+    (value: string) => {
+      rememberRecentMedia("kaomoji", { value, label: value });
+      onSelect(value);
+    },
+    [onSelect],
+  );
 
   // Reset transient state each time it opens.
   useEffect(() => {
@@ -168,6 +178,26 @@ export function KaomojiPicker({ open, onClose, onSelect, anchorRef, containerRef
       )}
 
       <div data-kaomoji-results className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1.5">
+        {!search.trim() && recentKaomoji.length > 0 && (
+          <section data-recent-media="kaomoji" className="mb-1.5 border-b border-[var(--border)] pb-1.5">
+            <p className="mb-1 px-1 text-[0.625rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
+              {t("ui.mediaPicker.recentlyUsed")}
+            </p>
+            <div className="grid min-w-0 grid-cols-2 gap-1">
+              {recentKaomoji.map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  onClick={() => handleSelect(item.value)}
+                  title={item.label ?? item.value}
+                  className="min-w-0 truncate rounded-lg px-2 py-2 text-center text-sm text-[var(--foreground)] transition-colors hover:bg-[var(--secondary)]/60 active:scale-95"
+                >
+                  {item.value}
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
         {results.length === 0 ? (
           <p className="px-2 py-6 text-center text-xs text-[var(--muted-foreground)]">{t("chat.kaomoji.empty")}</p>
         ) : (
@@ -176,7 +206,7 @@ export function KaomojiPicker({ open, onClose, onSelect, anchorRef, containerRef
               <button
                 key={entry.value}
                 type="button"
-                onClick={() => onSelect(entry.value)}
+                onClick={() => handleSelect(entry.value)}
                 title={entry.keywords}
                 className="min-w-0 truncate rounded-lg px-2 py-2 text-center text-sm text-[var(--foreground)] transition-colors hover:bg-[var(--secondary)]/60 active:scale-95"
               >
