@@ -384,6 +384,13 @@ export interface AgentContext {
   writableLorebookIds: string[] | null;
   /** Chat summary text (if any) — helps agents avoid duplicating summarized info */
   chatSummary: string | null;
+  /** Resolved Author's Notes for custom agents that explicitly opt into them. */
+  authorNotes?: string | null;
+  /** Lorebook entries activated for the main generation on this turn. */
+  activatedLorebookEntries?: Array<{
+    id: string;
+    content: string;
+  }>;
   /**
    * Semantic source material resolved for custom agents that opt into vector access.
    * The runtime keeps this out of ordinary agent prompts and injects it only for
@@ -528,6 +535,42 @@ export const CUSTOM_AGENT_CAPABILITY_IDS = [
 
 export type CustomAgentCapability = (typeof CUSTOM_AGENT_CAPABILITY_IDS)[number];
 export type CustomAgentCapabilityMap = Partial<Record<CustomAgentCapability, boolean>>;
+
+export const CUSTOM_AGENT_CONTEXT_SOURCE_IDS = [
+  "chatHistory",
+  "characters",
+  "persona",
+  "activatedLorebookEntries",
+  "chatSummary",
+  "authorNotes",
+  "trackerData",
+  "recalledMemories",
+] as const;
+
+export type CustomAgentContextSource = (typeof CUSTOM_AGENT_CONTEXT_SOURCE_IDS)[number];
+export type CustomAgentContextSources = Record<CustomAgentContextSource, boolean>;
+
+export const DEFAULT_CUSTOM_AGENT_CONTEXT_SOURCES: CustomAgentContextSources = {
+  chatHistory: true,
+  characters: false,
+  persona: false,
+  activatedLorebookEntries: false,
+  chatSummary: false,
+  authorNotes: false,
+  trackerData: false,
+  recalledMemories: false,
+};
+
+export function normalizeCustomAgentContextSources(settings: unknown): CustomAgentContextSources {
+  const stored = parseAgentSettingsRecord(settings).contextSources;
+  if (!isRecord(stored)) return { ...DEFAULT_CUSTOM_AGENT_CONTEXT_SOURCES };
+
+  const normalized = { ...DEFAULT_CUSTOM_AGENT_CONTEXT_SOURCES };
+  for (const source of CUSTOM_AGENT_CONTEXT_SOURCE_IDS) {
+    if (typeof stored[source] === "boolean") normalized[source] = stored[source];
+  }
+  return normalized;
+}
 
 export interface CustomAgentImportPolicy {
   enabled: boolean;

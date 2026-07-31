@@ -715,7 +715,7 @@ export interface GameTurnStoryboardKeyframe {
   sectionStartIndex: number | null;
   sectionEndIndex: number | null;
   anchorQuote: string;
-  anchorKind: "narration" | "dialogue" | "readable" | "system" | "";
+  anchorKind: "narration" | "dialogue" | "readable" | "system" | "user" | "assistant" | "";
   narrationBeat: string;
   mangaPanelPrompt: string;
   imagePrompt: string;

@@ -23,7 +23,11 @@ import { createPromptsStorage } from "../services/storage/prompts.storage.js";
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createThemesStorage } from "../services/storage/themes.storage.js";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
-import { canReparentFolder, type ExportEnvelope } from "@marinara-engine/shared";
+import {
+  canReparentFolder,
+  normalizePersonalExtensionCapabilities,
+  type ExportEnvelope,
+} from "@marinara-engine/shared";
 import { getDataDir } from "../utils/data-dir.js";
 import { getFileStorageDir } from "../config/runtime-config.js";
 import { normalizeTimestampOverrides } from "../services/import/import-timestamps.js";
@@ -40,6 +44,8 @@ import {
   type ProfileImportAssetInput,
   type StagedProfileImportAssets,
 } from "../services/import/profile-import-assets.js";
+import { ProfileImportRequestError } from "../services/import/profile-import-errors.js";
+import { planProfileNoodleImport, type ProfileNoodleImportWarning } from "../services/import/profile-import-noodle.js";
 import { computePersonalExtensionHash } from "../services/extensions/personal-extension-hash.js";
 import { personalServerExtensionRuntime } from "../services/extensions/personal-server-extension-runtime.js";
 import {
@@ -203,7 +209,7 @@ type ProfileInlineJsonBudget = {
 };
 type ProfileAssetReader = (safePath: string) => Buffer | null | Promise<Buffer | null>;
 type ProfileArchiveAssetIndex = Map<string, { entryName: string; expectedSize: number }>;
-type ProfileImportWarning = { type: "missing_asset"; path: string; message: string };
+type ProfileImportWarning = ProfileNoodleImportWarning | { type: "missing_asset"; path: string; message: string };
 type ProfileZipEntry = {
   entryName: string;
   isDirectory: boolean;
@@ -274,8 +280,6 @@ class ProfileJsonTooLargeError extends Error {
 }
 
 class ProfileArchiveTooLargeError extends Error {}
-
-class ProfileImportRequestError extends Error {}
 
 class ProfileImportArchiveTooLargeError extends ProfileImportRequestError {}
 
@@ -532,8 +536,21 @@ export function sanitizeProfileTableRows(tableName: string, rows: Array<Record<s
 
 export function quarantineProfilePersonalExtensionRow(row: Record<string, unknown>) {
   const runtime = row.runtime === "server" ? "server" : "client";
+  const capabilities =
+    runtime === "client"
+      ? (() => {
+          try {
+            return normalizePersonalExtensionCapabilities(
+              typeof row.capabilities === "string" ? JSON.parse(row.capabilities) : row.capabilities,
+            );
+          } catch {
+            return [];
+          }
+        })()
+      : [];
   const contentHash = computePersonalExtensionHash({
     runtime,
+    capabilities,
     css: runtime === "client" && typeof row.css === "string" ? row.css : null,
     js: runtime === "client" && typeof row.js === "string" ? row.js : null,
     serverJs: runtime === "server" && typeof row.serverJs === "string" ? row.serverJs : null,
@@ -541,6 +558,7 @@ export function quarantineProfilePersonalExtensionRow(row: Record<string, unknow
   return {
     ...row,
     runtime,
+    capabilities: JSON.stringify(capabilities),
     enabled: "false",
     contentHash,
     approvedHash: null,
@@ -861,6 +879,7 @@ function buildProfileImportAssetInputs(
 async function importProfileStorageSnapshot(
   app: FastifyInstance,
   snapshot: ProfileStorageSnapshot,
+  warnings: ProfileImportWarning[],
   onProgress?: ProfileImportProgressReporter,
   readAsset?: ProfileAssetReader,
 ) {
@@ -899,9 +918,10 @@ async function importProfileStorageSnapshot(
     let rollbackFailed = false;
     try {
       await app.db.transaction(async (tx) => {
+        const plannedSnapshot = await planProfileNoodleImport(tx, snapshot, warnings);
         for (const tableName of FILE_BACKED_TABLES) {
           const table = profileTableObjects.get(tableName);
-          const rows = snapshot.tables[tableName];
+          const rows = plannedSnapshot.tables[tableName];
           if (!table || !Array.isArray(rows) || rows.length === 0) {
             tableCounts[tableName] = 0;
             continue;
@@ -1890,7 +1910,10 @@ async function hydrateProfileArchiveStorageSnapshot(
       rssMiB,
     );
     // Hydration currently re-materializes tables; retain peak visibility until imports can consume table streams.
-    if (!memoryWarningLogged && Math.max(memoryUsage.heapUsed, memoryUsage.rss) >= PROFILE_IMPORT_MEMORY_WARNING_BYTES) {
+    if (
+      !memoryWarningLogged &&
+      Math.max(memoryUsage.heapUsed, memoryUsage.rss) >= PROFILE_IMPORT_MEMORY_WARNING_BYTES
+    ) {
       memoryWarningLogged = true;
       logger.warn(
         "[backup] Profile import hydration exceeded 512 MiB after table %s; heap=%d MiB, rss=%d MiB",
@@ -2148,7 +2171,11 @@ async function collectDirectoryZipSources(sourceDir: string, entryRoot: string) 
         fileStat = await stat(fullPath);
       } catch (error) {
         if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
-          logger.warn("[backup] Skipping ZIP source that disappeared during collection: %s/%s", entryRoot, relativePath);
+          logger.warn(
+            "[backup] Skipping ZIP source that disappeared during collection: %s/%s",
+            entryRoot,
+            relativePath,
+          );
           continue;
         }
         throw error;
@@ -2314,9 +2341,7 @@ export async function backupRoutes(app: FastifyInstance) {
   }>("/automatic", async (req, reply) => {
     if (!requirePrivilegedAccess(req, reply, { feature: "Automatic backup settings" })) return;
     const parsedRetentionCount =
-      req.body?.retentionCount === undefined
-        ? undefined
-        : parseAutomaticBackupRetentionCount(req.body.retentionCount);
+      req.body?.retentionCount === undefined ? undefined : parseAutomaticBackupRetentionCount(req.body.retentionCount);
     if (
       typeof req.body?.enabled !== "boolean" ||
       !["daily", "weekly", "monthly"].includes(String(req.body?.frequency)) ||
@@ -2522,6 +2547,9 @@ export async function backupRoutes(app: FastifyInstance) {
       const profileStoragePreviewStats = isProfileStorageSnapshot(data.fileStorage)
         ? previewProfileStorageSnapshotStats(data.fileStorage, importInput.readAsset, warnings)
         : null;
+      if (previewOnly && isProfileStorageSnapshot(data.fileStorage)) {
+        await planProfileNoodleImport(app.db, data.fileStorage, warnings);
+      }
       if (!previewOnly && expectedFingerprint && importInput.fileFingerprint !== expectedFingerprint) {
         return reply.status(409).send({
           error: "Profile file changed",
@@ -2576,6 +2604,7 @@ export async function backupRoutes(app: FastifyInstance) {
           const imported = await importProfileStorageSnapshot(
             app,
             data.fileStorage,
+            warnings,
             wantsProgressStream ? sendProgress : undefined,
             importInput.readAsset,
           );

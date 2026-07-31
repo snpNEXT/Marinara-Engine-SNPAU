@@ -8,7 +8,6 @@ import type { NoodlePromptImageCandidate } from "./noodle-prompt.js";
 
 export const NOODLE_VISION_MAX_IMAGES = 8;
 const NOODLE_VISION_MAX_SOURCE_BYTES = 20 * 1024 * 1024;
-const NOODLE_VISION_MAX_UNOPTIMIZED_BYTES = 8 * 1024 * 1024;
 const NOODLE_VISION_MAX_DIMENSION = 1568;
 
 export interface NoodleVisionAttachment extends NoodlePromptImageCandidate {
@@ -67,8 +66,7 @@ function decodeImageDataUrl(imageUrl: string): { buffer: Buffer; expectedExt: st
 }
 
 async function optimizeNoodleVisionImage(buffer: Buffer, expectedExt?: string): Promise<string | null> {
-  const imageInfo = isAllowedImageBuffer(buffer, expectedExt);
-  if (!imageInfo) return null;
+  if (!isAllowedImageBuffer(buffer, expectedExt)) return null;
   try {
     const sharp = (await import("sharp")).default;
     const optimized = await sharp(buffer, { animated: false, limitInputPixels: 268_402_689 })
@@ -84,8 +82,7 @@ async function optimizeNoodleVisionImage(buffer: Buffer, expectedExt?: string): 
     return `data:image/jpeg;base64,${optimized.toString("base64")}`;
   } catch (error) {
     logger.warn(error, "[noodle/vision] Failed to optimize a timeline image");
-    if (buffer.length > NOODLE_VISION_MAX_UNOPTIMIZED_BYTES) return null;
-    return `data:${imageInfo.mimeType};base64,${buffer.toString("base64")}`;
+    return null;
   }
 }
 

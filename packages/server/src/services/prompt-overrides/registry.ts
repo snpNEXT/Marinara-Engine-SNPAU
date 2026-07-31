@@ -23,6 +23,7 @@ import {
   GAME_VIDEO,
 } from "./registry/game-assets.js";
 import { CONVERSATION_SELFIE } from "./registry/conversation.js";
+import { ROLEPLAY_GALLERY_VIDEO_DIRECTOR } from "./registry/roleplay.js";
 import {
   CONVERSATION_CALL_VIDEO_CLIP_INSTRUCTION_BY_KIND,
   CONVERSATION_CALL_VIDEO_CLIP_LABEL_BY_KIND,
@@ -45,6 +46,7 @@ export const PROMPT_OVERRIDE_REGISTRY = [
   GAME_NARRATION_SUMMARIZER,
   GAME_IMAGE_PROMPT_DIRECTOR,
   GAME_VIDEO,
+  ROLEPLAY_GALLERY_VIDEO_DIRECTOR,
   ...CONVERSATION_CALL_VIDEO_PROMPTS,
   CONVERSATION_CALL_CUSTOM_VIDEO_PROMPT,
   CONVERSATION_SELFIE,
@@ -89,6 +91,7 @@ export {
   GAME_NARRATION_SUMMARIZER,
   GAME_IMAGE_PROMPT_DIRECTOR,
   GAME_VIDEO,
+  ROLEPLAY_GALLERY_VIDEO_DIRECTOR,
   CONVERSATION_CALL_VIDEO_PROMPTS,
   CONVERSATION_CALL_CUSTOM_VIDEO_PROMPT,
   CONVERSATION_CALL_VIDEO_PROMPT_BY_KIND,
@@ -115,6 +118,7 @@ export type {
   GameImagePromptDirectorCtx,
   GameVideoCtx,
 } from "./registry/game-assets.js";
+export type { RoleplayGalleryVideoDirectorCtx } from "./registry/roleplay.js";
 export type {
   ConversationCallCustomVideoClipCtx,
   ConversationCallVideoClipCtx,

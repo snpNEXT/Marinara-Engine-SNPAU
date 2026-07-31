@@ -63,14 +63,22 @@ import {
 import { resolveIllustratorPromptRuntime } from "../services/generation/illustrator-prompt-runtime.js";
 import { resolveIllustratorImageConnectionId } from "../services/generation/illustrator-background-generation.js";
 import { resolveConversationSelfieSystemPrompt } from "../services/conversation/selfie-prompt.js";
-import { suppressesReferencePromptLine, resolveIllustratorCharacterReferences } from "./generate/illustrator-references.js";
+import {
+  suppressesReferencePromptLine,
+  resolveIllustratorCharacterReferences,
+} from "./generate/illustrator-references.js";
 import { resolveBaseUrl } from "./generate/generate-route-utils.js";
 import {
   compactVideoPromptText,
   excerptIllustrationPromptForVideo,
   resolveGalleryVideoNarrationSummary,
+  resolveGalleryVideoSourceExchange,
 } from "../services/video/prompt-context.js";
 import { resolveSceneVideoPrompt, SceneVideoPromptReviewError } from "../services/video/scene-video-prompt-review.js";
+import {
+  buildRoleplayVideoDirectionMessages,
+  resolveRoleplayVideoDirection,
+} from "../services/video/roleplay-video-direction.js";
 import { isDebugAgentsEnabled } from "../config/runtime-config.js";
 import { newId } from "../utils/id-generator.js";
 import { DATA_DIR } from "../utils/data-dir.js";
@@ -119,7 +127,7 @@ type GenerateSceneVideoInput = z.infer<typeof generateSceneVideoSchema>;
 
 class GallerySceneVideoRequestError extends Error {
   constructor(
-    readonly statusCode: 400 | 404,
+    readonly statusCode: 400 | 404 | 502,
     message: string,
   ) {
     super(message);
@@ -674,7 +682,7 @@ export async function galleryRoutes(app: FastifyInstance) {
     return Array.from(names).slice(0, 10);
   }
 
-  async function prepareGallerySceneVideoRequest(input: GenerateSceneVideoInput) {
+  async function prepareGallerySceneVideoRequest(input: GenerateSceneVideoInput, signal?: AbortSignal) {
     if (!isValidChatId(input.chatId)) {
       throw new GallerySceneVideoRequestError(400, "Invalid chatId");
     }
@@ -725,31 +733,98 @@ export async function galleryRoutes(app: FastifyInstance) {
     const messages = await chats.listMessages(input.chatId);
     const swipes = await chats.listSwipesByMessageIds(messages.map((message) => message.id));
     const characterNames = await collectChatSceneCharacterNames(chat);
-    const promptDraft = await loadGameVideoPrompt({
-      promptOverridesStorage,
-      meta,
-      debugMode: input.debugMode,
-      ctx: {
-        sceneTitle: compactVideoPromptText(sceneTitleFromGalleryImage(galleryImage), videoRuntime.promptLimits.title),
-        narrationSummary: resolveGalleryVideoNarrationSummary(
-          messages,
-          swipes,
-          galleryImage.id,
-          videoRuntime.promptLimits.narrationSummary,
-        ),
-        illustrationPrompt:
-          excerptIllustrationPromptForVideo(galleryImage.prompt, videoRuntime.promptLimits.illustrationPrompt) ||
-          "Use the supplied first-frame gallery image as the visual source.",
-        charactersLine: characterNames.length
-          ? characterNames.join(", ")
-          : "preserve any visible characters from the supplied image",
-        settingLine: buildRoleplayVideoSettingLine(chat, meta, videoRuntime.promptLimits.artStyle),
-        artStyleLine: "match the supplied gallery image",
+    let promptDraft = input.promptOverride?.trim() ?? "";
+    if (!promptDraft && chat.mode === "roleplay") {
+      const defaultPromptConnection =
+        chat.connectionId && chat.connectionId !== LOCAL_SIDECAR_CONNECTION_ID
+          ? await connections.getWithKey(chat.connectionId)
+          : null;
+      let promptRuntime;
+      try {
+        promptRuntime = await resolveIllustratorPromptRuntime({
+          chatMetadata: meta,
+          defaultConnection: defaultPromptConnection,
+          defaultConnectionId: chat.connectionId,
+          connections,
+          resolveBaseUrl,
+        });
+      } catch (err) {
+        logger.warn(err, "[gallery/roleplay-video-director] Prompt Model is unavailable for chat %s", input.chatId);
+        throw new GallerySceneVideoRequestError(
+          400,
+          "Choose a text Prompt Model or main chat connection before planning a Roleplay animation.",
+        );
+      }
+      const sourceExchange = resolveGalleryVideoSourceExchange(messages, swipes, galleryImage.id);
+      const directionMessages = await buildRoleplayVideoDirectionMessages(promptOverridesStorage, {
         durationSeconds,
         aspectRatio,
-        sourceIllustrationLine: `Use the selected gallery image (${galleryImage.id}) as the first frame/reference image.`,
-      },
-    });
+        sourceExchange:
+          sourceExchange.content || "Animate the illustrated Roleplay scene without advancing into a new story beat.",
+        referenceImagePrompt: galleryImage.prompt ?? "",
+        characterNames,
+        setting: buildRoleplayVideoSettingLine(chat, meta, videoRuntime.promptLimits.artStyle),
+      });
+      const [systemMessage, userMessage] = directionMessages;
+      const debugOverrideEnabled = input.debugMode === true || isDebugAgentsEnabled();
+      logDebugOverride(
+        debugOverrideEnabled,
+        "[debug/gallery/roleplay-video-director] system:\n%s\nuser:\n%s",
+        systemMessage.content,
+        userMessage.content,
+      );
+      try {
+        const result = await promptRuntime.provider.chatComplete(directionMessages, {
+          model: promptRuntime.model,
+          ...(promptRuntime.suppressModelParameters ? {} : { temperature: 0.5, maxTokens: 1_200 }),
+          suppressModelParameters: promptRuntime.suppressModelParameters,
+          signal,
+          enableCaching: promptRuntime.enableCaching,
+          anthropicExtendedCacheTtl: promptRuntime.anthropicExtendedCacheTtl,
+        });
+        promptDraft = resolveRoleplayVideoDirection(result.content, videoRuntime.promptLimits.finalPrompt);
+      } catch (err) {
+        logger.warn(err, "[gallery/roleplay-video-director] Failed to plan animation for chat %s", input.chatId);
+        const message =
+          err instanceof Error && err.message.trim()
+            ? err.message.trim()
+            : "The Roleplay animation Prompt Model failed to plan this clip.";
+        throw new GallerySceneVideoRequestError(502, message);
+      }
+      if (!promptDraft) {
+        throw new GallerySceneVideoRequestError(
+          502,
+          "The Roleplay animation Prompt Model returned an empty direction.",
+        );
+      }
+      logDebugOverride(debugOverrideEnabled, "[debug/gallery/roleplay-video-director] final prompt:\n%s", promptDraft);
+    } else if (!promptDraft) {
+      promptDraft = await loadGameVideoPrompt({
+        promptOverridesStorage,
+        meta,
+        debugMode: input.debugMode,
+        ctx: {
+          sceneTitle: compactVideoPromptText(sceneTitleFromGalleryImage(galleryImage), videoRuntime.promptLimits.title),
+          narrationSummary: resolveGalleryVideoNarrationSummary(
+            messages,
+            swipes,
+            galleryImage.id,
+            videoRuntime.promptLimits.narrationSummary,
+          ),
+          illustrationPrompt:
+            excerptIllustrationPromptForVideo(galleryImage.prompt, videoRuntime.promptLimits.illustrationPrompt) ||
+            "Use the supplied first-frame gallery image as the visual source.",
+          charactersLine: characterNames.length
+            ? characterNames.join(", ")
+            : "preserve any visible characters from the supplied image",
+          settingLine: buildRoleplayVideoSettingLine(chat, meta, videoRuntime.promptLimits.artStyle),
+          artStyleLine: "match the supplied gallery image",
+          durationSeconds,
+          aspectRatio,
+          sourceIllustrationLine: `Use the selected gallery image (${galleryImage.id}) as the first frame/reference image.`,
+        },
+      });
+    }
     const prompt = resolveSceneVideoPrompt({
       generatedPrompt: promptDraft,
       promptOverride: input.promptOverride,
@@ -920,6 +995,21 @@ export async function galleryRoutes(app: FastifyInstance) {
     return { videos: videos.map((video) => serializeSceneVideo(video)) };
   });
 
+  app.delete<{ Params: { chatId: string; id: string } }>("/scene-videos/:chatId/:id", async (req, reply) => {
+    const { chatId, id } = req.params;
+    if (!isValidChatId(chatId)) return reply.status(400).send({ error: "Invalid chatId" });
+
+    const sceneVideos = createGameSceneVideosStorage(app.db);
+    const video = await sceneVideos.getById(id);
+    if (!video || video.chatId !== chatId) return reply.status(404).send({ error: "Scene video not found" });
+
+    await sceneVideos.remove(video.id);
+    await removeSavedVideoFromDisk(video.filePath).catch((error) => {
+      logger.warn(error, "[gallery/scene-videos] Failed to remove video file %s", video.filePath);
+    });
+    return { success: true };
+  });
+
   app.get<{ Params: { chatId: string; filename: string } }>(
     "/scene-videos/file/:chatId/:filename",
     async (req, reply) => {
@@ -945,8 +1035,9 @@ export async function galleryRoutes(app: FastifyInstance) {
 
   app.post("/generate-scene-video/preview", async (req, reply) => {
     const input = generateSceneVideoSchema.parse(req.body);
+    const signal = createResponseAbortSignal(reply, SCENE_VIDEO_GENERATION_TIMEOUT_MS, "Scene video prompt preview");
     try {
-      const prepared = await prepareGallerySceneVideoRequest(input);
+      const prepared = await prepareGallerySceneVideoRequest(input, signal);
       return {
         prompt: prepared.prompt,
         galleryImageId: prepared.galleryImage.id,
@@ -966,9 +1057,14 @@ export async function galleryRoutes(app: FastifyInstance) {
 
   app.post("/generate-scene-video", async (req, reply) => {
     const input = generateSceneVideoSchema.parse(req.body);
+    const sceneVideoAbortSignal = createResponseAbortSignal(
+      reply,
+      SCENE_VIDEO_GENERATION_TIMEOUT_MS,
+      "Scene video generation",
+    );
     let prepared: Awaited<ReturnType<typeof prepareGallerySceneVideoRequest>>;
     try {
-      prepared = await prepareGallerySceneVideoRequest(input);
+      prepared = await prepareGallerySceneVideoRequest(input, sceneVideoAbortSignal);
     } catch (err) {
       if (err instanceof GallerySceneVideoRequestError || err instanceof SceneVideoPromptReviewError) {
         return reply.status(err.statusCode).send({ error: err.message });
@@ -976,11 +1072,6 @@ export async function galleryRoutes(app: FastifyInstance) {
       throw err;
     }
 
-    const sceneVideoAbortSignal = createResponseAbortSignal(
-      reply,
-      SCENE_VIDEO_GENERATION_TIMEOUT_MS,
-      "Scene video generation",
-    );
     const requestDebug = input.debugMode === true;
     const debugOverrideEnabled = requestDebug || isDebugAgentsEnabled();
     const debugLogsEnabled = debugOverrideEnabled || logger.isLevelEnabled("debug");

@@ -31,6 +31,7 @@
   - [Community \& Support](#community--support)
   - [Contributors](#contributors)
   - [License](#license)
+  - [Trademark \& Branding](#trademark--branding)
 
 ---
 
@@ -147,7 +148,7 @@ Three chat modes — **Conversation** (Discord-style DMs), **Roleplay** (immersi
 
 ### Visual & Immersive
 
-Character expression sprites with automatic emotion switching, custom scene backgrounds, dynamic weather overlays, gallery illustrations, short scene videos from generated illustrations, Game Mode storyboards with selectable keyframe and video prompt styles, two visual themes (Y2K Marinara and SillyTavern classic), and light/dark mode.
+Character expression sprites with automatic emotion switching, custom scene backgrounds, dynamic weather overlays, gallery illustrations, short scene videos from generated illustrations, Game Mode storyboards, inline Roleplay storyboard episodes with selectable prompt layers, two visual themes (Y2K Marinara and SillyTavern classic), and light/dark mode.
 
 ### AI Agent System
 
@@ -165,7 +166,7 @@ Preset system with drag-and-drop prompt ordering, lorebooks with keyword trigger
 
 ### Local Customization
 
-Personal Extensions are disabled-by-default drafts authored for you by Professor Mari. Every executable change invalidates approval, and only the exact reviewed SHA-256 fingerprint can run inside Marinara's restricted browser or OS sandbox. Third-party imports stay hidden until the host and user deliberately open both External Extensions safety gates; arbitrary code still requires careful review. See the [Personal Extensions guide](docs/extending/personal-extensions.md).
+Personal Extensions are disabled-by-default drafts authored for you by Professor Mari. Every executable change invalidates approval, and only the exact reviewed SHA-256 fingerprint can run inside Marinara's restricted browser or OS sandbox. Third-party imports stay hidden until the host and user deliberately open both External Extensions safety gates. Legacy tools can request separately disclosed **Full page access** for DOM compatibility, but that mode is deliberately unsandboxed and should be enabled only for exact code you trust. See the [Personal Extensions guide](docs/extending/personal-extensions.md).
 
 ### Connections & Providers
 
@@ -198,7 +199,7 @@ The full guide library is browsable inside the app: open **Documentation** from 
 | [docs/media/style-profiles.md](docs/media/style-profiles.md)                         | Image style profiles and prompt grammar                                                                            |
 | [docs/media/tts-setup.md](docs/media/tts-setup.md)                                   | Text to speech (TTS) setup and voices                                                                              |
 | [docs/media/scene-video.md](docs/media/scene-video.md)                               | Scene-video provider setup and the Gallery animation workflow                                                      |
-| [docs/game/storyboard.md](docs/game/storyboard.md)                                   | Step-by-step guide to manual and automatic Game Mode storyboards                                                   |
+| [docs/game/storyboard.md](docs/game/storyboard.md)                                   | Manual and automatic Game Mode storyboards plus inline Roleplay storyboard episodes                                |
 | [docs/game/ltx-2-3-storyboards.md](docs/game/ltx-2-3-storyboards.md)                   | Krea 2 first frames, local LTX 2.3 ComfyUI animation, and tested Game Mode settings                               |
 | [docs/agents/agents-overview.md](docs/agents/agents-overview.md)                     | Agent system overview: phases, per-chat enablement, built-in and custom agents                                     |
 | [docs/extending/custom-tools.md](docs/extending/custom-tools.md)                     | Function calling, custom tools, webhooks, scripts, and agent tool enablement                                       |
@@ -244,4 +245,13 @@ The full guide library is browsable inside the app: open **Documentation** from 
 
 ## License
 
-[AGPL-3.0](LICENSE)
+Marinara Engine source code is licensed under the [GNU AGPLv3](LICENSE).
+
+## Trademark & Branding
+
+The software license does not grant permission to imply that a third-party
+product or hosted service is official, endorsed, certified, or supported by
+Pasta-Devs. Ordinary truthful descriptive and nominative references to Marinara
+Engine remain welcome. When a reference is used to market or operate a hosted
+service, its operator and independent status must be clear. See the [Trademark
+and Branding Policy](TRADEMARKS.md) for the complete guidelines.

@@ -9,12 +9,14 @@ import {
   STORYBOARD_AGENT_ID,
   type AgentPromptTemplateOption,
   type StoryboardAgentSettings,
+  type StoryboardAutoGenerateMode,
   type StoryboardViewerMode,
 } from "@marinara-engine/shared";
 import { mergeBuiltInAgentSettings, normalizeStoryboardAgentSettings } from "@marinara-engine/shared";
 import { useAgentConfigs, type AgentConfigRow } from "../../hooks/use-agents";
 import { useCapabilityAgentRegistry } from "../../hooks/use-capability-packages";
 import { useUpdateChatMetadata } from "../../hooks/use-chats";
+import { useConnections } from "../../hooks/use-connections";
 import { useUIStore } from "../../stores/ui.store";
 import {
   AgentDefaultStatus,
@@ -37,6 +39,7 @@ type StoryboardChatSettingsBridgeProps = {
   chatId: string;
   metadata: Record<string, unknown>;
   onClose: () => void;
+  ownerMode?: "game" | "roleplay";
 };
 
 function readString(value: unknown): string {
@@ -472,7 +475,357 @@ export function StoryboardChatSettingsPanel({
   );
 }
 
-export default function StoryboardChatSettingsBridge({ chatId, metadata, onClose }: StoryboardChatSettingsBridgeProps) {
+function RoleplayStoryboardChatSettingsPanel({
+  active,
+  settings,
+  metadata,
+  onActiveChange,
+  onUpdate,
+  onOpenAgentSettings,
+}: StoryboardChatSettingsPanelProps) {
+  const { t: localizeUi } = useUiTranslation();
+  const { data: connectionRows = [] } = useConnections();
+  const connections = connectionRows.filter(
+    (connection): connection is Record<string, unknown> =>
+      typeof connection === "object" && connection !== null && !Array.isArray(connection),
+  );
+  const imageConnections = connections.filter((connection) => connection.provider === "image_generation");
+  const videoConnections = connections.filter((connection) => connection.provider === "video_generation");
+  const promptConnections = connections.filter(
+    (connection) => connection.provider !== "image_generation" && connection.provider !== "video_generation",
+  );
+  const autoModeOverridden =
+    metadata.roleplayStoryboardAutoGenerateMode === "manual" ||
+    metadata.roleplayStoryboardAutoGenerateMode === "illustration" ||
+    metadata.roleplayStoryboardAutoGenerateMode === "animation";
+  const autoGenerateMode: StoryboardAutoGenerateMode = autoModeOverridden
+    ? (metadata.roleplayStoryboardAutoGenerateMode as StoryboardAutoGenerateMode)
+    : settings.autoGenerateMode;
+  const runIntervalOverridden = typeof metadata.roleplayStoryboardRunInterval === "number";
+  const runInterval = readBoundedInteger(metadata.roleplayStoryboardRunInterval, settings.runInterval, 1, 100);
+  const keyframeCountOverridden = typeof metadata.roleplayStoryboardKeyframeCount === "number";
+  const keyframeCount = readBoundedInteger(
+    metadata.roleplayStoryboardKeyframeCount,
+    settings.keyframeCount,
+    GAME_STORYBOARD_KEYFRAME_COUNT_MIN,
+    GAME_STORYBOARD_KEYFRAME_COUNT_MAX,
+  );
+  const durationOverridden = typeof metadata.roleplayStoryboardAnimationDurationSeconds === "number";
+  const animationDurationSeconds = readBoundedInteger(
+    metadata.roleplayStoryboardAnimationDurationSeconds,
+    settings.animationDurationSeconds,
+    GAME_STORYBOARD_ANIMATION_DURATION_SECONDS_MIN,
+    GAME_STORYBOARD_ANIMATION_DURATION_SECONDS_MAX,
+  );
+  const appearanceOverridden = typeof metadata.roleplayStoryboardIncludeCharacterAppearance === "boolean";
+  const includeCharacterAppearance = appearanceOverridden
+    ? metadata.roleplayStoryboardIncludeCharacterAppearance === true
+    : settings.includeCharacterAppearance;
+  const avatarsOverridden = typeof metadata.roleplayStoryboardUseAvatarReferences === "boolean";
+  const useAvatarReferences = avatarsOverridden
+    ? metadata.roleplayStoryboardUseAvatarReferences === true
+    : settings.useAvatarReferences;
+  const novelAiOverridden = typeof metadata.roleplayStoryboardUseNovelAiCharacterPrompts === "boolean";
+  const useNovelAiCharacterPrompts = novelAiOverridden
+    ? metadata.roleplayStoryboardUseNovelAiCharacterPrompts === true
+    : settings.useNovelAiCharacterPrompts;
+  const templateOverridden = typeof metadata.roleplayStoryboardUsePromptTemplate === "boolean";
+  const usePromptTemplate = templateOverridden
+    ? metadata.roleplayStoryboardUsePromptTemplate === true
+    : settings.usePromptTemplate;
+  const episodeTemplateId = resolveSelectedId(
+    metadata.roleplayStoryboardEpisodeTemplateId,
+    settings.roleplayEpisodeTemplateId,
+    settings.roleplayEpisodeTemplates,
+  );
+  const styleTemplateId = resolveSelectedId(
+    metadata.roleplayStoryboardStyleTemplateId,
+    settings.roleplayStyleTemplateId,
+    settings.roleplayStyleTemplates,
+  );
+  const animationTemplateId = resolveSelectedId(
+    metadata.roleplayStoryboardAnimationTemplateId,
+    settings.roleplayAnimationTemplateId,
+    settings.roleplayAnimationTemplates,
+  );
+  const outputTemplateId = resolveSelectedId(
+    metadata.roleplayStoryboardOutputTemplateId,
+    settings.roleplayOutputTemplateId,
+    settings.roleplayOutputTemplates,
+  );
+  const illustrationTemplateId = resolveSelectedId(
+    metadata.roleplayStoryboardImagePromptTemplateId,
+    settings.illustrationTemplateId,
+    settings.illustrationTemplates,
+  );
+  const videoTemplateId = resolveSelectedId(
+    metadata.roleplayStoryboardVideoPromptTemplateId,
+    settings.videoTemplateId,
+    settings.videoTemplates,
+  );
+
+  const renderConnectionSelect = (
+    label: string,
+    value: unknown,
+    options: Record<string, unknown>[],
+    metadataKey: string,
+  ) => {
+    const selectedId = readString(value);
+    const selectedConnectionMissing =
+      !!selectedId && !options.some((connection) => readString(connection.id) === selectedId);
+    return (
+      <label className="flex flex-col gap-1">
+        <span className="text-[0.625rem] font-medium text-[var(--foreground)]">{label}</span>
+        <select
+          value={selectedId}
+          onChange={(event) => onUpdate({ [metadataKey]: event.target.value || null })}
+          className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2.5 py-2 text-xs text-[var(--foreground)] outline-none transition-colors focus:border-[var(--primary)]/50"
+        >
+          <option value="">{localizeUi("ui.agents.storyboard.useGlobalConnection")}</option>
+          {selectedConnectionMissing ? (
+            <option value={selectedId}>{localizeUi("ui.chat.chatsettingsdrawer.missingConnection")}</option>
+          ) : null}
+          {options.map((connection) => {
+            const id = readString(connection.id);
+            if (!id) return null;
+            const name = readString(connection.name) || id;
+            const model = readString(connection.model);
+            return (
+              <option key={id} value={id}>
+                {name}
+                {model ? localizeUi("ui.connections.connectioneditor.value1", { value1: model }) : ""}
+              </option>
+            );
+          })}
+        </select>
+      </label>
+    );
+  };
+
+  return (
+    <>
+      <div data-agent-settings-feature-toggles="storyboard" className="border-t border-[var(--border)] pt-3">
+        <AgentSettingsToggle
+          label={localizeUi("ui.chat.chatsettingsdrawer.enableStoryboards")}
+          description={localizeUi("ui.agents.storyboard.roleplayEnableDescription")}
+          enabled={active}
+          onToggle={() => onActiveChange(!active)}
+        />
+      </div>
+
+      {active ? (
+        <AgentSettingsSubsection
+          id="roleplay-storyboards"
+          title={localizeUi("ui.chat.chatsettingsdrawer.storyboards")}
+          description={localizeUi("ui.agents.storyboard.roleplayChatDescription")}
+        >
+          <div className="space-y-1">
+            <p className="text-[0.625rem] font-medium text-[var(--foreground)]">
+              {localizeUi("ui.agents.storyboard.automaticMode")}
+            </p>
+            <AgentSettingsSegmentedControl<StoryboardAutoGenerateMode>
+              value={autoGenerateMode}
+              columns={3}
+              options={[
+                { id: "manual", label: localizeUi("ui.agents.storyboard.manual") },
+                { id: "illustration", label: localizeUi("ui.agents.storyboard.stillImages") },
+                { id: "animation", label: localizeUi("ui.agents.storyboard.animations") },
+              ]}
+              onChange={(mode) => onUpdate({ roleplayStoryboardAutoGenerateMode: mode })}
+            />
+            <AgentDefaultStatus
+              overridden={autoModeOverridden}
+              onReset={() => onUpdate({ roleplayStoryboardAutoGenerateMode: null })}
+            />
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-3">
+            <StoryboardSlider
+              label={localizeUi("ui.agents.storyboard.assistantMessagesPerEpisode")}
+              description={localizeUi("ui.agents.storyboard.assistantMessagesPerEpisodeDescription")}
+              value={runInterval}
+              min={1}
+              max={100}
+              overridden={runIntervalOverridden}
+              onChange={(value) => onUpdate({ roleplayStoryboardRunInterval: value })}
+              onReset={() => onUpdate({ roleplayStoryboardRunInterval: null })}
+            />
+            <StoryboardSlider
+              label={localizeUi("ui.agents.storyboard.keyframesPerEpisode")}
+              description={localizeUi("ui.agents.storyboard.keyframesPerEpisodeDescription")}
+              value={keyframeCount}
+              min={GAME_STORYBOARD_KEYFRAME_COUNT_MIN}
+              max={GAME_STORYBOARD_KEYFRAME_COUNT_MAX}
+              overridden={keyframeCountOverridden}
+              onChange={(value) => onUpdate({ roleplayStoryboardKeyframeCount: value })}
+              onReset={() => onUpdate({ roleplayStoryboardKeyframeCount: null })}
+            />
+            <StoryboardNumberInput
+              label={localizeUi("ui.chat.chatsettingsdrawer.animationClipDuration")}
+              description={localizeUi("ui.chat.chatsettingsdrawer.controlsTheDurationOfEachStoryboardMp4ClipIn")}
+              value={animationDurationSeconds}
+              min={GAME_STORYBOARD_ANIMATION_DURATION_SECONDS_MIN}
+              max={GAME_STORYBOARD_ANIMATION_DURATION_SECONDS_MAX}
+              disabled={autoGenerateMode !== "animation"}
+              overridden={durationOverridden}
+              onChange={(value) => onUpdate({ roleplayStoryboardAnimationDurationSeconds: value })}
+              onReset={() => onUpdate({ roleplayStoryboardAnimationDurationSeconds: null })}
+            />
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-2">
+            {renderConnectionSelect(
+              localizeUi("ui.agents.storyboard.promptConnection"),
+              metadata.roleplayStoryboardPromptConnectionId,
+              promptConnections,
+              "roleplayStoryboardPromptConnectionId",
+            )}
+            {renderConnectionSelect(
+              localizeUi("ui.agents.storyboard.imageConnection"),
+              metadata.roleplayStoryboardImageConnectionId,
+              imageConnections,
+              "roleplayStoryboardImageConnectionId",
+            )}
+            {renderConnectionSelect(
+              localizeUi("ui.agents.storyboard.videoConnection"),
+              metadata.roleplayStoryboardVideoConnectionId,
+              videoConnections,
+              "roleplayStoryboardVideoConnectionId",
+            )}
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-2">
+            <GamePromptTemplateSelect
+              label={localizeUi("ui.agents.storyboard.roleplayEpisodeContract")}
+              description={localizeUi("ui.agents.storyboard.roleplayEpisodeContractDescription")}
+              options={settings.roleplayEpisodeTemplates}
+              selectedId={episodeTemplateId}
+              fallbackId={settings.roleplayEpisodeTemplateId ?? ""}
+              onChange={(id) =>
+                onUpdate({
+                  roleplayStoryboardEpisodeTemplateId: id === settings.roleplayEpisodeTemplateId ? null : id,
+                })
+              }
+            />
+            <GamePromptTemplateSelect
+              label={localizeUi("ui.agents.storyboard.roleplayVisualStyle")}
+              description={localizeUi("ui.agents.storyboard.roleplayVisualStyleDescription")}
+              options={settings.roleplayStyleTemplates}
+              selectedId={styleTemplateId}
+              fallbackId={settings.roleplayStyleTemplateId ?? ""}
+              onChange={(id) =>
+                onUpdate({ roleplayStoryboardStyleTemplateId: id === settings.roleplayStyleTemplateId ? null : id })
+              }
+            />
+            <GamePromptTemplateSelect
+              label={localizeUi("ui.agents.storyboard.roleplayAnimationAddon")}
+              description={localizeUi("ui.agents.storyboard.roleplayAnimationAddonDescription")}
+              options={settings.roleplayAnimationTemplates}
+              selectedId={animationTemplateId}
+              fallbackId={settings.roleplayAnimationTemplateId ?? ""}
+              onChange={(id) =>
+                onUpdate({
+                  roleplayStoryboardAnimationTemplateId: id === settings.roleplayAnimationTemplateId ? null : id,
+                })
+              }
+            />
+            <GamePromptTemplateSelect
+              label={localizeUi("ui.agents.storyboard.roleplayOutputContract")}
+              description={localizeUi("ui.agents.storyboard.roleplayOutputContractDescription")}
+              options={settings.roleplayOutputTemplates}
+              selectedId={outputTemplateId}
+              fallbackId={settings.roleplayOutputTemplateId ?? ""}
+              onChange={(id) =>
+                onUpdate({ roleplayStoryboardOutputTemplateId: id === settings.roleplayOutputTemplateId ? null : id })
+              }
+            />
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-2">
+            <AgentSettingsToggle
+              label={localizeUi("ui.chat.agentaddsetupfields.attachCardAppearance")}
+              description={localizeUi("ui.agents.storyboard.roleplayAppearanceDescription")}
+              enabled={includeCharacterAppearance}
+              onToggle={() => onUpdate({ roleplayStoryboardIncludeCharacterAppearance: !includeCharacterAppearance })}
+              overridden={appearanceOverridden}
+              onReset={() => onUpdate({ roleplayStoryboardIncludeCharacterAppearance: null })}
+            />
+            <AgentSettingsToggle
+              label={localizeUi("ui.chat.agentaddsetupfields.sendAvatarReferences")}
+              description={localizeUi("ui.agents.storyboard.roleplayAvatarDescription")}
+              enabled={useAvatarReferences}
+              onToggle={() => onUpdate({ roleplayStoryboardUseAvatarReferences: !useAvatarReferences })}
+              overridden={avatarsOverridden}
+              onReset={() => onUpdate({ roleplayStoryboardUseAvatarReferences: null })}
+            />
+            <AgentSettingsToggle
+              label={localizeUi("ui.agents.storyboard.useNovelAiCharacters")}
+              description={localizeUi("ui.agents.storyboard.useNovelAiCharactersDescription")}
+              enabled={useNovelAiCharacterPrompts}
+              onToggle={() => onUpdate({ roleplayStoryboardUseNovelAiCharacterPrompts: !useNovelAiCharacterPrompts })}
+              overridden={novelAiOverridden}
+              onReset={() => onUpdate({ roleplayStoryboardUseNovelAiCharacterPrompts: null })}
+            />
+            <AgentSettingsToggle
+              label={localizeUi("ui.agents.storyboard.useTemplate")}
+              description={localizeUi("ui.agents.storyboard.useTemplateDescription")}
+              enabled={usePromptTemplate}
+              onToggle={() => onUpdate({ roleplayStoryboardUsePromptTemplate: !usePromptTemplate })}
+              overridden={templateOverridden}
+              onReset={() => onUpdate({ roleplayStoryboardUsePromptTemplate: null })}
+            />
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-2">
+            <GamePromptTemplateSelect
+              label={localizeUi("ui.chat.chatsettingsdrawer.storyboardIllustrationPrompt")}
+              description={localizeUi("ui.chat.chatsettingsdrawer.formatsEachPlannedKeyframeIntoTheFinalPromptSent")}
+              options={settings.illustrationTemplates}
+              selectedId={illustrationTemplateId}
+              fallbackId={settings.illustrationTemplateId ?? ""}
+              onChange={(id) =>
+                onUpdate({
+                  roleplayStoryboardImagePromptTemplateId: id === settings.illustrationTemplateId ? null : id,
+                })
+              }
+            />
+            <GamePromptTemplateSelect
+              label={localizeUi("ui.chat.chatsettingsdrawer.storyboardVideoPrompt")}
+              description={localizeUi("ui.chat.chatsettingsdrawer.combinesTheGeneratedKeyframeAndMotionPlanIntoThe")}
+              options={settings.videoTemplates}
+              selectedId={videoTemplateId}
+              fallbackId={settings.videoTemplateId ?? ""}
+              onChange={(id) =>
+                onUpdate({ roleplayStoryboardVideoPromptTemplateId: id === settings.videoTemplateId ? null : id })
+              }
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[var(--background)]/75 px-3 py-2 ring-1 ring-[var(--border)]">
+            <p className="min-w-0 flex-1 text-[0.625rem] leading-snug text-[var(--muted-foreground)]">
+              {localizeUi("ui.agents.storyboard.roleplayPromptChainDescription")}
+            </p>
+            <button
+              type="button"
+              onClick={onOpenAgentSettings}
+              className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-[var(--background)]/80 px-3 py-1.5 text-[0.6875rem] font-medium text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+            >
+              <Settings2 size="0.75rem" />
+              <span>{localizeUi("ui.chat.chatsettingsdrawer.openSetup")}</span>
+            </button>
+          </div>
+        </AgentSettingsSubsection>
+      ) : null}
+    </>
+  );
+}
+
+export default function StoryboardChatSettingsBridge({
+  chatId,
+  metadata,
+  onClose,
+  ownerMode = "game",
+}: StoryboardChatSettingsBridgeProps) {
   const { data: installedAgentManifests = [] } = useCapabilityAgentRegistry();
   const { data: agentConfigs } = useAgentConfigs();
   const updateMetadata = useUpdateChatMetadata();
@@ -491,8 +844,10 @@ export default function StoryboardChatSettingsBridge({ chatId, metadata, onClose
 
   if (!installed) return null;
 
+  const Panel = ownerMode === "roleplay" ? RoleplayStoryboardChatSettingsPanel : StoryboardChatSettingsPanel;
+
   return (
-    <StoryboardChatSettingsPanel
+    <Panel
       active={active}
       settings={settings}
       metadata={metadata}

@@ -7,7 +7,12 @@ import { createFileNativeDB } from "../../packages/server/src/db/file-backed-sto
 import { memoryChunks } from "../../packages/server/src/db/schema/index.js";
 import { resolveRoleplayChatSummary } from "../../packages/server/src/routes/generate/generate-route-utils.js";
 import { injectMemoryRecallContext } from "../../packages/server/src/services/generation/memory-recall-context.js";
-import { recallMemories, type MemoryRecallEmbeddingSource } from "../../packages/server/src/services/memory-recall.js";
+import {
+  chunkAndEmbedMessages,
+  recallMemories,
+  type MemoryRecallEmbeddingSource,
+} from "../../packages/server/src/services/memory-recall.js";
+import { createChatsStorage } from "../../packages/server/src/services/storage/chats.storage.js";
 
 const summaryMetadata = {
   summary: "Settled history.\n\nDiscarded assistant response.",
@@ -151,9 +156,104 @@ try {
     /discarded assistant response/u,
     "the injected Memories block must not contain the regenerated response",
   );
+
+  const chatStorage = createChatsStorage(db);
+  const editedChat = await chatStorage.create({
+    name: "Edited memory regression",
+    mode: "roleplay",
+    characterIds: [],
+    groupId: null,
+    personaId: null,
+    promptPresetId: null,
+    connectionId: null,
+  });
+  assert.ok(editedChat);
+
+  const originalLine = "Original assistant wording that must be forgotten.";
+  const editedLine = "Edited assistant wording that must replace it.";
+  const messageRows = [
+    { role: "user" as const, content: "Earlier user message one." },
+    { role: "assistant" as const, content: "Earlier assistant message one." },
+    { role: "user" as const, content: "Earlier user message two." },
+    { role: "assistant" as const, content: "Earlier assistant message two." },
+    { role: "user" as const, content: "Earlier user message three." },
+    { role: "assistant" as const, content: "Recent assistant message one." },
+    { role: "user" as const, content: "Recent user message one." },
+    { role: "assistant" as const, content: originalLine },
+    { role: "user" as const, content: "Recent user message two." },
+    { role: "assistant" as const, content: "Final assistant message." },
+  ];
+  const createdMessages = [];
+  for (const [index, message] of messageRows.entries()) {
+    const timestamp = `2026-07-30T10:0${index}:00.000Z`;
+    createdMessages.push(
+      await chatStorage.createMessage(
+        {
+          chatId: editedChat.id,
+          role: message.role,
+          characterId: null,
+          content: message.content,
+        },
+        { createdAt: timestamp, updatedAt: timestamp },
+      ),
+    );
+  }
+
+  await db.insert(memoryChunks).values({
+    id: "unaffected-earlier-memory",
+    chatId: editedChat.id,
+    content: messageRows
+      .slice(0, 5)
+      .map((message) => message.content)
+      .join("\n\n"),
+    embedding: JSON.stringify([1, 0]),
+    messageCount: 5,
+    sourceChatId: null,
+    firstMessageAt: "2026-07-30T10:00:00.000Z",
+    lastMessageAt: "2026-07-30T10:04:00.000Z",
+    createdAt: "2026-07-30T10:04:00.000Z",
+  });
+  await db.insert(memoryChunks).values({
+    id: "stale-edited-memory",
+    chatId: editedChat.id,
+    content: messageRows
+      .slice(5)
+      .map((message) => message.content)
+      .join("\n\n"),
+    embedding: JSON.stringify([1, 0]),
+    messageCount: 5,
+    sourceChatId: null,
+    firstMessageAt: "2026-07-30T10:05:00.000Z",
+    lastMessageAt: "2026-07-30T10:09:00.000Z",
+    createdAt: "2026-07-30T10:09:00.000Z",
+  });
+
+  await chatStorage.updateMessageContent(createdMessages[7]!.id, editedLine);
+  const afterEdit = (await db.select().from(memoryChunks)).filter((chunk) => chunk.chatId === editedChat.id);
+  assert.deepEqual(
+    afterEdit.map((chunk) => chunk.id),
+    ["unaffected-earlier-memory"],
+    "editing a message must invalidate its native chunk without deleting unaffected earlier chunks",
+  );
+
+  await chunkAndEmbedMessages(
+    db,
+    editedChat.id,
+    { userName: "User", characterNames: {} },
+    { embeddingSource, readBehindMessageCount: 0 },
+  );
+  const rebuilt = (await db.select().from(memoryChunks)).filter((chunk) => chunk.chatId === editedChat.id);
+  assert.equal(rebuilt.length, 2, "the next memory refresh must rebuild only the invalidated chunk");
+  const rebuiltEditedChunk = rebuilt.find((chunk) => chunk.id !== "unaffected-earlier-memory");
+  assert.ok(rebuiltEditedChunk);
+  assert.ok(rebuiltEditedChunk.content.includes(editedLine));
+  assert.ok(
+    !rebuiltEditedChunk.content.includes(originalLine),
+    "rebuilt Memory Recall context must not contain the superseded message version",
+  );
 } finally {
   await db._fileStore.close();
   rmSync(storageDir, { recursive: true, force: true });
 }
 
-console.info("Regeneration summary and memory-context regression passed.");
+console.info("Regeneration, edited-message, and memory-context regression passed.");

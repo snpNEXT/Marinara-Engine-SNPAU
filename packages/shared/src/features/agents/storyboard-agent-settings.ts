@@ -11,10 +11,18 @@ export interface StoryboardAgentSettings {
   animationPlannerTemplateIds: string[];
   illustrationTemplates: AgentPromptTemplateOption[];
   videoTemplates: AgentPromptTemplateOption[];
+  roleplayEpisodeTemplates: AgentPromptTemplateOption[];
+  roleplayStyleTemplates: AgentPromptTemplateOption[];
+  roleplayAnimationTemplates: AgentPromptTemplateOption[];
+  roleplayOutputTemplates: AgentPromptTemplateOption[];
   illustrationPlannerTemplateId: string | null;
   animationPlannerTemplateId: string | null;
   illustrationTemplateId: string | null;
   videoTemplateId: string | null;
+  roleplayEpisodeTemplateId: string | null;
+  roleplayStyleTemplateId: string | null;
+  roleplayAnimationTemplateId: string | null;
+  roleplayOutputTemplateId: string | null;
   imageConnectionId: string | null;
   videoConnectionId: string | null;
   autoGenerateMode: StoryboardAutoGenerateMode;
@@ -25,6 +33,7 @@ export interface StoryboardAgentSettings {
   useAvatarReferences: boolean;
   useNovelAiCharacterPrompts: boolean;
   usePromptTemplate: boolean;
+  runInterval: number;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -65,6 +74,13 @@ export function normalizeStoryboardAgentSettings(value: unknown): StoryboardAgen
   const plannerTemplates = normalizeAgentPromptTemplateOptions(settings.promptTemplates).slice(0, 40);
   const illustrationTemplates = normalizeAgentPromptTemplateOptions(settings.illustrationTemplates).slice(0, 20);
   const videoTemplates = normalizeAgentPromptTemplateOptions(settings.videoTemplates).slice(0, 20);
+  const roleplayEpisodeTemplates = normalizeAgentPromptTemplateOptions(settings.roleplayEpisodeTemplates).slice(0, 10);
+  const roleplayStyleTemplates = normalizeAgentPromptTemplateOptions(settings.roleplayStyleTemplates).slice(0, 20);
+  const roleplayAnimationTemplates = normalizeAgentPromptTemplateOptions(settings.roleplayAnimationTemplates).slice(
+    0,
+    10,
+  );
+  const roleplayOutputTemplates = normalizeAgentPromptTemplateOptions(settings.roleplayOutputTemplates).slice(0, 10);
   const plannerIds = new Set(plannerTemplates.map((template) => template.id));
   const illustrationPlannerTemplateIds = normalizeIdList(settings.illustrationPlannerTemplateIds).filter((id) =>
     plannerIds.has(id),
@@ -89,10 +105,18 @@ export function normalizeStoryboardAgentSettings(value: unknown): StoryboardAgen
     animationPlannerTemplateIds,
     illustrationTemplates,
     videoTemplates,
+    roleplayEpisodeTemplates,
+    roleplayStyleTemplates,
+    roleplayAnimationTemplates,
+    roleplayOutputTemplates,
     illustrationPlannerTemplateId: selectedId(settings.illustrationPlannerTemplateId, illustrationOptions),
     animationPlannerTemplateId: selectedId(settings.animationPlannerTemplateId, animationOptions),
     illustrationTemplateId: selectedId(settings.illustrationTemplateId, illustrationTemplates),
     videoTemplateId: selectedId(settings.videoTemplateId, videoTemplates),
+    roleplayEpisodeTemplateId: selectedId(settings.roleplayEpisodeTemplateId, roleplayEpisodeTemplates),
+    roleplayStyleTemplateId: selectedId(settings.roleplayStyleTemplateId, roleplayStyleTemplates),
+    roleplayAnimationTemplateId: selectedId(settings.roleplayAnimationTemplateId, roleplayAnimationTemplates),
+    roleplayOutputTemplateId: selectedId(settings.roleplayOutputTemplateId, roleplayOutputTemplates),
     imageConnectionId: normalizeId(settings.imageConnectionId),
     videoConnectionId: normalizeId(settings.videoConnectionId),
     autoGenerateMode,
@@ -103,5 +127,6 @@ export function normalizeStoryboardAgentSettings(value: unknown): StoryboardAgen
     useAvatarReferences: settings.useAvatarReferences !== false,
     useNovelAiCharacterPrompts: settings.useNovelAiCharacterPrompts !== false,
     usePromptTemplate: settings.usePromptTemplate !== false,
+    runInterval: normalizeBoundedInteger(settings.runInterval, 1, 1, 100),
   };
 }

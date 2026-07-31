@@ -252,6 +252,15 @@ import { loadGameStoryboardImagePrompt } from "../../packages/server/src/service
 import { formatAgentFailuresToast, toAgentFailure } from "../../packages/client/src/lib/agent-failures.js";
 import { formatGenerationParameterError } from "../../packages/client/src/lib/generation-parameter-errors.js";
 import { normalizeCustomMusicSource } from "../../packages/client/src/components/chat/AgentAddSetupFields.js";
+import {
+  selectPreviousSuccessfulStoryboard,
+  selectRoleplayStoryboardEpisode,
+} from "../../packages/server/src/services/roleplay/storyboard-episode.js";
+import { buildRoleplayStoryboardMessages } from "../../packages/server/src/services/roleplay/storyboard-prompts.js";
+import {
+  applyStoryboardAgentSettings,
+  shouldSuppressIllustratorForegroundForStoryboard,
+} from "../../packages/server/src/services/game/storyboard-agent-settings.js";
 
 const assistantCadenceMessages = [
   { id: "illustrator-anchor", role: "assistant" },
@@ -444,10 +453,17 @@ assert.deepEqual(
   "an uncapped roleplay summary tail should protect every requested recent message",
 );
 import {
+  clipVerbatimVideoSource,
   compactVideoPromptText,
   getSceneVideoPromptLimits,
   resolveGalleryVideoNarrationSummary,
+  resolveGalleryVideoSourceExchange,
 } from "../../packages/server/src/services/video/prompt-context.js";
+import {
+  buildRoleplayVideoDirectionMessages,
+  buildRoleplayVideoDirectionUserPrompt,
+  resolveRoleplayVideoDirection,
+} from "../../packages/server/src/services/video/roleplay-video-direction.js";
 import { resolveGameGmPromptTemplate } from "../../packages/server/src/services/generation/game-gm-prompt-runtime.js";
 import { countConversationMessagesAfterSummaryAnchor } from "../../packages/server/src/services/conversation/auto-summary.service.js";
 import {
@@ -501,6 +517,7 @@ import {
   resolveDynamicGameImagePromptConnection,
   resolveNpcPortraitAppearance,
   sanitizeNpcPortraitAppearanceText,
+  selectLatestGameTurnNarration,
   selectStoryboardAppearanceCharacterNames,
 } from "../../packages/server/src/routes/game.routes.js";
 import { buildLegacyDefaultAgentConfigUpdate } from "../../packages/server/src/services/agents/default-prompt-migration.js";
@@ -591,7 +608,11 @@ import {
 import { executeToolCalls } from "../../packages/server/src/services/tools/tool-executor.js";
 import { parseRouterResponse } from "../../packages/server/src/services/agents/knowledge-router.js";
 import type { PromptOverridesStorage } from "../../packages/server/src/services/storage/prompt-overrides.storage.js";
-import { listPromptOverrideKeys } from "../../packages/server/src/services/prompt-overrides/index.js";
+import {
+  listPromptOverrideKeys,
+  loadPrompt,
+  ROLEPLAY_GALLERY_VIDEO_DIRECTOR,
+} from "../../packages/server/src/services/prompt-overrides/index.js";
 import {
   buildElevenLabsTextInput,
   detectTTSAudioMimeType,
@@ -682,6 +703,7 @@ function makeRegressionAgentConfig(overrides: Record<string, unknown> = {}) {
     id: `builtin:${type}`,
     type,
     name,
+    isCustomAgent: false,
     phase: "post_processing",
     promptTemplate: 'Return JSON: {"chosen": null}',
     connectionId: null,
@@ -721,6 +743,310 @@ const keywordOptions = {
 };
 
 const cases: RegressionCase[] = [
+  {
+    name: "Storyboard chat settings override agent defaults for Game and Roleplay",
+    async run() {
+      const agents = {
+        ensureBuiltinConfig: async () => ({
+          id: "storyboard-config",
+          connectionId: "agent-prompt-connection",
+          settings: {
+            runInterval: 2,
+            keyframeCount: 3,
+            animationDurationSeconds: 6,
+            autoGenerateMode: "illustration",
+            imageConnectionId: "agent-image-connection",
+            videoConnectionId: "agent-video-connection",
+            promptTemplates: [
+              { id: "shared-planner", name: "Agent planner", promptTemplate: "AGENT PLANNER" },
+              { id: "agent-planner", name: "Agent fallback", promptTemplate: "AGENT FALLBACK" },
+            ],
+            illustrationPlannerTemplateIds: ["shared-planner", "agent-planner"],
+            animationPlannerTemplateIds: ["shared-planner", "agent-planner"],
+            roleplayEpisodeTemplates: [
+              { id: "shared-episode", name: "Agent episode", promptTemplate: "AGENT EPISODE" },
+              { id: "agent-episode", name: "Agent fallback", promptTemplate: "AGENT EPISODE FALLBACK" },
+            ],
+          },
+        }),
+      } as unknown as Parameters<typeof applyStoryboardAgentSettings>[1];
+
+      const roleplay = await applyStoryboardAgentSettings(
+        {
+          activeAgentIds: ["storyboard"],
+          roleplayStoryboardAutoGenerateMode: "manual",
+          roleplayStoryboardRunInterval: 7,
+          roleplayStoryboardKeyframeCount: 5,
+          roleplayStoryboardAnimationDurationSeconds: 11,
+          roleplayStoryboardPromptConnectionId: "chat-prompt-connection",
+          roleplayStoryboardImageConnectionId: "chat-image-connection",
+          roleplayStoryboardVideoConnectionId: "chat-video-connection",
+          roleplayStoryboardEpisodeTemplateId: "shared-episode",
+          roleplayStoryboardEpisodeTemplates: [
+            { id: "shared-episode", name: "Chat episode", promptTemplate: "CHAT EPISODE" },
+          ],
+        },
+        agents,
+        "roleplay",
+      );
+      assert.equal(roleplay.roleplayStoryboardAutoGenerateMode, "manual");
+      assert.equal(roleplay.roleplayStoryboardRunInterval, 7);
+      assert.equal(roleplay.roleplayStoryboardKeyframeCount, 5);
+      assert.equal(roleplay.roleplayStoryboardAnimationDurationSeconds, 11);
+      assert.equal(roleplay.storyboardAgentPromptConnectionId, "chat-prompt-connection");
+      assert.equal(roleplay.storyboardAgentImageConnectionId, "chat-image-connection");
+      assert.equal(roleplay.storyboardAgentVideoConnectionId, "chat-video-connection");
+      assert.deepEqual(
+        (roleplay.roleplayStoryboardEpisodeTemplates as Array<{ id: string; promptTemplate: string }>).map(
+          (template) => [template.id, template.promptTemplate],
+        ),
+        [
+          ["shared-episode", "CHAT EPISODE"],
+          ["agent-episode", "AGENT EPISODE FALLBACK"],
+        ],
+      );
+
+      const game = await applyStoryboardAgentSettings(
+        {
+          activeAgentIds: ["storyboard"],
+          gameStoryboardKeyframeCount: 6,
+          gameStoryboardIllustrationPromptTemplateId: "shared-planner",
+          gameStoryboardPromptTemplates: [
+            { id: "shared-planner", name: "Chat planner", promptTemplate: "CHAT PLANNER" },
+          ],
+        },
+        agents,
+        "game",
+      );
+      assert.equal(game.gameStoryboardKeyframeCount, 6);
+      assert.deepEqual(
+        (game.gameStoryboardPromptTemplates as Array<{ id: string; promptTemplate: string }>).map((template) => [
+          template.id,
+          template.promptTemplate,
+        ]),
+        [
+          ["shared-planner", "CHAT PLANNER"],
+          ["agent-planner", "AGENT FALLBACK"],
+        ],
+      );
+    },
+  },
+  {
+    name: "automatic Roleplay Storyboard owns foreground media without suppressing Illustrator backgrounds",
+    run() {
+      assert.equal(
+        shouldSuppressIllustratorForegroundForStoryboard({
+          ownerMode: "roleplay",
+          storyboardAgentActive: true,
+          createsAssistantMessage: true,
+          meta: { roleplayStoryboardAutoGenerateMode: "animation" },
+          defaultAutoGenerateMode: "manual",
+        }),
+        true,
+      );
+      assert.equal(
+        shouldSuppressIllustratorForegroundForStoryboard({
+          ownerMode: "roleplay",
+          storyboardAgentActive: true,
+          createsAssistantMessage: true,
+          meta: { roleplayStoryboardAutoGenerateMode: "manual" },
+          defaultAutoGenerateMode: "animation",
+        }),
+        false,
+        "a chat-level manual override should keep Illustrator foreground generation available",
+      );
+      assert.equal(
+        shouldSuppressIllustratorForegroundForStoryboard({
+          ownerMode: "roleplay",
+          storyboardAgentActive: true,
+          createsAssistantMessage: false,
+          meta: { roleplayStoryboardAutoGenerateMode: "animation" },
+          defaultAutoGenerateMode: "animation",
+        }),
+        false,
+        "regeneration and continuation do not create a new automatic Storyboard target",
+      );
+
+      const generateRouteSource = readFileSync(
+        new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
+        "utf8",
+      );
+      assert.match(generateRouteSource, /shouldSuppressIllustratorForegroundForStoryboard\(\{/u);
+      assert.match(generateRouteSource, /if \(automaticBackgroundsEnabled && illustratorBackgroundAgent\)/u);
+      assert.match(generateRouteSource, /if \(!storyboardSuppressesForeground && shouldGenerate && imagePrompt\)/u);
+    },
+  },
+  {
+    name: "Roleplay Storyboard cadence selects bounded episodes since the last successful run",
+    run() {
+      const messages = [
+        { id: "user-1", role: "user", content: "The door opens." },
+        { id: "assistant-1", role: "assistant", content: "Mira enters the observatory.", activeSwipeIndex: 0 },
+        { id: "user-2", role: "user", content: "I ask what she found." },
+        { id: "assistant-2", role: "assistant", content: "She raises a brass star map.", activeSwipeIndex: 1 },
+        { id: "user-3", role: "user", content: "I move closer." },
+        { id: "assistant-3", role: "assistant", content: "Blue constellations fill the room.", activeSwipeIndex: 2 },
+      ];
+
+      const firstAutomaticRun = selectRoleplayStoryboardEpisode({
+        messages,
+        currentMessageId: "assistant-3",
+        runInterval: 3,
+        automatic: true,
+      });
+      assert.equal(firstAutomaticRun.status, "ready");
+      if (firstAutomaticRun.status !== "ready") return;
+      assert.deepEqual(
+        firstAutomaticRun.sections.map((section) => section.messageId),
+        ["user-3", "assistant-3"],
+        "the first run should use the latest completed exchange instead of backfilling the chat",
+      );
+
+      assert.deepEqual(
+        selectRoleplayStoryboardEpisode({
+          messages,
+          currentMessageId: "assistant-2",
+          previousSuccessfulMessageId: "assistant-1",
+          runInterval: 2,
+          automatic: true,
+        }),
+        { status: "skip", reason: "interval" },
+      );
+
+      const accumulatedEpisode = selectRoleplayStoryboardEpisode({
+        messages,
+        currentMessageId: "assistant-3",
+        previousSuccessfulMessageId: "assistant-1",
+        runInterval: 2,
+        automatic: true,
+      });
+      assert.equal(accumulatedEpisode.status, "ready");
+      if (accumulatedEpisode.status !== "ready") return;
+      assert.equal(accumulatedEpisode.assistantMessageCount, 2);
+      assert.equal(accumulatedEpisode.swipeIndex, 2);
+      assert.deepEqual(
+        accumulatedEpisode.sections.map((section) => section.messageId),
+        ["user-2", "assistant-2", "user-3", "assistant-3"],
+      );
+
+      const missingAnchorEpisode = selectRoleplayStoryboardEpisode({
+        messages,
+        currentMessageId: "assistant-3",
+        previousSuccessfulMessageId: "missing-anchor",
+        runInterval: 10,
+        automatic: true,
+      });
+      assert.equal(missingAnchorEpisode.status, "ready");
+      if (missingAnchorEpisode.status !== "ready") return;
+      assert.deepEqual(
+        missingAnchorEpisode.sections.map((section) => section.messageId),
+        ["user-3", "assistant-3"],
+        "an unresolved anchor should fall back to the latest exchange without applying interval cadence",
+      );
+
+      const previousStoryboard = selectPreviousSuccessfulStoryboard(
+        [
+          { id: "future", messageId: "assistant-3", status: "complete", createdAt: "2026-07-31T05:00:00Z" },
+          { id: "older", messageId: "assistant-1", status: "complete", createdAt: "2026-07-31T04:00:00Z" },
+          { id: "nearest-old", messageId: "assistant-2", status: "partial", createdAt: "2026-07-31T02:00:00Z" },
+          { id: "nearest-new", messageId: "assistant-2", status: "complete", createdAt: "2026-07-31T03:00:00Z" },
+          { id: "failed", messageId: "assistant-2", status: "failed", createdAt: "2026-07-31T06:00:00Z" },
+        ],
+        messages,
+        "assistant-3",
+      );
+      assert.equal(previousStoryboard?.id, "nearest-new");
+
+      const boundedEpisode = selectRoleplayStoryboardEpisode({
+        messages: [
+          { id: "anchor", role: "assistant", content: "Previous success" },
+          ...Array.from({ length: 24 }, (_, index) => ({
+            id: `bounded-${index}`,
+            role: index % 2 === 0 ? "user" : "assistant",
+            content: "x".repeat(1_000),
+          })),
+        ],
+        currentMessageId: "bounded-23",
+        previousSuccessfulMessageId: "anchor",
+        automatic: false,
+      });
+      assert.equal(boundedEpisode.status, "ready");
+      if (boundedEpisode.status !== "ready") return;
+      assert.ok(boundedEpisode.sections.length <= 20);
+      assert.ok(boundedEpisode.sections.reduce((total, section) => total + section.content.length, 0) <= 12_000);
+    },
+  },
+  {
+    name: "Roleplay Storyboard prompts layer still and animation instructions without changing source text",
+    run() {
+      const meta = {
+        roleplayStoryboardEpisodeTemplateId: "episode",
+        roleplayStoryboardEpisodeTemplates: [
+          { id: "episode", name: "Episode", promptTemplate: "EPISODE ${keyframeCount}" },
+        ],
+        roleplayStoryboardStyleTemplateId: "comic",
+        roleplayStoryboardStyleTemplates: [
+          { id: "comic", name: "Comic", promptTemplate: "STYLE COMIC ${aspectRatio}" },
+        ],
+        roleplayStoryboardAnimationTemplateId: "motion",
+        roleplayStoryboardAnimationTemplates: [
+          {
+            id: "motion",
+            name: "Motion",
+            promptTemplate:
+              "ANIMATION: imagePrompt is the exact T=0 frame. Add simple action, camera, source dialogue, sound effects, ambience, and end hold for ${durationSeconds} seconds.",
+          },
+        ],
+        roleplayStoryboardOutputTemplateId: "output",
+        roleplayStoryboardOutputTemplates: [{ id: "output", name: "Output", promptTemplate: "OUTPUT JSON" }],
+      };
+      const sections = [
+        {
+          index: 0,
+          kind: "user" as const,
+          speaker: "User" as const,
+          messageId: "user<&quote",
+          content: "Keep <thinking> and A&B verbatim.",
+        },
+        {
+          index: 1,
+          kind: "assistant" as const,
+          speaker: "Assistant" as const,
+          messageId: "assistant-1",
+          content: "Mira turns toward the rain.",
+        },
+      ];
+
+      const still = buildRoleplayStoryboardMessages({
+        meta,
+        sections,
+        keyframeCount: 3,
+        durationSeconds: 6,
+        aspectRatio: "16:9",
+        generateVideos: false,
+      });
+      assert.match(still.systemPrompt, /EPISODE 3/u);
+      assert.match(still.systemPrompt, /STYLE COMIC 16:9/u);
+      assert.match(still.systemPrompt, /OUTPUT JSON/u);
+      assert.doesNotMatch(still.systemPrompt, /ANIMATION:/u);
+      assert.match(still.messages[1]?.content ?? "", /Keep <thinking> and A&B verbatim\./u);
+      assert.match(still.messages[1]?.content ?? "", /message_id="user&lt;&amp;quote"/u);
+      assert.deepEqual(still.selectedTemplateIds, ["episode", "comic", "output"]);
+
+      const animation = buildRoleplayStoryboardMessages({
+        meta,
+        sections,
+        keyframeCount: 3,
+        durationSeconds: 8,
+        aspectRatio: "16:9",
+        generateVideos: true,
+      });
+      assert.match(animation.systemPrompt, /exact T=0 frame/u);
+      assert.match(animation.systemPrompt, /source dialogue, sound effects, ambience, and end hold/u);
+      assert.match(animation.systemPrompt, /end hold for 8 seconds/u);
+      assert.deepEqual(animation.selectedTemplateIds, ["episode", "comic", "motion", "output"]);
+    },
+  },
   {
     name: "CYOA accepts escaped double quotes and normalizes single-quoted dialogue",
     async run() {
@@ -1488,10 +1814,7 @@ const cases: RegressionCase[] = [
     name: "Spotify does not report a repeated Music DJ selection before context repeat is confirmed",
     async run() {
       const originalFetch = globalThis.fetch;
-      const selectedUris = [
-        "spotify:track:EEEEEEEEEEEEEEEEEEEEEE",
-        "spotify:track:FFFFFFFFFFFFFFFFFFFFFF",
-      ];
+      const selectedUris = ["spotify:track:EEEEEEEEEEEEEEEEEEEEEE", "spotify:track:FFFFFFFFFFFFFFFFFFFFFF"];
       let activeUri = "spotify:track:ZZZZZZZZZZZZZZZZZZZZZZ";
       let repeatRequests = 0;
 
@@ -1719,6 +2042,27 @@ const cases: RegressionCase[] = [
     },
   },
   {
+    name: "character ID macros resolve exact card references without matching unknown IDs",
+    run() {
+      const referencedId = "V1StGXR8_Z5jdHi6B-myT";
+      const unknownId = "A1StGXR8_Z5jdHi6BmyTX";
+      const context = {
+        user: "Mari",
+        char: "Dottore",
+        characters: ["Dottore"],
+        variables: { [unknownId]: "Variable collision" },
+        characterReferences: { [referencedId]: "Susie" },
+      };
+
+      assert.equal(resolveMacros(`I went with {{${referencedId}}}.`, context), "I went with Susie.");
+      assert.equal(
+        resolveMacros(`I went with {{${unknownId}}}.`, context),
+        `I went with {{${unknownId}}}.`,
+        "Unknown IDs must remain visible instead of resolving through a colliding variable",
+      );
+    },
+  },
+  {
     name: "lorebook Outlets collect only named position-7 entries and resolve case-sensitively",
     run() {
       const activated = [
@@ -1732,7 +2076,10 @@ const cases: RegressionCase[] = [
 
       const processed = processActivatedEntries(activated);
       assert.equal(processed.worldInfoBefore, "Automatic before");
-      assert.deepEqual(processed.depthEntries.map((entry) => entry.content), ["Depth entry"]);
+      assert.deepEqual(
+        processed.depthEntries.map((entry) => entry.content),
+        ["Depth entry"],
+      );
       assert.deepEqual(processed.outlets, {
         rules: "First rule\nSecond rule",
         Rules: "Different case",
@@ -2342,10 +2689,7 @@ const cases: RegressionCase[] = [
     name: "regex editor examples use direct-entry escaping that works in Live Test",
     run() {
       const locale = JSON.parse(
-        readFileSync(
-          new URL("../../packages/client/src/localization/locales/en.json", import.meta.url),
-          "utf8",
-        ),
+        readFileSync(new URL("../../packages/client/src/localization/locales/en.json", import.meta.url), "utf8"),
       ) as Record<string, string>;
       const editorSource = readFileSync(
         new URL("../../packages/client/src/components/agents/RegexScriptEditor.tsx", import.meta.url),
@@ -2451,6 +2795,10 @@ const cases: RegressionCase[] = [
         new URL("../../packages/client/src/components/chat/ChatSettingsDrawer.tsx", import.meta.url),
         "utf8",
       );
+      const roleplaySurfaceSource = readFileSync(
+        new URL("../../packages/client/src/components/chat/ChatRoleplaySurface.tsx", import.meta.url),
+        "utf8",
+      );
       const storyboardChatSettingsSource = readFileSync(
         new URL("../../packages/client/src/components/chat/StoryboardChatSettingsPanel.tsx", import.meta.url),
         "utf8",
@@ -2479,6 +2827,70 @@ const cases: RegressionCase[] = [
         new URL("../../packages/server/src/routes/chats.routes.ts", import.meta.url),
         "utf8",
       );
+      const storyboardOrderStart = drawerSource.indexOf("ROLEPLAY_AGENT_SETTINGS_ORDER.set(\n  STORYBOARD_AGENT_ID,");
+      const storyboardOrderEnd = drawerSource.indexOf("\n);", storyboardOrderStart);
+      assert.notEqual(storyboardOrderStart, -1, "Storyboard should have an explicit Roleplay settings order");
+      assert.notEqual(storyboardOrderEnd, -1, "Storyboard settings order registration should be complete");
+      const storyboardOrderSource = drawerSource.slice(storyboardOrderStart, storyboardOrderEnd + 3);
+      const storyboardOrderOffset = storyboardOrderSource.match(
+        /ROLEPLAY_AGENT_SETTINGS_ORDER\.get\(STORYBOARD_AGENT_ID\)\s*\?\?\s*\(ROLEPLAY_AGENT_SETTINGS_ORDER\.get\("illustrator"\)\s*\?\?\s*ROLEPLAY_AGENT_SETTINGS_ORDER\.size\)\s*\+\s*(\d+(?:\.\d+)?)/u,
+      )?.[1];
+      assert.equal(Number(storyboardOrderOffset), 0.5, "Storyboard settings should sort directly after Illustrator");
+
+      const roleplayMenuLinksStart = drawerSource.indexOf("const roleplayAgentMenuLinks = useMemo(() => {");
+      const roleplayMenuLinksEnd = drawerSource.indexOf("\n  }, [", roleplayMenuLinksStart);
+      assert.notEqual(roleplayMenuLinksStart, -1, "Roleplay agent quick links should be defined");
+      assert.notEqual(roleplayMenuLinksEnd, -1, "Roleplay agent quick links should have a bounded source block");
+      const roleplayMenuLinksSource = drawerSource.slice(roleplayMenuLinksStart, roleplayMenuLinksEnd);
+
+      const activeAgentMenuStart = drawerSource.indexOf("activeInCat.map((agent) => {");
+      const activeAgentMenuEnd = drawerSource.indexOf("{/* Available agents to add */}", activeAgentMenuStart);
+      assert.notEqual(activeAgentMenuStart, -1, "Active Roleplay agent menu items should be rendered");
+      assert.notEqual(activeAgentMenuEnd, -1, "Active Roleplay agent menu source should be bounded");
+      const activeAgentMenuSource = drawerSource.slice(activeAgentMenuStart, activeAgentMenuEnd);
+      const storyboardMenuBranchStart = activeAgentMenuSource.indexOf("{agent.id === STORYBOARD_AGENT_ID && (");
+      const storyboardMenuBranchEnd = activeAgentMenuSource.indexOf(
+        "\n                                          )}",
+        storyboardMenuBranchStart,
+      );
+      assert.notEqual(storyboardMenuBranchStart, -1, "Active Storyboard should render its chat settings branch");
+      assert.notEqual(storyboardMenuBranchEnd, -1, "Storyboard chat settings branch should be complete");
+      const storyboardMenuBranchSource = activeAgentMenuSource.slice(
+        storyboardMenuBranchStart,
+        storyboardMenuBranchEnd,
+      );
+
+      const automaticStoryboardEffectStart = roleplaySurfaceSource.indexOf(
+        "useEffect(() => {\n    const messageId = latestStoryboardMessage?.id;",
+      );
+      const automaticStoryboardEffectEnd = roleplaySurfaceSource.indexOf("\n  }, [", automaticStoryboardEffectStart);
+      assert.notEqual(automaticStoryboardEffectStart, -1, "Automatic Storyboard completion effect should exist");
+      assert.notEqual(automaticStoryboardEffectEnd, -1, "Automatic Storyboard completion effect should be bounded");
+      const automaticStoryboardEffectSource = roleplaySurfaceSource.slice(
+        automaticStoryboardEffectStart,
+        automaticStoryboardEffectEnd,
+      );
+      const automaticBusyGuardStart = automaticStoryboardEffectSource.indexOf("if (\n      isStreaming ||");
+      const automaticTriggerStart = automaticStoryboardEffectSource.indexOf(
+        "void generateRoleplayStoryboard\n      .mutateAsync({",
+        automaticBusyGuardStart,
+      );
+      const automaticArmIndex = automaticStoryboardEffectSource.lastIndexOf(
+        "automaticStoryboardMessageRef.current = messageId;",
+        automaticTriggerStart,
+      );
+      const automaticFlagIndex = automaticStoryboardEffectSource.indexOf("automatic: true", automaticTriggerStart);
+      assert.ok(
+        automaticBusyGuardStart >= 0 &&
+          automaticArmIndex > automaticBusyGuardStart &&
+          automaticTriggerStart > automaticArmIndex &&
+          automaticFlagIndex > automaticTriggerStart,
+        "Automatic Storyboard generation should wait for idle, arm the completed message, then trigger automatically",
+      );
+      const automaticBusyGuardSource = automaticStoryboardEffectSource.slice(
+        automaticBusyGuardStart,
+        automaticArmIndex,
+      );
 
       assert.equal(normalizeGameStoryboardKeyframeCount(undefined), 3);
       assert.equal(normalizeGameStoryboardKeyframeCount(0), 1);
@@ -2490,6 +2902,21 @@ const cases: RegressionCase[] = [
       assert.doesNotMatch(settingsSource, /game\.storyboardIllustrationDirector|game\.storyboardAnimationDirector/u);
       assert.doesNotMatch(drawerSource, /gameStoryboard/u);
       assert.match(drawerSource, /lazy\(\(\) =>\s*import\("\.\/StoryboardChatSettingsPanel"\)/u);
+      assert.match(
+        roleplayMenuLinksSource,
+        /addLink\(STORYBOARD_AGENT_ID, activeAgentIds\.includes\(STORYBOARD_AGENT_ID\), storyboardAgent\.name\)/u,
+      );
+      assert.match(
+        activeAgentMenuSource,
+        /id=\{\s*agent\.id === "hierarchical-maps" \|\| agent\.id === STORYBOARD_AGENT_ID\s*\? getAgentSettingsMenuId\(chat\.id, agent\.id\)/u,
+      );
+      assert.match(storyboardMenuBranchSource, /<StoryboardChatSettingsPanel/u);
+      assert.match(storyboardMenuBranchSource, /ownerMode="roleplay"/u);
+      assert.match(
+        automaticBusyGuardSource,
+        /isStreaming\s*\|\|\s*agentProcessing\s*\|\|\s*messageHasPendingPostProcessing\(latestStoryboardMessage\)\s*\|\|\s*generateRoleplayStoryboard\.isPending/u,
+      );
+      assert.match(automaticBusyGuardSource, /\{\s*return;\s*\}/u);
       assert.match(storyboardChatSettingsSource, /settings\.plannerTemplates\.filter/u);
       assert.match(storyboardChatSettingsSource, /gameStoryboardIllustrationPromptTemplateId/u);
       assert.match(storyboardChatSettingsSource, /gameStoryboardAnimationPromptTemplateId/u);
@@ -2509,10 +2936,7 @@ const cases: RegressionCase[] = [
         setupSource,
         /gameGmPromptTemplateId:\s*gamePresentation === "anime" \? ANIME_GAME_PROMPT_TEMPLATE_ID : null/u,
       );
-      assert.match(
-        chatsRouteSource,
-        /const customPrompt = resolveGameGmPromptTemplate\(chatMeta, setupConfig\);/u,
-      );
+      assert.match(chatsRouteSource, /const customPrompt = resolveGameGmPromptTemplate\(chatMeta, setupConfig\);/u);
       assert.match(editorSource, /StoryboardAgentSettingsPanel/u);
       assert.match(editorSource, /\{!isStoryboardAgent && \(\s*<FieldGroup[\s\S]*?agentBudget/u);
       assert.doesNotMatch(
@@ -2523,13 +2947,15 @@ const cases: RegressionCase[] = [
         editorSource,
         /\.\.\.\(localMaxTokens !== "" \? \{ maxTokens: clampAgentMaxTokens\(localMaxTokens\) \} : \{\}\)/u,
       );
+      const roleplayLibraryIndex = storyboardEditorSource.indexOf("ui.agents.storyboard.roleplayPromptLibrary");
+      const sharedFormatterIndex = storyboardEditorSource.indexOf("ui.agents.storyboard.sharedProviderFormatters");
       const defaultImagePromptIndex = storyboardEditorSource.indexOf("ui.agents.storyboard.defaultImagePrompt");
-      const firstTemplateEditorIndex = storyboardEditorSource.indexOf("<TemplateCollectionEditor");
       assert.ok(defaultImagePromptIndex >= 0, "Storyboard editor should expose a default image prompt selector");
-      assert.ok(firstTemplateEditorIndex >= 0, "Storyboard editor should expose editable prompt templates");
+      assert.ok(roleplayLibraryIndex >= 0, "Storyboard editor should expose a separate Roleplay prompt library");
+      assert.ok(sharedFormatterIndex >= 0, "Storyboard editor should identify shared provider formatters");
       assert.ok(
-        defaultImagePromptIndex < firstTemplateEditorIndex,
-        "Storyboard default prompt selectors should precede the editable template libraries",
+        roleplayLibraryIndex < sharedFormatterIndex && sharedFormatterIndex < defaultImagePromptIndex,
+        "Roleplay planning prompts should stay separate from the shared provider formatters",
       );
       assert.match(editorSource, /includeCharacterAppearance:\s*settings\.includeCharacterAppearance/u);
       assert.match(editorSource, /useAvatarReferences:\s*settings\.useAvatarReferences/u);
@@ -2888,9 +3314,15 @@ const cases: RegressionCase[] = [
       for (const profile of styleProfiles.profiles) {
         const styleBlock = buildIllustratorImageStyleInstructionBlock(profile.styleText);
         if (profile.styleText.trim()) {
-          assert.match(styleBlock, /selected Illustrator prompt template and this visual style instruction are cumulative/iu);
+          assert.match(
+            styleBlock,
+            /selected Illustrator prompt template and this visual style instruction are cumulative/iu,
+          );
           assert.match(styleBlock, /style instruction controls only the visual treatment/iu);
-          assert.match(styleBlock, /Never replace Comic Page or manga panels and lettering with a single illustration/iu);
+          assert.match(
+            styleBlock,
+            /Never replace Comic Page or manga panels and lettering with a single illustration/iu,
+          );
         } else {
           assert.equal(styleBlock, "");
         }
@@ -2914,10 +3346,7 @@ const cases: RegressionCase[] = [
           );
         }
 
-        const mergedNegative = mergeIllustratorNegativePrompt(
-          compiled.prompt,
-          compiled.negativePrompt,
-        );
+        const mergedNegative = mergeIllustratorNegativePrompt(compiled.prompt, compiled.negativePrompt);
         assert.equal(
           mergedNegative
             .split(",")
@@ -2960,11 +3389,7 @@ const cases: RegressionCase[] = [
       assert.equal(comicNegative, "unreadable text, broken lettering, watermark, logo, signature");
       assert.doesNotMatch(comicNegative, /dialogue boxes|word balloons|captions|SFX lettering|subtitles/iu);
       assert.equal(
-        mergeIllustratorNegativePrompt(
-          comicPrompt,
-          "text, low quality, unreadable text, watermark",
-          "unreadable text",
-        ),
+        mergeIllustratorNegativePrompt(comicPrompt, "text, low quality, unreadable text, watermark", "unreadable text"),
         "low quality, unreadable text, watermark, logo, signature",
       );
 
@@ -3261,6 +3686,11 @@ const cases: RegressionCase[] = [
         new URL("../../packages/client/src/components/chat/StoryboardChatSettingsPanel.tsx", import.meta.url),
         "utf8",
       );
+      const roleplaySettingsStart = storyboardChatSettingsSource.indexOf(
+        "function RoleplayStoryboardChatSettingsPanel",
+      );
+      assert.ok(roleplaySettingsStart >= 0, "Roleplay Storyboard settings boundary should exist");
+      const gameStoryboardChatSettingsSource = storyboardChatSettingsSource.slice(0, roleplaySettingsStart);
       const gameSurfaceSource = readFileSync(
         new URL("../../packages/client/src/components/game/GameSurface.tsx", import.meta.url),
         "utf8",
@@ -3276,10 +3706,10 @@ const cases: RegressionCase[] = [
       assert.match(storyboardSettingsSource, /update\(\{ includeCharacterAppearance: checked \}\)/u);
       assert.match(storyboardSettingsSource, /settings\.useAvatarReferences/u);
       assert.match(storyboardSettingsSource, /update\(\{ useAvatarReferences: checked \}\)/u);
-      assert.doesNotMatch(storyboardChatSettingsSource, /gameStoryboardIncludeCharacterAppearance/u);
-      assert.doesNotMatch(storyboardChatSettingsSource, /gameStoryboardUseAvatarReferences/u);
-      assert.doesNotMatch(storyboardChatSettingsSource, /appearanceOverridden/u);
-      assert.doesNotMatch(storyboardChatSettingsSource, /avatarReferencesOverridden/u);
+      assert.doesNotMatch(gameStoryboardChatSettingsSource, /gameStoryboardIncludeCharacterAppearance/u);
+      assert.doesNotMatch(gameStoryboardChatSettingsSource, /gameStoryboardUseAvatarReferences/u);
+      assert.doesNotMatch(gameStoryboardChatSettingsSource, /appearanceOverridden/u);
+      assert.doesNotMatch(gameStoryboardChatSettingsSource, /avatarReferencesOverridden/u);
       assert.doesNotMatch(gameSurfaceSource, /useGamePromptTemplate/u);
       assert.match(gameRouteSource, /characterAppearanceContextBlock:\s*storyboardAppearanceContextBlock/u);
       assert.equal(gameRouteSource.match(/^\s+characterAppearanceContextBlock,\s*$/gmu)?.length, 2);
@@ -3315,8 +3745,14 @@ const cases: RegressionCase[] = [
   },
   {
     name: "Roleplay Gallery Animate uses the selected image's source narration",
-    run() {
+    async run() {
       const messages = [
+        {
+          id: "source-request",
+          role: "user",
+          content: "Draw the blade, but do not strike yet.",
+          extra: "{}",
+        },
         {
           id: "source-turn",
           role: "assistant",
@@ -3374,6 +3810,126 @@ const cases: RegressionCase[] = [
         resolveGalleryVideoNarrationSummary(messages, swipes, "legacy-upload-without-source", 650),
         "Much later, Sol runs across the moonlit courtyard.",
       );
+
+      assert.deepEqual(resolveGalleryVideoSourceExchange(messages, swipes, "swipe-gallery-image"), {
+        sourceMessageId: "source-turn",
+        content:
+          "User:\nDraw the blade, but do not strike yet.\n\nAssistant:\nMira slowly draws the ancient blade as dust falls from the ceiling.",
+      });
+      assert.equal(clipVerbatimVideoSource("  verbatim source  ", 8), "verbatim");
+
+      const directionUserPrompt = buildRoleplayVideoDirectionUserPrompt({
+        durationSeconds: 6,
+        aspectRatio: "16:9",
+        sourceExchange: "User:\nDraw the blade.\n\nAssistant:\nMira slowly draws it as dust falls.",
+        referenceImagePrompt: "Mira holds the half-drawn blade in a ruined hall, static portrait details.",
+        characterNames: ["Mira"],
+        setting: "Ruined hall at night",
+      });
+      const defaultDirectorPrompt = ROLEPLAY_GALLERY_VIDEO_DIRECTOR.defaultBuilder({ durationSeconds: 6 });
+      assert.match(defaultDirectorPrompt, /one 6-second image-to-video Roleplay clip/u);
+      assert.match(defaultDirectorPrompt, /inside the 6-second runtime/u);
+      assert.match(defaultDirectorPrompt, /exact first frame at time zero/u);
+      assert.match(defaultDirectorPrompt, /camera movement/u);
+      assert.match(defaultDirectorPrompt, /ambient audio/u);
+      assert.match(defaultDirectorPrompt, /Do not repeat a static image description/u);
+      assert.equal(listPromptOverrideKeys().includes("roleplay.galleryVideoDirector"), true);
+      const directorOverrideStorage = {
+        async get(key: string) {
+          if (key !== ROLEPLAY_GALLERY_VIDEO_DIRECTOR.key) return null;
+          return {
+            key,
+            template: "Direct one ${durationSeconds}-second Roleplay animation.",
+            enabled: true,
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          };
+        },
+        async list() {
+          return [];
+        },
+        async upsert(input) {
+          return {
+            key: input.key,
+            template: input.template,
+            enabled: input.enabled,
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          };
+        },
+        async remove() {},
+      } satisfies PromptOverridesStorage;
+      assert.equal(
+        await loadPrompt(directorOverrideStorage, ROLEPLAY_GALLERY_VIDEO_DIRECTOR, { durationSeconds: 12 }),
+        "Direct one 12-second Roleplay animation.",
+      );
+      const missingDirectorOverrideStorage = {
+        ...directorOverrideStorage,
+        async get() {
+          return null;
+        },
+      } satisfies PromptOverridesStorage;
+      assert.equal(
+        await loadPrompt(missingDirectorOverrideStorage, ROLEPLAY_GALLERY_VIDEO_DIRECTOR, { durationSeconds: 8 }),
+        ROLEPLAY_GALLERY_VIDEO_DIRECTOR.defaultBuilder({ durationSeconds: 8 }),
+      );
+      const disabledDirectorOverrideStorage = {
+        ...directorOverrideStorage,
+        async get(key: string) {
+          if (key !== ROLEPLAY_GALLERY_VIDEO_DIRECTOR.key) return null;
+          return {
+            key,
+            template: "This disabled template must not render ${durationSeconds}.",
+            enabled: false,
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          };
+        },
+      } satisfies PromptOverridesStorage;
+      assert.equal(
+        await loadPrompt(disabledDirectorOverrideStorage, ROLEPLAY_GALLERY_VIDEO_DIRECTOR, { durationSeconds: 9 }),
+        ROLEPLAY_GALLERY_VIDEO_DIRECTOR.defaultBuilder({ durationSeconds: 9 }),
+      );
+      const directionMessages = await buildRoleplayVideoDirectionMessages(directorOverrideStorage, {
+        durationSeconds: 12,
+        aspectRatio: "16:9",
+        sourceExchange: "User:\nDraw the blade.\n\nAssistant:\nMira slowly draws it as dust falls.",
+        referenceImagePrompt: "Mira holds the half-drawn blade in a ruined hall, static portrait details.",
+        characterNames: ["Mira"],
+        setting: "Ruined hall at night",
+      });
+      assert.equal(directionMessages[0].role, "system");
+      assert.equal(directionMessages[0].content, "Direct one 12-second Roleplay animation.");
+      assert.equal(directionMessages[1].role, "user");
+      assert.match(directionMessages[1].content, /<clip_duration_seconds>12<\/clip_duration_seconds>/u);
+      assert.match(directionUserPrompt, /<source_exchange>[\s\S]*Draw the blade/u);
+      assert.match(directionUserPrompt, /<first_frame_generation_context>/u);
+      assert.equal(
+        resolveRoleplayVideoDirection(
+          '```json\n{"narrationBeat":"Mira draws the blade as the camera eases closer; dust falls and steel rings softly."}\n```',
+          3_800,
+        ),
+        "Mira draws the blade as the camera eases closer; dust falls and steel rings softly.",
+      );
+      assert.equal(
+        resolveRoleplayVideoDirection(
+          'Planned direction follows.\n```json\n{"narrationBeat":"Mira holds the blade steady while the camera settles."}\n```\nEnd.',
+          3_800,
+        ),
+        "Mira holds the blade steady while the camera settles.",
+      );
+      assert.equal(
+        resolveRoleplayVideoDirection("Narration beat: She stops and holds as the room tone settles.", 3_800),
+        "She stops and holds as the room tone settles.",
+      );
+      assert.equal(resolveRoleplayVideoDirection('{"wrongField":"do not send raw JSON"}', 3_800), "");
+
+      const galleryRouteSource = readFileSync(
+        new URL("../../packages/server/src/routes/gallery.routes.ts", import.meta.url),
+        "utf8",
+      );
+      assert.match(galleryRouteSource, /!promptDraft && chat\.mode === "roleplay"/u);
+      assert.match(galleryRouteSource, /resolveIllustratorPromptRuntime/u);
+      assert.match(galleryRouteSource, /buildRoleplayVideoDirectionMessages\(promptOverridesStorage/u);
+      assert.match(galleryRouteSource, /input\.promptOverride\?\.trim\(\) \?\? ""/u);
+      assert.doesNotMatch(galleryRouteSource, /chat\.mode === "roleplay"[\s\S]{0,400}gameStoryboard/u);
     },
   },
   {
@@ -3498,10 +4054,7 @@ const cases: RegressionCase[] = [
           styleInstruction: sharedStyleProfiles.profiles.find((profile) => profile.id === "cinematic")!.styleText,
         },
       );
-      assert.equal(
-        resolveIllustratorStyleProfile({}, {}, " anime ", sharedStyleProfiles).styleProfileId,
-        "anime",
-      );
+      assert.equal(resolveIllustratorStyleProfile({}, {}, " anime ", sharedStyleProfiles).styleProfileId, "anime");
 
       const manualIllustrationMessages = buildManualIllustratorPromptMessages({
         context: {
@@ -3551,10 +4104,7 @@ const cases: RegressionCase[] = [
       assert.match(manualIllustrationPrompt, /Mari steps inside out of the rain/u);
       assert.match(manualIllustrationPrompt, /Blue hair, red eyes, dark coat/u);
       assert.match(manualIllustrationPrompt, /Long auburn hair and a rain-soaked travel coat/u);
-      assert.match(
-        manualIllustrationPrompt,
-        /<character name="Dottore &amp; &quot;Mari&quot; &lt;\/character&gt;">/u,
-      );
+      assert.match(manualIllustrationPrompt, /<character name="Dottore &amp; &quot;Mari&quot; &lt;\/character&gt;">/u);
       assert.doesNotMatch(manualIllustrationPrompt, /name="Dottore & "Mari" <\/character>"/u);
       assert.match(manualIllustrationPrompt, /Infer a consistent visual style from the character/u);
       assert.match(manualIllustrationPrompt, /Style target: colored comic page, 2-6 panels/u);
@@ -3596,10 +4146,7 @@ const cases: RegressionCase[] = [
         },
       });
       const escapedManualPrompt = macroCapture.calls[0]!.map((message) => message.content).join("\n");
-      assert.match(
-        escapedManualPrompt,
-        /Mari &lt;\/selected_illustrator_prompt_mode&gt;&lt;override&gt;/u,
-      );
+      assert.match(escapedManualPrompt, /Mari &lt;\/selected_illustrator_prompt_mode&gt;&lt;override&gt;/u);
       assert.match(escapedManualPrompt, /Dottore &amp; &lt;observer&gt;/u);
       assert.doesNotMatch(
         escapedManualPrompt,
@@ -3680,7 +4227,10 @@ const cases: RegressionCase[] = [
           .map((message) => message.content)
           .join("\n");
         if (profile.styleText) {
-          assert.ok(styleSystemPrompt.includes(profile.styleText), `${profile.id} background style guidance was omitted`);
+          assert.ok(
+            styleSystemPrompt.includes(profile.styleText),
+            `${profile.id} background style guidance was omitted`,
+          );
           assert.ok(
             styleIllustrationPrompt.includes(profile.styleText),
             `${profile.id} illustration style guidance was omitted`,
@@ -3778,10 +4328,7 @@ const cases: RegressionCase[] = [
         retryAgentsRouteSource,
         /const cachedStyleInstruction = args\.agentContext\.memory\._illustratorImageStyleInstruction/u,
       );
-      assert.match(
-        retryAgentsRouteSource,
-        /typeof cachedStyleInstruction === "string"\s*\?\s*cachedStyleInstruction/u,
-      );
+      assert.match(retryAgentsRouteSource, /typeof cachedStyleInstruction === "string"\s*\?\s*cachedStyleInstruction/u);
       assert.doesNotMatch(backgroundsRoutesSource, /getByType\("background"\)/u);
       assert.match(
         backgroundsRoutesSource,
@@ -4331,12 +4878,14 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         id: "custom:vector-reader",
         type: "custom-vector-reader",
         name: "Vector Reader",
+        isCustomAgent: true,
         promptTemplate: "Summarize the relevant prior context.",
         settings: {
           contextSize: 5,
           maxTokens: 256,
           resultType: "context_injection",
           customCapabilities: { access_vectors: true },
+          contextSources: { recalledMemories: true },
         },
       });
 
@@ -4358,6 +4907,7 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         id: "custom:ordinary-reader",
         type: "custom-ordinary-reader",
         name: "Ordinary Reader",
+        isCustomAgent: true,
         promptTemplate: "Summarize the recent context.",
         settings: {
           contextSize: 5,
@@ -4375,6 +4925,185 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       assert.doesNotMatch(disabledSystem, /<vector_context>/u);
       assert.doesNotMatch(disabledSystem, /hidden laboratory/u);
       assert.doesNotMatch(disabledSystem, /silver key/u);
+    },
+  },
+  {
+    name: "custom-agent context selectors default to chat history and batches use the requested union",
+    async run() {
+      const richContext = makeRegressionAgentContext({
+        recentMessages: [
+          { role: "user", content: "CHAT_HISTORY_CONTEXT_SENTINEL" },
+          { role: "assistant", content: "The recent response." },
+        ],
+        characters: [
+          {
+            id: "char-context",
+            name: "Context Character",
+            description: "CHARACTER_CONTEXT_SENTINEL",
+          },
+        ],
+        persona: {
+          name: "Context Persona",
+          description: "PERSONA_CONTEXT_SENTINEL",
+        },
+        gameState: {
+          id: "state-context",
+          chatId: "chat-agent-output-format",
+          messageId: "message-context",
+          swipeIndex: 0,
+          date: null,
+          time: null,
+          location: "TRACKER_CONTEXT_SENTINEL",
+          weather: null,
+          temperature: null,
+          presentCharacters: [],
+          recentEvents: [],
+          playerStats: null,
+          personaStats: null,
+          createdAt: "2026-07-30T12:00:00.000Z",
+        },
+        chatSummary: "SUMMARY_CONTEXT_SENTINEL",
+        authorNotes: "AUTHOR_NOTES_CONTEXT_SENTINEL",
+        activatedLorebookEntries: [
+          {
+            id: "activated-context",
+            content: "ACTIVATED_LOREBOOK_CONTEXT_SENTINEL",
+          },
+        ],
+        vectorContext: {
+          semanticLorebookEntries: [],
+          recalledMemories: ["RECALLED_MEMORY_CONTEXT_SENTINEL"],
+        },
+        memory: {
+          _availableBackgrounds: [
+            {
+              filename: "UNRELATED_BACKGROUND_CONTEXT_SENTINEL.png",
+              tags: [],
+            },
+          ],
+        },
+      });
+
+      const defaultCapture = makeCapturingProvider("Context checked.");
+      await executeAgent(
+        makeRegressionAgentConfig({
+          id: "custom:default-context",
+          type: "custom-default-context",
+          name: "Default Context",
+          isCustomAgent: true,
+          promptTemplate: "Return a short context check.",
+          settings: {
+            contextSize: 5,
+            maxTokens: 256,
+            resultType: "context_injection",
+          },
+        }) as any,
+        richContext,
+        defaultCapture.provider as any,
+        "regression-model",
+      );
+      const defaultRequest = defaultCapture.calls[0]!.map((message) => message.content).join("\n");
+      assert.match(defaultRequest, /CHAT_HISTORY_CONTEXT_SENTINEL/u);
+      for (const excluded of [
+        "CHARACTER_CONTEXT_SENTINEL",
+        "PERSONA_CONTEXT_SENTINEL",
+        "TRACKER_CONTEXT_SENTINEL",
+        "SUMMARY_CONTEXT_SENTINEL",
+        "AUTHOR_NOTES_CONTEXT_SENTINEL",
+        "ACTIVATED_LOREBOOK_CONTEXT_SENTINEL",
+        "RECALLED_MEMORY_CONTEXT_SENTINEL",
+        "UNRELATED_BACKGROUND_CONTEXT_SENTINEL",
+      ]) {
+        assert.doesNotMatch(defaultRequest, new RegExp(excluded, "u"));
+      }
+
+      const selectedCapture = makeCapturingProvider("Selected context checked.");
+      await executeAgent(
+        makeRegressionAgentConfig({
+          id: "custom:selected-context",
+          type: "custom-selected-context",
+          name: "Selected Context",
+          isCustomAgent: true,
+          promptTemplate: "Return a short context check.",
+          settings: {
+            contextSize: 5,
+            maxTokens: 256,
+            resultType: "context_injection",
+            customCapabilities: { access_vectors: true },
+            contextSources: {
+              chatHistory: true,
+              characters: true,
+              persona: true,
+              activatedLorebookEntries: true,
+              chatSummary: true,
+              authorNotes: true,
+              trackerData: true,
+              recalledMemories: true,
+            },
+          },
+        }) as any,
+        richContext,
+        selectedCapture.provider as any,
+        "regression-model",
+      );
+      const selectedRequest = selectedCapture.calls[0]!.map((message) => message.content).join("\n");
+      for (const included of [
+        "CHAT_HISTORY_CONTEXT_SENTINEL",
+        "CHARACTER_CONTEXT_SENTINEL",
+        "PERSONA_CONTEXT_SENTINEL",
+        "TRACKER_CONTEXT_SENTINEL",
+        "SUMMARY_CONTEXT_SENTINEL",
+        "AUTHOR_NOTES_CONTEXT_SENTINEL",
+        "ACTIVATED_LOREBOOK_CONTEXT_SENTINEL",
+        "RECALLED_MEMORY_CONTEXT_SENTINEL",
+      ]) {
+        assert.match(selectedRequest, new RegExp(included, "u"));
+      }
+      assert.doesNotMatch(selectedRequest, /UNRELATED_BACKGROUND_CONTEXT_SENTINEL/u);
+
+      const batchCapture = makeCapturingProvider(
+        `{"custom-batch-character":"character context read","custom-batch-author":"author context read"}`,
+      );
+      const characterReader = makeRegressionAgentConfig({
+        id: "custom:batch-character",
+        type: "custom-batch-character",
+        name: "Character Reader",
+        isCustomAgent: true,
+        promptTemplate: "Read character context.",
+        settings: {
+          contextSize: 5,
+          maxTokens: 256,
+          resultType: "context_injection",
+          contextSources: { chatHistory: false, characters: true },
+        },
+      });
+      const authorReader = makeRegressionAgentConfig({
+        id: "custom:batch-author",
+        type: "custom-batch-author",
+        name: "Author Notes Reader",
+        isCustomAgent: true,
+        promptTemplate: "Read author notes.",
+        settings: {
+          contextSize: 5,
+          maxTokens: 256,
+          resultType: "context_injection",
+          contextSources: { chatHistory: false, authorNotes: true },
+        },
+      });
+      await executeAgentBatch(
+        [characterReader, authorReader] as any,
+        richContext,
+        batchCapture.provider as any,
+        "regression-model",
+      );
+      const batchRequest = batchCapture.calls[0]!.map((message) => message.content).join("\n");
+      assert.match(batchRequest, /CHARACTER_CONTEXT_SENTINEL/u);
+      assert.match(batchRequest, /AUTHOR_NOTES_CONTEXT_SENTINEL/u);
+      assert.doesNotMatch(batchRequest, /CHAT_HISTORY_CONTEXT_SENTINEL/u);
+      assert.doesNotMatch(batchRequest, /PERSONA_CONTEXT_SENTINEL/u);
+      assert.doesNotMatch(batchRequest, /TRACKER_CONTEXT_SENTINEL/u);
+      assert.doesNotMatch(batchRequest, /SUMMARY_CONTEXT_SENTINEL/u);
+      assert.doesNotMatch(batchRequest, /ACTIVATED_LOREBOOK_CONTEXT_SENTINEL/u);
     },
   },
   {
@@ -4589,7 +5318,10 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       assert.match(requestText, /COMIC_PAGE_TEMPLATE_SENTINEL/u);
       assert.match(requestText, /<illustrator_image_style>/u);
       assert.match(requestText, /Infer a consistent visual style from the character/u);
-      assert.match(requestText, /selected Illustrator prompt template and this visual style instruction are cumulative/iu);
+      assert.match(
+        requestText,
+        /selected Illustrator prompt template and this visual style instruction are cumulative/iu,
+      );
 
       const gameCapture = makeCapturingProvider(
         `{"shouldGenerate":false,"prompt":"","style":"","characters":[],"reason":"quiet beat"}`,
@@ -4915,15 +5647,101 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         meta: {},
         setupConfig: null,
         latestState: null,
+        latestTurnNarration: "This must not be added to a portrait prompt.",
       });
 
       assert.equal(messages[0]?.content, override);
       assert.match(messages[1]?.content ?? "", /Appearance traits: towering alien/);
+      assert.doesNotMatch(messages[1]?.content ?? "", /latest_gm_turn|must not be added/i);
       assert.doesNotMatch(messages[1]?.content ?? "", /copy the Required canonical NPC visual profile/i);
       assert.doesNotMatch(messages[1]?.content ?? "", /Return only JSON/i);
 
       const requestOptions = dynamicGameImagePromptRequestOptions("portrait");
       assert.equal("responseFormat" in requestOptions, false);
+    },
+  },
+  {
+    name: "dynamic Game backgrounds use the latest completed GM turn as primary scene context",
+    async run() {
+      const latestTurnNarration = selectLatestGameTurnNarration([
+        { role: "user", content: "I open the station doors." },
+        { role: "assistant", content: "An older scene in a dry mountain pass." },
+        {
+          role: "assistant",
+          content:
+            "[bg: storm-station] Rain lashes the glass-roofed station while blue signal lamps flicker over the abandoned platforms.",
+        },
+        { role: "assistant", content: "[party-turn] Lyra shields her face from the rain." },
+        { role: "narrator", content: "**Session 4 Concluded**\nThe next arc is ready." },
+        { role: "system", content: "Internal state update after the visible turn." },
+      ]);
+      assert.equal(
+        latestTurnNarration,
+        "Rain lashes the glass-roofed station while blue signal lamps flicker over the abandoned platforms.",
+      );
+
+      const messages = await buildDynamicGameImagePromptMessages({
+        request: {
+          kind: "background",
+          title: "storm-station",
+          sourcePrompt: "scenery, station, wide shot",
+          assetContext: ["Location slug: storm-station"],
+          maxCharacters: 1000,
+        },
+        meta: {},
+        setupConfig: null,
+        latestState: null,
+        latestTurnNarration,
+      });
+      const userPrompt = messages[1]?.content ?? "";
+      assert.match(userPrompt, /<latest_gm_turn>/);
+      assert.match(userPrompt, /glass-roofed station/);
+      assert.doesNotMatch(userPrompt, /\[bg:/);
+      assert.match(userPrompt, /latest GM turn as the primary source/i);
+      assert.ok(userPrompt.indexOf("<latest_gm_turn>") < userPrompt.indexOf("<draft_prompt>"));
+
+      const override = [
+        "Direct the current background from this completed turn:",
+        "${latestTurnBlock}",
+        "Keep the result under ${maxCharacters} characters.",
+      ].join("\n");
+      const promptOverridesStorage = {
+        async get(key: string) {
+          return key === "game.imagePromptDirector"
+            ? { key, template: override, enabled: true, updatedAt: "2026-07-30T00:00:00.000Z" }
+            : null;
+        },
+        async list() {
+          return [];
+        },
+        async upsert(input) {
+          return {
+            key: input.key,
+            template: input.template,
+            enabled: input.enabled,
+            updatedAt: "2026-07-30T00:00:00.000Z",
+          };
+        },
+        async remove() {},
+      } satisfies PromptOverridesStorage;
+      const overriddenMessages = await buildDynamicGameImagePromptMessages({
+        promptOverridesStorage,
+        request: {
+          kind: "background",
+          title: "storm-station",
+          sourcePrompt: "scenery, station, wide shot",
+          assetContext: ["Location slug: storm-station"],
+          maxCharacters: 1000,
+        },
+        meta: {},
+        setupConfig: null,
+        latestState: null,
+        latestTurnNarration,
+      });
+      const overriddenSystemPrompt = overriddenMessages[0]?.content ?? "";
+      assert.match(overriddenSystemPrompt, /<latest_gm_turn>/);
+      assert.match(overriddenSystemPrompt, /glass-roofed station/);
+      assert.doesNotMatch(overriddenSystemPrompt, /\$\{latestTurnBlock\}/);
     },
   },
   {
@@ -5181,7 +5999,8 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
     name: "automatic map artwork uses the global Maps template and keeps positive prose out of negatives",
     async run() {
       const campaignStyle = "luminous violet campaign brushwork";
-      const scenePrompt = "Wide establishing image of Moonwell Floor. A quiet tiled bath beneath blue crystals. No text.";
+      const scenePrompt =
+        "Wide establishing image of Moonwell Floor. A quiet tiled bath beneath blue crystals. No text.";
       const defaultRawPrompt = MAPS_LOCATION_ARTWORK.defaultBuilder({
         locationName: "Moonwell Floor",
         locationDescription: "A quiet tiled bath beneath blue crystals.",
@@ -5240,7 +6059,10 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       assert.match(withCampaignStyle.prompt, /Fantasy dungeon crawler/u);
       assert.match(withCampaignStyle.prompt, /Use blue crystal reflections/u);
       assert.doesNotMatch(withoutCampaignStyle.negativePrompt, /Style:|Fantasy dungeon crawler|quiet tiled bath/u);
-      assert.doesNotMatch(withCampaignStyle.negativePrompt, /Style:|luminous violet campaign brushwork|quiet tiled bath/u);
+      assert.doesNotMatch(
+        withCampaignStyle.negativePrompt,
+        /Style:|luminous violet campaign brushwork|quiet tiled bath/u,
+      );
 
       const promptOverridesStorage = {
         get: async (key: string) =>
@@ -5285,7 +6107,10 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       });
       assert.match(customized.prompt, /Moonwell Floor/u);
       assert.match(customized.prompt, /Location type: Floor/u);
-      assert.doesNotMatch(customized.prompt, /Fantasy dungeon crawler|luminous violet campaign brushwork|blue crystal reflections/u);
+      assert.doesNotMatch(
+        customized.prompt,
+        /Fantasy dungeon crawler|luminous violet campaign brushwork|blue crystal reflections/u,
+      );
 
       const reviewed = resolveReviewedImagePromptSubmission({
         generatedPrompt: withCampaignStyle.prompt,

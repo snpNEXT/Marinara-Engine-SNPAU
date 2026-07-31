@@ -213,6 +213,7 @@ import {
   LIMITS,
   MIN_AGENT_MAX_TOKENS,
   PROFESSOR_MARI_ID,
+  STORYBOARD_AGENT_ID,
   SUMMARY_TAIL_MESSAGES,
   estimateAgentLoadCost,
   getAgentPromptTemplateOptions,
@@ -352,6 +353,11 @@ const ROLEPLAY_AGENT_SETTINGS_ORDER = new Map<string, number>(
     })
     .map(({ agent }, index) => [agent.id, index]),
 );
+ROLEPLAY_AGENT_SETTINGS_ORDER.set(
+  STORYBOARD_AGENT_ID,
+  ROLEPLAY_AGENT_SETTINGS_ORDER.get(STORYBOARD_AGENT_ID) ??
+    (ROLEPLAY_AGENT_SETTINGS_ORDER.get("illustrator") ?? ROLEPLAY_AGENT_SETTINGS_ORDER.size) + 0.5,
+);
 const CUSTOM_AGENT_SETTINGS_ORDER = ROLEPLAY_AGENT_SETTINGS_ORDER.size + 100;
 
 function getRoleplayAgentSettingsOrder(agentId: string): number {
@@ -437,6 +443,8 @@ function renderRoleplayAgentMenuIcon(agentId: string, variant: "card" | "chip" =
       return <MessageCircle size={size} className={className} />;
     case "illustrator":
       return <Paintbrush size={size} className={className} />;
+    case STORYBOARD_AGENT_ID:
+      return <Image size={size} className={className} />;
     case "spotify":
       return <Music2 size={size} className={className} />;
     case "haptic":
@@ -1927,6 +1935,7 @@ export function ChatSettingsDrawer({
     [activeAgentIds, customAgents],
   );
   const mapsAgent = availableAgents.find((agent) => agent.id === mapsPackage?.id);
+  const storyboardAgent = availableAgents.find((agent) => agent.id === STORYBOARD_AGENT_ID);
   const [pendingAgentMenuTargetId, setPendingAgentMenuTargetId] = useState<string | null>(null);
   const roleplayAgentMenuLinks = useMemo(() => {
     if (!metadata.enableAgents || !isRoleplayMode || isGame) return [];
@@ -1959,6 +1968,9 @@ export function ChatSettingsDrawer({
     addLink("illustrator", illustratorActive, illustratorAgentMeta.name);
     addLink("spotify", spotifyActive, musicDjAgentMeta.name);
     addLink("haptic", hapticActive, hapticAgentMeta.name);
+    if (storyboardAgent) {
+      addLink(STORYBOARD_AGENT_ID, activeAgentIds.includes(STORYBOARD_AGENT_ID), storyboardAgent.name);
+    }
     if (mapsAgent && mapsPackage) addLink(mapsPackage.id, mapsPackageEnabledForChat, mapsAgent.name);
     if (activeCustomAgents.length > 0) {
       links.push({
@@ -1972,6 +1984,7 @@ export function ChatSettingsDrawer({
     return links.sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
   }, [
     activeCustomAgents,
+    activeAgentIds,
     cardEvolutionAuditorActive,
     cardEvolutionAuditorAgentMeta.name,
     chat.id,
@@ -2005,6 +2018,7 @@ export function ChatSettingsDrawer({
     proseGuardianActive,
     proseGuardianAgentMeta.name,
     spotifyActive,
+    storyboardAgent,
   ]);
   const focusAgentMenu = useCallback((targetId: string) => {
     const target = document.getElementById(targetId);
@@ -8096,6 +8110,7 @@ export function ChatSettingsDrawer({
                           chatId={chat.id}
                           metadata={metadata as Record<string, unknown>}
                           onClose={onClose}
+                          ownerMode="game"
                         />
                       </Suspense>
                     </AgentSettingsCard>
@@ -8393,11 +8408,15 @@ export function ChatSettingsDrawer({
                                         <div
                                           key={agent.id}
                                           id={
-                                            agent.id === "hierarchical-maps"
+                                            agent.id === "hierarchical-maps" || agent.id === STORYBOARD_AGENT_ID
                                               ? getAgentSettingsMenuId(chat.id, agent.id)
                                               : undefined
                                           }
-                                          tabIndex={agent.id === "hierarchical-maps" ? -1 : undefined}
+                                          tabIndex={
+                                            agent.id === "hierarchical-maps" || agent.id === STORYBOARD_AGENT_ID
+                                              ? -1
+                                              : undefined
+                                          }
                                           data-chat-agent-entry={agent.id}
                                           className="scroll-mt-3 rounded-lg bg-[var(--primary)]/10 px-3 py-2 ring-1 ring-[var(--primary)]/30 focus:outline-none focus:ring-1 focus:ring-[var(--primary)]/60"
                                         >
@@ -8500,6 +8519,16 @@ export function ChatSettingsDrawer({
                                               }}
                                               className="mt-2 block overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--background)]/45"
                                             />
+                                          )}
+                                          {agent.id === STORYBOARD_AGENT_ID && (
+                                            <Suspense fallback={null}>
+                                              <StoryboardChatSettingsPanel
+                                                chatId={chat.id}
+                                                metadata={metadata as Record<string, unknown>}
+                                                onClose={onClose}
+                                                ownerMode="roleplay"
+                                              />
+                                            </Suspense>
                                           )}
                                         </div>
                                       );

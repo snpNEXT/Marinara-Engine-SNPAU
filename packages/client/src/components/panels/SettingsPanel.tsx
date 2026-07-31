@@ -524,7 +524,7 @@ const SETTINGS_SEARCHABLE_CONTROLS: readonly SettingsSearchableControlMeta[] = [
     sectionId: "application",
     label: "Documentation Language",
     description: "Choose the language for Marinara's built-in guides.",
-    aliases: ["documentation", "guides", "docs", "manual", "spanish", "español", "german", "deutsch", "french", "français", "portuguese", "português", "brazilian", "polish", "polski", "russian", "русский"],
+    aliases: ["documentation", "guides", "docs", "manual", "spanish", "español", "german", "deutsch", "french", "français", "portuguese", "português", "brazilian", "polish", "polski", "russian", "русский", "japanese", "日本語"],
     kind: "Select",
   },
   {
@@ -1639,6 +1639,7 @@ const GAME_ASSET_CATEGORIES = [
 
 const VIDEO_PROMPT_TEMPLATE_KEYS = [
   "game.video",
+  "roleplay.galleryVideoDirector",
   "conversation.callVideo.idle",
   "conversation.callVideo.talking",
   "conversation.callVideo.laughing",

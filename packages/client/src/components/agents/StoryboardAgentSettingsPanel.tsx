@@ -36,12 +36,20 @@ function uniqueTemplateId(prefix: string, templates: readonly AgentPromptTemplat
   return candidate;
 }
 
+function preserveTemplateSelection(
+  templates: readonly AgentPromptTemplateOption[],
+  selectedId: string | null,
+): string | null {
+  return templates.some((template) => template.id === selectedId) ? selectedId : (templates[0]?.id ?? null);
+}
+
 function TemplateCollectionEditor({
   title,
   description,
   templates,
   defaults,
   prefix,
+  required = false,
   onChange,
 }: {
   title: string;
@@ -49,12 +57,22 @@ function TemplateCollectionEditor({
   templates: AgentPromptTemplateOption[];
   defaults: AgentPromptTemplateOption[];
   prefix: string;
+  required?: boolean;
   onChange: (templates: AgentPromptTemplateOption[]) => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const defaultsById = new Map(defaults.map((template) => [template.id, template]));
+  const requiredPromptSeed =
+    templates.find((template) => template.promptTemplate.trim())?.promptTemplate ??
+    defaults.find((template) => template.promptTemplate.trim())?.promptTemplate ??
+    "";
   const update = (id: string, patch: Partial<AgentPromptTemplateOption>) => {
     onChange(templates.map((template) => (template.id === id ? { ...template, ...patch } : template)));
+  };
+  const restoreRequiredPrompt = (template: AgentPromptTemplateOption) => {
+    if (!required || template.promptTemplate.trim()) return;
+    const fallbackPrompt = defaultsById.get(template.id)?.promptTemplate || requiredPromptSeed;
+    if (fallbackPrompt) update(template.id, { promptTemplate: fallbackPrompt });
   };
 
   return (
@@ -66,6 +84,7 @@ function TemplateCollectionEditor({
         </div>
         <button
           type="button"
+          disabled={required && !requiredPromptSeed}
           onClick={() => {
             const id = uniqueTemplateId(prefix, templates);
             onChange([
@@ -74,11 +93,11 @@ function TemplateCollectionEditor({
                 id,
                 name: localizeUi("ui.agents.storyboard.customPrompt"),
                 description: "",
-                promptTemplate: "",
+                promptTemplate: required ? requiredPromptSeed : "",
               },
             ]);
           }}
-          className="flex items-center gap-1.5 rounded-lg bg-[var(--background)] px-2.5 py-1.5 text-[0.6875rem] font-medium ring-1 ring-[var(--border)] hover:bg-[var(--accent)]"
+          className="flex items-center gap-1.5 rounded-lg bg-[var(--background)] px-2.5 py-1.5 text-[0.6875rem] font-medium ring-1 ring-[var(--border)] hover:bg-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Plus size="0.6875rem" /> {localizeUi("ui.agents.agenteditor.addOption")}
         </button>
@@ -115,8 +134,9 @@ function TemplateCollectionEditor({
               ) : null}
               <button
                 type="button"
+                disabled={required && templates.length <= 1}
                 onClick={() => onChange(templates.filter((entry) => entry.id !== template.id))}
-                className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--accent)]"
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-35"
                 title={localizeUi("ui.agents.agenteditor.removePromptOption")}
               >
                 <Trash2 size="0.75rem" />
@@ -131,6 +151,8 @@ function TemplateCollectionEditor({
             <MacroTextarea
               value={template.promptTemplate}
               onChange={(value) => update(template.id, { promptTemplate: value })}
+              onBlur={() => restoreRequiredPrompt(template)}
+              onExpandedClose={() => restoreRequiredPrompt(template)}
               rows={7}
               title={template.name}
               className="w-full resize-y rounded-lg bg-[var(--secondary)] px-3 py-2 font-mono text-xs leading-relaxed ring-1 ring-[var(--border)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
@@ -209,6 +231,28 @@ export function StoryboardAgentSettingsPanel({
           </div>
         </div>
       </div>
+
+      <label className="grid gap-2 rounded-xl bg-[var(--secondary)]/55 px-3 py-2.5 ring-1 ring-[var(--border)] sm:grid-cols-[minmax(0,1fr)_7rem] sm:items-center">
+        <span className="min-w-0">
+          <span className="block text-xs font-medium text-[var(--foreground)]">
+            {localizeUi("ui.agents.storyboard.roleplayRunInterval")}
+          </span>
+          <span className="mt-0.5 block text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
+            {localizeUi("ui.agents.storyboard.roleplayRunIntervalDescription")}
+          </span>
+        </span>
+        <input
+          type="number"
+          min={1}
+          max={100}
+          value={settings.runInterval}
+          onChange={(event) =>
+            update({ runInterval: Math.max(1, Math.min(100, Math.trunc(Number(event.target.value) || 1))) })
+          }
+          aria-label={localizeUi("ui.agents.storyboard.roleplayRunInterval")}
+          className="w-full rounded-lg bg-[var(--background)] px-3 py-2 text-sm tabular-nums ring-1 ring-[var(--border)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+        />
+      </label>
 
       <div className="grid gap-3 md:grid-cols-2">
         <label className="space-y-1.5">
@@ -377,6 +421,144 @@ export function StoryboardAgentSettingsPanel({
           checked={settings.useNovelAiCharacterPrompts}
           onChange={(checked) => update({ useNovelAiCharacterPrompts: checked })}
         />
+      </div>
+
+      <section className="space-y-3" aria-labelledby="roleplay-storyboard-prompt-library">
+        <div className="space-y-0.5">
+          <h4 id="roleplay-storyboard-prompt-library" className="text-sm font-semibold text-[var(--foreground)]">
+            {localizeUi("ui.agents.storyboard.roleplayPromptLibrary")}
+          </h4>
+          <p className="text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
+            {localizeUi("ui.agents.storyboard.roleplayPromptLibraryDescription")}
+          </p>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <label className="space-y-1.5">
+            <span className="text-[0.6875rem] font-medium">
+              {localizeUi("ui.agents.storyboard.roleplayEpisodeContract")}
+            </span>
+            <select
+              value={settings.roleplayEpisodeTemplateId ?? ""}
+              onChange={(event) => update({ roleplayEpisodeTemplateId: event.target.value || null })}
+              className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm ring-1 ring-[var(--border)]"
+            >
+              {settings.roleplayEpisodeTemplates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-[0.6875rem] font-medium">
+              {localizeUi("ui.agents.storyboard.roleplayVisualStyle")}
+            </span>
+            <select
+              value={settings.roleplayStyleTemplateId ?? ""}
+              onChange={(event) => update({ roleplayStyleTemplateId: event.target.value || null })}
+              className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm ring-1 ring-[var(--border)]"
+            >
+              {settings.roleplayStyleTemplates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-[0.6875rem] font-medium">
+              {localizeUi("ui.agents.storyboard.roleplayAnimationAddon")}
+            </span>
+            <select
+              value={settings.roleplayAnimationTemplateId ?? ""}
+              onChange={(event) => update({ roleplayAnimationTemplateId: event.target.value || null })}
+              className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm ring-1 ring-[var(--border)]"
+            >
+              {settings.roleplayAnimationTemplates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-[0.6875rem] font-medium">
+              {localizeUi("ui.agents.storyboard.roleplayOutputContract")}
+            </span>
+            <select
+              value={settings.roleplayOutputTemplateId ?? ""}
+              onChange={(event) => update({ roleplayOutputTemplateId: event.target.value || null })}
+              className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm ring-1 ring-[var(--border)]"
+            >
+              {settings.roleplayOutputTemplates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className="grid gap-3 xl:grid-cols-2">
+          <TemplateCollectionEditor
+            title={localizeUi("ui.agents.storyboard.roleplayEpisodePrompts")}
+            description={localizeUi("ui.agents.storyboard.roleplayEpisodePromptsDescription")}
+            templates={settings.roleplayEpisodeTemplates}
+            defaults={defaults.roleplayEpisodeTemplates}
+            prefix="storyboard-roleplay-episode"
+            required
+            onChange={(templates) => {
+              const selected = preserveTemplateSelection(templates, settings.roleplayEpisodeTemplateId);
+              update({ roleplayEpisodeTemplates: templates, roleplayEpisodeTemplateId: selected });
+            }}
+          />
+          <TemplateCollectionEditor
+            title={localizeUi("ui.agents.storyboard.roleplayStylePrompts")}
+            description={localizeUi("ui.agents.storyboard.roleplayStylePromptsDescription")}
+            templates={settings.roleplayStyleTemplates}
+            defaults={defaults.roleplayStyleTemplates}
+            prefix="storyboard-roleplay-style"
+            required
+            onChange={(templates) => {
+              const selected = preserveTemplateSelection(templates, settings.roleplayStyleTemplateId);
+              update({ roleplayStyleTemplates: templates, roleplayStyleTemplateId: selected });
+            }}
+          />
+          <TemplateCollectionEditor
+            title={localizeUi("ui.agents.storyboard.roleplayAnimationPrompts")}
+            description={localizeUi("ui.agents.storyboard.roleplayAnimationPromptsDescription")}
+            templates={settings.roleplayAnimationTemplates}
+            defaults={defaults.roleplayAnimationTemplates}
+            prefix="storyboard-roleplay-animation"
+            required
+            onChange={(templates) => {
+              const selected = preserveTemplateSelection(templates, settings.roleplayAnimationTemplateId);
+              update({ roleplayAnimationTemplates: templates, roleplayAnimationTemplateId: selected });
+            }}
+          />
+          <TemplateCollectionEditor
+            title={localizeUi("ui.agents.storyboard.roleplayOutputPrompts")}
+            description={localizeUi("ui.agents.storyboard.roleplayOutputPromptsDescription")}
+            templates={settings.roleplayOutputTemplates}
+            defaults={defaults.roleplayOutputTemplates}
+            prefix="storyboard-roleplay-output"
+            required
+            onChange={(templates) => {
+              const selected = preserveTemplateSelection(templates, settings.roleplayOutputTemplateId);
+              update({ roleplayOutputTemplates: templates, roleplayOutputTemplateId: selected });
+            }}
+          />
+        </div>
+      </section>
+
+      <div className="space-y-0.5">
+        <h4 className="text-sm font-semibold text-[var(--foreground)]">
+          {localizeUi("ui.agents.storyboard.sharedProviderFormatters")}
+        </h4>
+        <p className="text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
+          {localizeUi("ui.agents.storyboard.sharedProviderFormattersDescription")}
+        </p>
       </div>
 
       <div className="grid gap-3 md:grid-cols-2">
