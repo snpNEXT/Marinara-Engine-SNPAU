@@ -184,7 +184,11 @@ import {
   type IllustratorRetryTarget,
 } from "../../services/generation/illustrator-retry-targets.js";
 import { normalizeContextInjections } from "./agent-normalizers.js";
-import { executeToolCalls, type MetadataPatchInput } from "../../services/tools/tool-executor.js";
+import {
+  executeToolCallForModel,
+  executeToolCalls,
+  type MetadataPatchInput,
+} from "../../services/tools/tool-executor.js";
 
 type PersonaContext = {
   personaId: string | null;
@@ -1803,8 +1807,7 @@ async function attachRetryLorebookWriterToolContexts(args: {
           };
         };
 
-        const results = await executeToolCalls([call], { saveLorebookEntry });
-        return results[0]?.result ?? "Tool execution failed";
+        return executeToolCallForModel(call, { saveLorebookEntry });
       },
     };
   }
@@ -1855,11 +1858,10 @@ async function attachRetryChatMetadataToolContexts(args: {
             allowed: Array.from(allowedToolNames),
           });
         }
-        const results = await executeToolCalls([call], {
+        return executeToolCallForModel(call, {
           chatMeta,
           onUpdateMetadata: updateChatMetadataForTools,
         });
-        return results[0]?.result ?? "Tool execution failed";
       },
     };
   }
@@ -1914,8 +1916,7 @@ async function attachRetryEditChatMessageToolContexts(args: {
             allowed: [EDIT_CHAT_MESSAGE_TOOL_NAME],
           });
         }
-        const results = await executeToolCalls([call], { replaceChatMessageContent });
-        return results[0]?.result ?? "Tool execution failed";
+        return executeToolCallForModel(call, { replaceChatMessageContent });
       },
     };
   }
@@ -2030,13 +2031,12 @@ async function attachRetrySpotifyToolContexts(args: {
             (entry.resolved as any).__spotifyCurrentBeforePlayUri = null;
           }
         }
-        const results = await executeToolCalls([call], {
+        const result = await executeToolCallForModel(call, {
           chatMeta,
           onUpdateMetadata: updateChatMetadataForTools,
           spotify: { accessToken: spotifyAccessToken },
           spotifyRepeatAfterPlay: "track",
         });
-        const result = results[0]?.result ?? "Tool execution failed";
         if (call.function.name === "spotify_play") {
           try {
             const parsed = JSON.parse(result) as Record<string, unknown>;
@@ -3665,12 +3665,7 @@ async function applyRetryResultEffects(args: {
         db: app.db,
         chatId,
         chatName: chat.name,
-        chatMode:
-          (chat as { mode?: unknown }).mode === "game"
-            ? "game"
-            : (chat as { mode?: unknown }).mode === "visual_novel"
-              ? "visual_novel"
-              : "roleplay",
+        chatMode: (chat as { mode?: unknown }).mode === "game" ? "game" : "roleplay",
         chatMetadata: freshMeta,
         currentBackground:
           backgroundBeforeGeneration ??
@@ -3887,8 +3882,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
         };
       }
 
-      const supportsHiddenFromAI =
-        chat.mode === "conversation" || chat.mode === "roleplay" || chat.mode === "visual_novel";
+      const supportsHiddenFromAI = chat.mode === "conversation" || chat.mode === "roleplay";
       if (supportsHiddenFromAI) {
         const summaryPromptSkipIds = resolveSummaryPromptSkipIds({
           chatMode: chat.mode,

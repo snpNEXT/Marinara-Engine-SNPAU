@@ -740,15 +740,16 @@ export function CharactersPanel() {
     <div
       ref={panelScrollRef}
       onScroll={handlePanelScroll}
-      className="flex h-full min-h-0 flex-col gap-2 overflow-y-auto p-3"
+      data-component="CharactersPanelScroll"
+      className="flex h-full min-h-0 flex-col gap-2 overflow-y-auto p-3 [scrollbar-gutter:stable]"
     >
       <button
         onClick={openCharacterLibrary}
         className="mari-chrome-control mari-chrome-control--primary w-full text-xs"
-        title={localizeUi("ui.panels.characterspanel.openFullLibrary")}
+        title={localizeUi("ui.panels.characterspanel.openCharactersLibrary")}
       >
         <Users size="0.875rem" />
-        {localizeUi("ui.panels.characterspanel.openFullLibrary_336ca82")}
+        {localizeUi("ui.panels.characterspanel.openCharactersLibrary")}
       </button>
 
       {/* Actions */}

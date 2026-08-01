@@ -56,7 +56,6 @@ import {
   resolveDefaultAgentPromptTemplateId,
   isAgentManifestAvailableInChatMode,
   isAgentConfigDeleted,
-  isAgentHiddenFromChatSettingsPicker,
   isBuiltInAgentRuntimeDisabled,
   isRetiredBuiltInAgentId,
   mergeBuiltInAgentSettings,
@@ -1744,9 +1743,7 @@ function RoleplaySetupWizard({ chat, onFinish }: ChatSetupWizardProps) {
 
   // Chat settings profiles for the shortcut view (legacy hooks/types still use "chat preset").
   const supportsNarrativeDirectorSecretPlot = (chat as unknown as { mode?: string }).mode === "roleplay";
-  const chatPresetMode = (
-    (chat as unknown as { mode?: string }).mode === "visual_novel" ? "roleplay" : "roleplay"
-  ) as ChatMode;
+  const chatPresetMode: ChatMode = "roleplay";
   const activeChatMode = ((chat as unknown as { mode?: ChatMode }).mode ?? "roleplay") as ChatMode;
   const { data: chatPresetsData } = useChatPresets(chatPresetMode);
   const chatPresetList = useMemo(() => (chatPresetsData ?? []) as ChatPreset[], [chatPresetsData]);
@@ -1862,7 +1859,6 @@ function RoleplaySetupWizard({ chat, onFinish }: ChatSetupWizardProps) {
     for (const agent of installedAgentManifests) {
       if (agent.libraryHidden) continue;
       if (!isAgentManifestAvailableInChatMode(activeChatMode, agent)) continue;
-      if (isAgentHiddenFromChatSettingsPicker(activeChatMode, agent.id)) continue;
       const existing = agentConfigsByType.get(agent.id);
       if (existing && isAgentConfigDeleted(existing.settings)) continue;
       agents.push({

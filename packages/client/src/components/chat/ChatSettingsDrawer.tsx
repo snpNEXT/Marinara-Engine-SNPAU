@@ -107,6 +107,7 @@ import { SummariesEditorModal } from "./SummariesEditorModal";
 import { AgentSuiteModal } from "./AgentSuiteModal";
 import { ConversationTimeZoneSelect } from "./ConversationTimeZoneSelect";
 import { RoleplayMessagePreview } from "./ChatMessage";
+import { CHAT_SETTINGS_SURFACES } from "./chat-settings-surfaces";
 import { useCharacters, usePersonas, useCharacterGroups, type SpriteInfo } from "../../hooks/use-characters";
 import { useLorebooks, useEntriesAcrossLorebooks } from "../../hooks/use-lorebooks";
 import { useDefaultPreset, usePresetFull, usePresets } from "../../hooks/use-presets";
@@ -209,7 +210,6 @@ import {
   getDefaultAgentPrompt,
   GAME_VIDEO_BUILT_IN_PROMPT_TEMPLATES,
   GAME_VIDEO_PROMPT_TEMPLATE_ID,
-  getChatModeCapabilities,
   LIMITS,
   MIN_AGENT_MAX_TOKENS,
   PROFESSOR_MARI_ID,
@@ -225,7 +225,6 @@ import {
   getDefaultBuiltInAgentSettings,
   isAgentManifestAvailableInChatMode,
   isAgentConfigDeleted,
-  isAgentHiddenFromChatSettingsPicker,
   isBuiltInAgentRuntimeDisabled,
   isRetiredBuiltInAgentId,
   mergeBuiltInAgentSettings,
@@ -577,14 +576,10 @@ function isConversationCommandToggleEnabled(
   return toggles[command] !== false;
 }
 
-const MODE_INTROS: Record<ChatMode, string> = {
-  conversation:
-    "Plain chat — no roleplay or game systems built in; autonomous messaging and other tools are optional below.",
-  roleplay:
-    "Plain roleplay surface — no built-in dice, combat, or GM pipeline; sprites, world-state tracking, and other helpers are available as optional agents below.",
-  visual_novel:
-    "Legacy roleplay chat — expressions, world state, and CYOA choices are available as optional agents below.",
-  game: "Full Game Master with built-in dice, combat, encounters, world state, and session/map tracking — the Scene Analysis toggle below adds optional cinematic visuals (backgrounds, music, weather).",
+const MODE_INTRO_KEYS: Record<ChatMode, string> = {
+  conversation: "settings.chat.modeIntro.conversation",
+  roleplay: "settings.chat.modeIntro.roleplay",
+  game: "settings.chat.modeIntro.game",
 };
 
 const MARINARA_UNIVERSAL_PRESET_NAME = "Marinara's Universal Preset";
@@ -813,12 +808,16 @@ export function ChatSettingsDrawer({
   const { data: defaultPromptPreset } = useDefaultPreset();
   const { data: installedAgentManifests = [] } = useCapabilityAgentRegistry();
   const { data: installedCapabilities = [] } = useInstalledCapabilityPackages(open);
-  const chatMode = (chat as unknown as { mode?: ChatMode }).mode ?? "roleplay";
+  const persistedChatMode = (chat as unknown as { mode?: unknown }).mode;
+  const chatMode: ChatMode =
+    persistedChatMode === "conversation" || persistedChatMode === "roleplay" || persistedChatMode === "game"
+      ? persistedChatMode
+      : "roleplay";
   const isConversation = chatMode === "conversation";
   const isGame = chatMode === "game";
-  const isRoleplayMode = chatMode === "roleplay" || chatMode === "visual_novel";
+  const isRoleplayMode = chatMode === "roleplay";
   const supportsNarrativeDirectorSecretPlot = chatMode === "roleplay";
-  const modeCapabilities = useMemo(() => getChatModeCapabilities(chatMode), [chatMode]);
+  const modeSettingsSurfaces = CHAT_SETTINGS_SURFACES[chatMode];
   const metadata = useMemo(
     () => (typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : (chat.metadata ?? {})),
     [chat.metadata],
@@ -1362,7 +1361,6 @@ export function ChatSettingsDrawer({
     for (const a of installedAgentManifests) {
       if (a.libraryHidden) continue;
       if (!isAgentManifestAvailableInChatMode(chatMode, a)) continue;
-      if (isAgentHiddenFromChatSettingsPicker(chatMode, a.id)) continue;
       const existing = agentConfigsByType.get(a.id);
       if (existing && isAgentConfigDeleted(existing.settings)) continue;
       agents.push({
@@ -3041,7 +3039,7 @@ export function ChatSettingsDrawer({
   const [gameSpotifyArtistDraft, setGameSpotifyArtistDraft] = useState(gameSpotifyArtist);
 
   // ── Chat settings profiles (legacy API/type names still use "chat preset") ──
-  const presetMode = (chatMode === "visual_novel" ? "roleplay" : chatMode) as ChatMode;
+  const presetMode = chatMode;
   const { data: chatPresets } = useChatPresets(presetMode);
   const saveChatPreset = useSaveChatPresetSettings();
   const duplicateChatPreset = useDuplicateChatPreset();
@@ -3888,7 +3886,7 @@ export function ChatSettingsDrawer({
           )}
         >
           {/* Settings profile bar — hidden in Game Mode. Scene chats keep it, but scene instructions stay chat-owned. */}
-          {modeCapabilities.supportsChatSettingsPresets && (
+          {modeSettingsSurfaces.showSettingsProfiles && (
             <div
               style={{ order: CHAT_SETTINGS_ORDER.settingsPresets }}
               className="flex shrink-0 flex-col gap-2 border-b border-[var(--border)] px-4 py-3"
@@ -4045,13 +4043,13 @@ export function ChatSettingsDrawer({
           )}
 
           {/* Keep this display tied to the runtime defaults below. */}
-          {MODE_INTROS[chatMode as ChatMode] && (
+          {MODE_INTRO_KEYS[chatMode] && (
             <div
               style={{ order: CHAT_SETTINGS_ORDER.modeIntro }}
               className="border-b border-[var(--border)] px-4 py-2.5"
             >
               <p className="text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
-                {MODE_INTROS[chatMode as ChatMode]}
+                {localizeUi(MODE_INTRO_KEYS[chatMode])}
               </p>
             </div>
           )}
@@ -4080,7 +4078,7 @@ export function ChatSettingsDrawer({
           </div>
 
           {/* Roleplay prompt preset */}
-          {modeCapabilities.supportsPromptPresets && isRoleplayMode && (
+          {modeSettingsSurfaces.promptSettingsSurface === "roleplay" && (
             <div style={{ order: CHAT_SETTINGS_ORDER.promptPreset }}>
               <PromptPresetSection
                 promptPresetId={chat.promptPresetId ?? null}
@@ -4112,7 +4110,7 @@ export function ChatSettingsDrawer({
           )}
 
           {/* Conversation/Game prompt preset */}
-          {isConversation && (
+          {modeSettingsSurfaces.promptSettingsSurface === "conversation" && (
             <div style={{ order: CHAT_SETTINGS_ORDER.promptPreset }}>
               <ConversationPromptSection
                 chatId={chat.id}
@@ -4126,7 +4124,7 @@ export function ChatSettingsDrawer({
             </div>
           )}
 
-          {isGame && (
+          {modeSettingsSurfaces.promptSettingsSurface === "game" && (
             <div style={{ order: CHAT_SETTINGS_ORDER.promptPreset }}>
               <GameExtraPromptSection
                 storedValue={(metadata.gameSystemPrompt as string) ?? ""}
@@ -5090,7 +5088,7 @@ export function ChatSettingsDrawer({
           )}
 
           {/* Every existing and new multi-character chat gets this section. Missing mode metadata means Grouped. */}
-          {chatCharIds.length > 1 && modeCapabilities.supportsGroupChatControls && (
+          {chatCharIds.length > 1 && modeSettingsSurfaces.showGroupChatControls && (
             <Section
               id={`${chatMode}-group-chat`}
               style={{ order: CHAT_SETTINGS_ORDER.groupChat }}
@@ -5636,7 +5634,7 @@ export function ChatSettingsDrawer({
           )}
 
           {/* Conversation feature packages expose commands and settings as soon as they are installed. */}
-          {isConversation && (
+          {modeSettingsSurfaces.agentSettingsSurface === "conversation" && (
             <Section
               id="conversation-agents"
               style={{ order: CHAT_SETTINGS_ORDER.agents }}
@@ -6317,7 +6315,7 @@ export function ChatSettingsDrawer({
           ))}
 
           {/* Agents */}
-          {modeCapabilities.sharedSections.includes("agents") && !isConversation && (
+          {modeSettingsSurfaces.agentSettingsSurface === "generation" && (
             <Section
               id={`${chatMode}-agents`}
               style={{ order: CHAT_SETTINGS_ORDER.agents }}

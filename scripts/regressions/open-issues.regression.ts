@@ -4,11 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
-import type { Chat, Message } from "../../packages/shared/src/types/chat.js";
+import type { Chat, ChatMode, Message } from "../../packages/shared/src/types/chat.js";
+import { chatModeSchema } from "../../packages/shared/src/schemas/chat.schema.js";
 import playwrightConfig from "../../playwright.config.js";
 import { resolveDevSharedBuildScript } from "../dev-shared-build.mjs";
 import { characterCardVersions, characters, chats, messages } from "../../packages/server/src/db/schema/index.js";
 import { eq } from "../../packages/server/src/db/file-query.js";
+import { parseBuildMeta, resolveBuildBranch } from "../../packages/server/src/config/build-info.js";
 
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 import {
@@ -79,7 +81,8 @@ import {
   parseManagedGenerationParameterDefinitions,
   resolveManagedGenerationParameters,
 } from "../../packages/shared/src/utils/managed-generation-parameters.js";
-import { getChatModeCapabilities } from "../../packages/shared/src/constants/chat-mode-capabilities.js";
+import { isAgentManifestAvailableInChatMode } from "../../packages/shared/src/constants/chat-mode-agent-policy.js";
+import { CHAT_SETTINGS_SURFACES } from "../../packages/client/src/components/chat/chat-settings-surfaces.js";
 import { mergeNoodleCustomEmojiMap } from "../../packages/client/src/lib/noodle-custom-emojis.js";
 import {
   isBundledGameAssetFolderPath,
@@ -193,6 +196,7 @@ import {
   buildAgentAddMetadataPatch,
   buildInitialAgentAddSetupState,
 } from "../../packages/client/src/components/chat/AgentAddSetupFields.js";
+import { resolveSpriteTransition } from "../../packages/client/src/lib/sprite-transition.js";
 import {
   parseIllustratorPromptReviewOverride,
   resolveIllustratorPromptSubmission,
@@ -214,6 +218,12 @@ import {
   parseVeniceImageResponse,
 } from "../../packages/server/src/services/image/venice-image.js";
 import {
+  buildZaiImageRequest,
+  buildZaiImageUrl,
+  parseZaiImageUrl,
+  resolveZaiImageSize,
+} from "../../packages/server/src/services/image/zai-image.js";
+import {
   buildAtlasCloudImageRequest,
   buildAtlasCloudUrl,
   buildAtlasCloudVideoRequest,
@@ -222,6 +232,8 @@ import {
 import {
   ATLAS_CLOUD_IMAGE_MODELS,
   ATLAS_CLOUD_VIDEO_MODELS,
+  IMAGE_GENERATION_SOURCES,
+  ZAI_IMAGE_MODELS,
   inferImageSource,
   inferVideoSource,
 } from "../../packages/shared/src/constants/model-lists.js";
@@ -292,6 +304,9 @@ assert.equal(toAutonomousPresenceStatus("active"), "active");
 assert.equal(toAutonomousPresenceStatus("dnd"), "dnd");
 assert.equal(shouldSuppressAutonomousMessages("active"), false);
 assert.equal(shouldSuppressAutonomousMessages("dnd"), true);
+assert.equal(resolveSpriteTransition("full-body", "none"), "crossfade");
+assert.equal(resolveSpriteTransition("full-body", "shake"), "shake");
+assert.equal(resolveSpriteTransition("expressions", "none"), "none");
 assert.deepEqual(findMissingComfyReferenceSlots(comfyReferenceWorkflow, "reference_image", 1), [1]);
 assert.deepEqual(findMissingComfyReferenceSlots(comfyReferenceWorkflow, "reference_image_name", 1), [2]);
 assert.equal(numberedComfyReferencePlaceholder("reference_image_name", 2), "%reference_image_name_03%");
@@ -390,6 +405,25 @@ assert.strictEqual(
 );
 assert.strictEqual(parseDockerDefaultGatewayIp("Iface\tDestination\tGateway\tFlags\tMetric\n"), null);
 
+const validBuildMeta = parseBuildMeta('{"commit":"abcdef123456","branch":"staging"}');
+assert.deepEqual(validBuildMeta, { commit: "abcdef123456", branch: "staging" });
+assert.equal(parseBuildMeta('{"commit":"abcdef123456","branch":42}'), null);
+assert.equal(parseBuildMeta(undefined), null);
+assert.equal(resolveBuildBranch(undefined, validBuildMeta?.branch, "main"), "staging");
+assert.equal(resolveBuildBranch(undefined, parseBuildMeta(undefined)?.branch, "refs/heads/feature/test"), "feature/test");
+const updatesRouteSource = readFileSync(join(REPOSITORY_ROOT, "packages/server/src/routes/updates.routes.ts"), "utf8");
+assert.match(updatesRouteSource, /gitInstall \? await getCurrentBranch\(root\)\.catch\(\(\) => null\) : getBuildBranch\(\)/u);
+assert.match(updatesRouteSource, /const currentChannel = await getUpdateChannelForCheckout\(root, currentBranch\)/u);
+for (const dockerfile of ["Dockerfile", "Dockerfile.lite"]) {
+  const dockerSource = readFileSync(join(REPOSITORY_ROOT, dockerfile), "utf8");
+  assert.match(dockerSource, /^ARG BUILD_BRANCH$/mu, `${dockerfile} must accept the source ref as build metadata`);
+  assert.match(dockerSource, /meta\.branch = process\.env\.BUILD_BRANCH/u);
+}
+for (const workflow of ["build-container.yml", "build-container-lite.yml"]) {
+  const workflowSource = readFileSync(join(REPOSITORY_ROOT, ".github/workflows", workflow), "utf8");
+  assert.match(workflowSource, /BUILD_BRANCH=\$\{\{ github\.ref_name \}\}/u);
+}
+
 assert.equal(resolveGroupGenerationMode("conversation", "individual"), "individual");
 assert.equal(resolveGroupGenerationMode("conversation", "merged"), "merged");
 assert.equal(
@@ -397,12 +431,75 @@ assert.equal(
   "merged",
   "pre-existing Conversation groups without mode metadata must retain Grouped behavior",
 );
-assert.equal(getChatModeCapabilities("conversation").supportsGroupChatControls, true);
-assert.equal(getChatModeCapabilities("conversation").modeSections.includes("group-chat"), true);
+const expectedChatModeSurfaces = {
+  conversation: {
+    showSettingsProfiles: true,
+    promptSettingsSurface: "conversation",
+    agentSettingsSurface: "conversation",
+    showGroupChatControls: true,
+  },
+  roleplay: {
+    showSettingsProfiles: true,
+    promptSettingsSurface: "roleplay",
+    agentSettingsSurface: "generation",
+    showGroupChatControls: true,
+  },
+  game: {
+    showSettingsProfiles: false,
+    promptSettingsSurface: "game",
+    agentSettingsSurface: "generation",
+    showGroupChatControls: false,
+  },
+} as const satisfies Record<
+  ChatMode,
+  {
+    showSettingsProfiles: boolean;
+    promptSettingsSurface: "conversation" | "roleplay" | "game";
+    agentSettingsSurface: "conversation" | "generation";
+    showGroupChatControls: boolean;
+  }
+>;
+assert.deepEqual(chatModeSchema.options, ["conversation", "roleplay", "game"]);
+for (const mode of Object.keys(expectedChatModeSurfaces) as ChatMode[]) {
+  const modeSettingsSurfaces = CHAT_SETTINGS_SURFACES[mode];
+  assert.deepEqual(
+    {
+      showSettingsProfiles: modeSettingsSurfaces.showSettingsProfiles,
+      promptSettingsSurface: modeSettingsSurfaces.promptSettingsSurface,
+      agentSettingsSurface: modeSettingsSurfaces.agentSettingsSurface,
+      showGroupChatControls: modeSettingsSurfaces.showGroupChatControls,
+    },
+    expectedChatModeSurfaces[mode],
+    `Chat mode ${mode} must expose the expected settings surfaces`,
+  );
+}
+assert.deepEqual(Object.keys(CHAT_SETTINGS_SURFACES), ["conversation", "roleplay", "game"]);
+const downloadableAgent = { id: "downloadable-agent", execution: "pipeline" as const };
+assert.equal(isAgentManifestAvailableInChatMode("conversation", downloadableAgent), false);
+assert.equal(isAgentManifestAvailableInChatMode("roleplay", downloadableAgent), true);
+assert.equal(isAgentManifestAvailableInChatMode("game", downloadableAgent), false);
+assert.equal(
+  isAgentManifestAvailableInChatMode("game", { id: "spotify", execution: "pipeline" }),
+  true,
+  "Game mode must retain its opt-in Spotify agent",
+);
+assert.equal(
+  isAgentManifestAvailableInChatMode("game", {
+    id: "mode-limited-feature",
+    execution: "feature",
+    modeAllowlist: ["roleplay"],
+  }),
+  false,
+  "An explicit mode allowlist must still take precedence over feature-agent availability",
+);
+assert.equal(
+  isAgentManifestAvailableInChatMode(null, downloadableAgent),
+  true,
+  "Missing legacy mode metadata must retain the Roleplay agent policy",
+);
 assert.equal(resolveGroupGenerationMode("roleplay", "individual"), "individual");
 assert.equal(resolveGroupGenerationMode("roleplay", "merged"), "merged");
 assert.equal(shouldRestoreRegenerationCharacterTarget("roleplay", "merged", ["a", "b"]), false);
-assert.equal(shouldRestoreRegenerationCharacterTarget("visual_novel", undefined, ["a", "b"]), false);
 assert.equal(shouldRestoreRegenerationCharacterTarget("roleplay", "individual", ["a", "b"]), true);
 assert.equal(shouldRestoreRegenerationCharacterTarget("roleplay", "merged", ["a"]), true);
 assert.deepEqual(resolveIllustratorImageSize({ width: 960, height: 540 }, "landscape"), {
@@ -1303,6 +1400,45 @@ assert.deepEqual(
   }),
   [{ id: "chroma", name: "Chroma" }],
 );
+assert.equal(buildZaiImageUrl("https://api.z.ai/api/paas/v4"), "https://api.z.ai/api/paas/v4/images/generations");
+assert.throws(
+  () => buildZaiImageUrl("https://api.z.ai/api/coding/paas/v4"),
+  /general API URL/u,
+);
+assert.equal(resolveZaiImageSize("glm-image", 1600, 900), "1728x960");
+assert.equal(resolveZaiImageSize("cogview-4-250304", 900, 1600), "768x1344");
+assert.deepEqual(buildZaiImageRequest({ model: "glm-image", prompt: "canal", width: 1600, height: 900 }), {
+  model: "glm-image",
+  prompt: "canal",
+  size: "1728x960",
+});
+assert.equal(parseZaiImageUrl({ data: [{ url: "https://cdn.example/zai.png" }] }), "https://cdn.example/zai.png");
+assert.equal(inferImageSource("", "https://api.z.ai/api/paas/v4"), "zai");
+assert.ok(IMAGE_GENERATION_SOURCES.some((source) => source.id === "zai"));
+assert.deepEqual(
+  ZAI_IMAGE_MODELS.map((model) => model.id),
+  ["glm-image", "cogview-4-250304"],
+);
+const pullRequestTriageWorkflow = readFileSync(
+  new URL("../../.github/workflows/pull-request-triage.yml", import.meta.url),
+  "utf8",
+);
+assert.match(pullRequestTriageWorkflow, /pull_request_review:\s+types: \[submitted, dismissed\]/u);
+assert.match(pullRequestTriageWorkflow, /github\.event\.review\.user\.login == 'SpicyMarinara'/u);
+assert.match(pullRequestTriageWorkflow, /github\.event\.review\.state == 'commented'/u);
+assert.match(pullRequestTriageWorkflow, /'Ignore unrelated triage event'/u);
+assert.match(pullRequestTriageWorkflow, /APPROVAL_EVENT_RELEVANT/u);
+assert.match(pullRequestTriageWorkflow, /if: env\.APPROVAL_EVENT_RELEVANT != 'true'/u);
+assert.match(
+  pullRequestTriageWorkflow,
+  /name: "\$\{\{ github\.event\.pull_request\.base\.ref == 'staging'.*'Ignore unrelated triage event' \}\}"/u,
+);
+assert.match(
+  pullRequestTriageWorkflow,
+  /github\.event\.action != 'edited' \|\| contains\(toJSON\(github\.event\.changes\), '\\?"base\\?"'\)/u,
+);
+assert.doesNotMatch(pullRequestTriageWorkflow, /github\.event\.changes\.base != null/u);
+assert.doesNotMatch(pullRequestTriageWorkflow, /github\.event\.changes\.base\.ref\.from != ''/u);
 assert.equal(
   buildAtlasCloudUrl("https://api.atlascloud.ai/v1/", "generateImage"),
   "https://api.atlascloud.ai/api/v1/model/generateImage",
@@ -1720,6 +1856,14 @@ const professorMariHomeSource = readFileSync(
   new URL("../../packages/client/src/components/chat/HomeProfessorMariChat.tsx", import.meta.url),
   "utf8",
 );
+assert.match(professorMariHomeSource, /chatHistorySelectionMode/u);
+assert.match(professorMariHomeSource, /toggleProfessorChatSelection/u);
+assert.match(professorMariHomeSource, /handleBulkDeleteProfessorChats/u);
+assert.match(
+  professorMariHomeSource,
+  /Promise\.allSettled\([\s\S]*?api\.delete\(`\/chats\/internal\/professor-mari\/chats\/\$\{id\}`\)/u,
+  "Professor Mari chat history should delete all selected chats through the existing endpoint",
+);
 const roleplaySurfaceSource = readFileSync(
   new URL("../../packages/client/src/components/chat/ChatRoleplaySurface.tsx", import.meta.url),
   "utf8",
@@ -1735,10 +1879,21 @@ assert.match(
   /ui\.chat\.chatsettingsdrawer\.individualRepliesCanUseManyTokens/u,
   "Conversation group-token warning must remain wired through localization",
 );
+const groupChatLabelIndex = conversationGroupSettingsSource.indexOf("ui.chat.chatsettingsdrawer.groupChat");
+assert.notEqual(groupChatLabelIndex, -1, "Chat Settings Drawer must retain the Group Chat section");
+const groupChatVisibilitySource = conversationGroupSettingsSource.slice(
+  Math.max(0, groupChatLabelIndex - 500),
+  groupChatLabelIndex,
+);
 assert.match(
-  conversationGroupSettingsSource,
-  /chatCharIds\.length > 1 && modeCapabilities\.supportsGroupChatControls/u,
-  "pre-existing multi-character Conversation chats must show Group Chat settings without requiring mode metadata",
+  groupChatVisibilitySource,
+  /chatCharIds\.length\s*>\s*1/u,
+  "pre-existing multi-character Conversation chats must retain the Group Chat character-count gate",
+);
+assert.match(
+  groupChatVisibilitySource,
+  /\bshowGroupChatControls\b/u,
+  "Group Chat visibility must consume the settings-surface policy",
 );
 assert.match(
   conversationGroupSettingsSource,
@@ -1957,6 +2112,43 @@ const gameSetupWizardSource = readFileSync(
 const chatSettingsDrawerSource = readFileSync(
   new URL("../../packages/client/src/components/chat/ChatSettingsDrawer.tsx", import.meta.url),
   "utf8",
+);
+assert.match(
+  chatSettingsDrawerSource,
+  /CHAT_SETTINGS_SURFACES\[chatMode\]/u,
+  "Chat Settings Drawer must select the active mode's settings surface directly",
+);
+for (const surfaceField of ["showSettingsProfiles", "promptSettingsSurface", "agentSettingsSurface"]) {
+  assert.match(
+    chatSettingsDrawerSource,
+    new RegExp(`\\b${surfaceField}\\b`, "u"),
+    `Chat Settings Drawer must consume the ${surfaceField} settings-surface policy`,
+  );
+}
+assert.match(
+  chatSettingsDrawerSource,
+  /agentSettingsSurface\s*===\s*["']conversation["']\s*&&\s*\(\s*<Section\s+id=["']conversation-agents["']/u,
+  "Conversation Agents visibility must consume the conversation agent-settings surface",
+);
+assert.match(
+  chatSettingsDrawerSource,
+  /agentSettingsSurface\s*===\s*["']generation["']\s*&&\s*\(\s*<Section\s+id=\{`\$\{chatMode\}-agents`\}/u,
+  "Roleplay and Game Agents visibility must consume the generation agent-settings surface",
+);
+assert.doesNotMatch(
+  chatSettingsDrawerSource,
+  /getChatModeCapabilities|modeCapabilities/u,
+  "Chat Settings Drawer must use the settings-surface policy instead of shared capabilities",
+);
+assert.doesNotMatch(
+  chatSettingsDrawerSource,
+  /supportsPromptPresets\s*&&\s*isRoleplayMode/u,
+  "Prompt preset visibility must not contradict the matrix with a duplicate roleplay gate",
+);
+assert.doesNotMatch(
+  chatSettingsDrawerSource,
+  /sharedSections\s*\.includes\(\s*["']agents["']\s*\)\s*&&\s*!isConversation/u,
+  "Agent settings visibility must not retain the obsolete sharedSections/isConversation gate",
 );
 const conversationInputSource = readFileSync(
   new URL("../../packages/client/src/components/chat/ConversationInput.tsx", import.meta.url),
@@ -3964,6 +4156,11 @@ try {
     connectionEditorSource,
     /setRemoteModels\(\[\]\);\s*setRemoteLoras\(\[\]\);\s*setFetchError\(null\);/u,
     "Changing media providers must clear stale remote LoRA choices",
+  );
+  assert.match(
+    connectionEditorSource,
+    /src\.id === "zai"[\s\S]{0,180}!ZAI_IMAGE_MODELS\.some[\s\S]{0,180}setLocalModel\("glm-image"\)/u,
+    "Switching to Z.AI must replace a model that Z.AI does not support",
   );
 
   const backgroundAutonomousSource = readFileSync(

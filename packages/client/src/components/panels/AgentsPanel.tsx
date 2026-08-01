@@ -17,7 +17,6 @@ import {
   Download,
   Check,
   FolderPlus,
-  FolderOpen,
   ArrowUpDown,
   GripVertical,
   ShieldCheck,
@@ -46,7 +45,7 @@ import {
   type CustomAgentCapability,
   type AgentCategory,
 } from "@marinara-engine/shared";
-import { confirmNonEmptyFolderDelete, showConfirmDialog } from "../../lib/app-dialogs";
+import { confirmNonEmptyFolderDelete, showChoiceDialog, showConfirmDialog } from "../../lib/app-dialogs";
 import { cn } from "../../lib/utils";
 import { sortBasicPanelItems } from "../../lib/panel-sort";
 import { downloadZipFile } from "../../lib/download-zip";
@@ -263,6 +262,23 @@ export function AgentsPanel() {
     },
     [agentImportsDisabledHelp, agentImportsEnabled],
   );
+
+  const chooseAgentImportSource = useCallback(async () => {
+    if (!agentImportsEnabled) {
+      openAgentImportPicker("file");
+      return;
+    }
+
+    const source = await showChoiceDialog({
+      title: localizeUi("ui.panels.agentspanel.importAgents"),
+      message: localizeUi("ui.panels.agentspanel.chooseAgentFilesOrFolder"),
+      choices: [
+        { key: "file", label: localizeUi("ui.panels.gameassetssettings.chooseFiles"), tone: "accent" },
+        { key: "folder", label: localizeUi("ui.chat.musicdjsetupfields.chooseFolder"), tone: "accent" },
+      ],
+    });
+    if (source === "file" || source === "folder") openAgentImportPicker(source);
+  }, [agentImportsEnabled, localizeUi, openAgentImportPicker]);
 
   const agentConfigRows = useMemo(() => (agentConfigs ?? []) as AgentConfigRow[], [agentConfigs]);
   const availableBuiltInAgents = useMemo(() => {
@@ -852,7 +868,7 @@ export function AgentsPanel() {
         </button>
         <button
           type="button"
-          onClick={() => openAgentImportPicker("file")}
+          onClick={() => void chooseAgentImportSource()}
           aria-disabled={!agentImportsEnabled || agentImportPolicyLoading}
           className={cn(
             "mari-chrome-control mari-chrome-control--primary flex-1 text-xs",
@@ -861,18 +877,6 @@ export function AgentsPanel() {
           title={agentImportsEnabled ? localizeUi("ui.panels.agentspanel.importAgents") : agentImportsDisabledHelp}
         >
           <Download size="0.8125rem" />
-        </button>
-        <button
-          type="button"
-          onClick={() => openAgentImportPicker("folder")}
-          aria-disabled={!agentImportsEnabled || agentImportPolicyLoading}
-          className={cn(
-            "mari-chrome-control mari-chrome-control--primary flex-1 text-xs",
-            (!agentImportsEnabled || agentImportPolicyLoading) && "cursor-not-allowed grayscale opacity-45",
-          )}
-          title={agentImportsEnabled ? localizeUi("ui.panels.agentspanel.importAgentFolder") : agentImportsDisabledHelp}
-        >
-          <FolderOpen size="0.8125rem" />
         </button>
         <button
           onClick={() => {

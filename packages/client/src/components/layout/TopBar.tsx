@@ -13,9 +13,12 @@ import {
   VenetianMask,
   Bot,
   AtSign,
+  Globe2,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { isInstalledCapabilityReady } from "@marinara-engine/shared";
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useTranslation as useUiTranslation } from "react-i18next";
 import { useUIStore } from "../../stores/ui.store";
 import { useChatStore } from "../../stores/chat.store";
 import { cn } from "../../lib/utils";
@@ -92,6 +95,7 @@ function isMobileTopbarNavigation() {
 
 export function TopBar() {
   const localize = useLocalizedUiText();
+  const { t: localizeUi } = useUiTranslation();
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const toggleRightPanel = useUIStore((s) => s.toggleRightPanel);
@@ -106,6 +110,7 @@ export function TopBar() {
   const presetDetailId = useUIStore((s) => s.presetDetailId);
   const connectionDetailId = useUIStore((s) => s.connectionDetailId);
   const agentDetailId = useUIStore((s) => s.agentDetailId);
+  const openAgentDetail = useUIStore((s) => s.openAgentDetail);
   const toolDetailId = useUIStore((s) => s.toolDetailId);
   const personaDetailId = useUIStore((s) => s.personaDetailId);
   const regexDetailId = useUIStore((s) => s.regexDetailId);
@@ -126,6 +131,9 @@ export function TopBar() {
   const musicDjInstalled = installedCapabilities.some(
     (capability) => capability.id === "spotify" && capability.status === "active",
   );
+  const worldMapsReady = installedCapabilities.some(
+    (capability) => capability.id === "hierarchical-maps" && isInstalledCapabilityReady(capability),
+  );
   const showMusicDjUnavailablePlayer =
     spotifyDesktopViewport && musicPlayerEnabled && !installedCapabilitiesLoading && !musicDjInstalled;
 
@@ -142,7 +150,9 @@ export function TopBar() {
       Boolean(regexDetailId) ||
       Boolean(toolDetailId),
     connections: (rightPanelOpen && rightPanel === "connections") || Boolean(connectionDetailId),
-    agents: (rightPanelOpen && rightPanel === "agents") || Boolean(agentDetailId),
+    agents:
+      (rightPanelOpen && rightPanel === "agents") ||
+      Boolean(agentDetailId && agentDetailId !== "hierarchical-maps"),
     personas:
       (rightPanelOpen && rightPanel === "personas") ||
       Boolean(personaDetailId) ||
@@ -452,6 +462,33 @@ export function TopBar() {
             </button>
           );
         })}
+
+        {worldMapsReady && (
+          <button
+            type="button"
+            onClick={() => openAgentDetail("hierarchical-maps")}
+            data-tour="world-maps"
+            data-topbar-hover-key="world-maps"
+            className={cn(
+              TOPBAR_PANEL_BUTTON_CLASS,
+              "hidden md:flex",
+              agentDetailId === "hierarchical-maps"
+                ? cn(TOPBAR_ACTIVE_BUTTON_CLASS, "text-[var(--marinara-chat-chrome-button-text-hover)]")
+                : cn(
+                    "text-[var(--muted-foreground)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]",
+                    isTopbarHovered("world-maps") &&
+                      cn(TOPBAR_FORCE_HOVER_CLASS, "text-[var(--marinara-chat-chrome-button-text-hover)]"),
+                  ),
+            )}
+            title={localizeUi("navigation.topbar.worldMaps")}
+            aria-label={localizeUi("navigation.topbar.worldMaps")}
+          >
+            <Globe2 size={15} className={TOPBAR_ACCENT_ICON_CLASS} />
+            {agentDetailId === "hierarchical-maps" && (
+              <span className="mari-topbar-active-underline absolute -bottom-0.5 left-1/2 h-0.5 w-3 -translate-x-1/2 rounded-full" />
+            )}
+          </button>
+        )}
 
         {/* Settings */}
         <button

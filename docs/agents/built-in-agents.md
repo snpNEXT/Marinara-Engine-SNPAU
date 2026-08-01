@@ -14,7 +14,7 @@ Each agent below shows three quick facts.
 
 Marinara groups its agents into three categories in the **Agents** panel: **Writer Agents**, **Tracker Agents**, and **Misc Agents**. This reference uses the same grouping.
 
-A run interval means the agent runs once every few assistant messages instead of after every message. You can change a run interval in the agent's setup, up to 100.
+A run interval means the agent runs once every few user and assistant messages instead of after every message. You can change a run interval in the agent's setup, up to 100.
 
 ## Writer agents
 
@@ -42,7 +42,7 @@ Watches how a character changes during play and suggests edits to that character
 
 - **Phase**: Post-Processing.
 - **Where it works**: Roleplay.
-- **Key settings**: it runs once every 8 assistant messages by default. See [Agent approvals and the Agent Suite](approvals-and-agent-suite.md).
+- **Key settings**: it runs once every 8 user and assistant messages by default. See [Agent approvals and the Agent Suite](approvals-and-agent-suite.md).
 
 ### Narrative Director
 
@@ -156,7 +156,7 @@ Simulates a live audience reacting to your scene, shown as a floating **Echo** w
 Extracts durable memories from chat summaries, character records, and lorebooks into a package-owned vault, then recalls relevant context before the main reply. It supports scoped vault browsing, source imports, pending-draft review, and preset-marker placement for recalled context.
 
 - **Integration**: Feature package; it contributes pre-generation context and memory management UI instead of running as a normal post-processing tracker.
-- **Where it works**: Conversation, Roleplay, Visual Novel, and Game. Visual Novel uses the Roleplay extraction profile.
+- **Where it works**: Conversation, Roleplay, and Game.
 - **Key settings**: enablement, recall token budget (128-16,384), maximum recalled chunks (1-100), score threshold, recent-message context (1-20), recall style and semantic, lexical, graph, and keyword weights, resolved-memory inclusion, recall preamble, extraction reasoning and verbosity, generation limits, source limits, prompt templates, AI keyword extraction, and Game-mode extraction.
 - **Data lifecycle**: use the Memory Settings backup controls to export or replace the vault, drafts, and settings. Delete all data permanently removes memories, drafts, activity, and derived indexes while retaining settings. Uninstalling the package preserves the Long-Term Memory vault for a later reinstall. Installing, updating, or removing it requires a Marinara restart.
 - **Compatibility**: Engine `2.3.3` through before `2.4.0`. The package uses `agent-runtime`, `chat-read`, `routes`, `storage`, and `ui` permissions.
@@ -167,7 +167,7 @@ Responsible for image and video generations. It writes visual prompts for import
 
 - **Phase**: Post-Processing.
 - **Where it works**: Roleplay.
-- **Key settings**: it runs once every 5 assistant messages by default. Settings include **Prompt Model**, **Image Style**, **Attach Card Appearance**, and **Send Avatar References**. For the full setup, see [Illustrator agent](../media/illustrator-agent.md).
+- **Key settings**: it runs once every 5 user and assistant messages by default. Settings include **Prompt Model**, **Image Style**, **Attach Card Appearance**, and **Send Avatar References**. For the full setup, see [Illustrator agent](../media/illustrator-agent.md).
 
 ### Lorebook Keeper
 
@@ -175,7 +175,7 @@ Creates and updates lorebook entries from important facts in your chat, so your 
 
 - **Phase**: Post-Processing.
 - **Where it works**: Roleplay. In Game Mode, a session-end variant called **Game Session Keeper** does the same job at the end of a session.
-- **Key settings**: it runs once every 8 assistant messages by default. A **Target Lorebook** picker chooses where entries go, with an auto-select option.
+- **Key settings**: it runs once every 8 user and assistant messages by default. A **Target Lorebook** picker chooses where entries go, with an auto-select option.
 
 ### Combat
 

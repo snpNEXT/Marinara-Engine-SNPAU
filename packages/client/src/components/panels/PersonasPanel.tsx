@@ -589,10 +589,10 @@ export function PersonasPanel() {
       <button
         onClick={openPersonaLibrary}
         className="mari-chrome-control mari-chrome-control--primary w-full text-xs"
-        title={localizeUi("ui.panels.personaspanel.openFullPersonaLibrary")}
+        title={localizeUi("ui.panels.personaspanel.openPersonasLibrary")}
       >
         <VenetianMask size="0.875rem" />
-        {localizeUi("ui.panels.characterspanel.openFullLibrary_336ca82")}
+        {localizeUi("ui.panels.personaspanel.openPersonasLibrary")}
       </button>
 
       {/* Actions */}

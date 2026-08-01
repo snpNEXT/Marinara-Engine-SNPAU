@@ -28,6 +28,7 @@ import {
   Tag,
   Loader2,
   PhoneIncoming,
+  Globe2,
 } from "lucide-react";
 import { useBulkExportChats, useChats, useCreateChat, useDeleteChat, useDeleteChatGroup } from "../../hooks/use-chats";
 import { useChatPresets, useApplyChatPreset } from "../../hooks/use-chat-presets";
@@ -55,6 +56,7 @@ import { toast } from "sonner";
 import {
   BACKGROUND_THUMBNAIL_WIDTH,
   includesTextForMatch,
+  isInstalledCapabilityReady,
   normalizeTextForMatch,
   type Chat,
   type ChatFolder,
@@ -76,6 +78,7 @@ import { SelectionActionBar } from "../ui/SelectionActionBar";
 import { SmoothFolderContent } from "../ui/SmoothFolderContent";
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
+import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
 
 type ChatSortOption = "recent" | "newest" | "oldest" | "name-asc" | "name-desc";
 const CHAT_LIST_PAGE_SIZE = 100;
@@ -250,8 +253,13 @@ export function ChatSidebar() {
   const editorDirty = useUIStore((s) => s.editorDirty);
   const closeAllDetails = useUIStore((s) => s.closeAllDetails);
   const setSidebarOpen = useUIStore((s) => s.setSidebarOpen);
+  const openAgentDetail = useUIStore((s) => s.openAgentDetail);
   const chatModeShortcutRequest = useUIStore((s) => s.chatModeShortcutRequest);
   const setPendingNewChatMode = useChatStore((s) => s.setPendingNewChatMode);
+  const { data: installedCapabilities = [] } = useInstalledCapabilityPackages();
+  const worldMapsReady = installedCapabilities.some(
+    (capability) => capability.id === "hierarchical-maps" && isInstalledCapabilityReady(capability),
+  );
 
   // Folder hooks
   const { data: folders } = useChatFolders();
@@ -331,7 +339,7 @@ export function ChatSidebar() {
     () =>
       (chats ?? []).filter(
         (chat) =>
-          (chat.mode === activeTab || (activeTab === "roleplay" && chat.mode === "visual_novel")) &&
+          chat.mode === activeTab &&
           !(chat.mode === "conversation" && chat.metadata?.gameId),
       ),
     [chats, activeTab],
@@ -473,7 +481,7 @@ export function ChatSidebar() {
   const modeFolders = useMemo(() => {
     if (!folders) return [] as ChatFolder[];
     return folders
-      .filter((f) => f.mode === activeTab || (activeTab === "roleplay" && f.mode === "visual_novel"))
+      .filter((f) => f.mode === activeTab)
       .sort((a, b) => a.sortOrder - b.sortOrder);
   }, [folders, activeTab]);
 
@@ -582,7 +590,7 @@ export function ChatSidebar() {
 
     // 1. Tab sync — once per chat switch
     if (!s.tabSynced) {
-      const chatMode = chat.mode === "visual_novel" ? "roleplay" : chat.mode;
+      const chatMode = chat.mode;
       if (chatMode === "conversation" || chatMode === "roleplay" || chatMode === "game") {
         setActiveTab(chatMode);
       }
@@ -639,9 +647,7 @@ export function ChatSidebar() {
       if (createChat.isPending) return;
       const connectionRows = ((connections ?? []) as Array<{ id: string }>).filter((connection) => !!connection.id);
       if (connectionRows.length === 0) {
-        if (mode !== "visual_novel") {
-          setPendingNewChatMode(mode, "sidebar");
-        }
+        setPendingNewChatMode(mode, "sidebar");
         if (typeof window !== "undefined" && window.innerWidth < 768) setSidebarOpen(false);
         return;
       }
@@ -882,7 +888,7 @@ export function ChatSidebar() {
 
   // ── Chat row renderer (shared between unfiled + folder sections) ──
   const renderChatRow = ({ chat, branchCount }: (typeof displayChats)[number]) => {
-    const cfg = MODE_CONFIG[chat.mode === "visual_novel" ? "roleplay" : chat.mode] ?? MODE_CONFIG.conversation;
+    const cfg = MODE_CONFIG[chat.mode] ?? MODE_CONFIG.conversation;
     const isActive = activeChatId === chat.id || (chat.groupId != null && chat.groupId === activeGroupId);
     const isSelected = selectedChatIds.has(chat.id);
     const charIds = normalizeChatCharacterIds((chat as { characterIds?: unknown }).characterIds);
@@ -1274,6 +1280,20 @@ export function ChatSidebar() {
           <h2 className="mari-chrome-text-strong text-sm font-semibold">{localize("Chats")}</h2>
         </div>
         <div className="flex items-center gap-1">
+          {worldMapsReady && (
+            <button
+              type="button"
+              onClick={() => {
+                setSidebarOpen(false);
+                openAgentDetail("hierarchical-maps");
+              }}
+              className="mari-chrome-control mari-chrome-control--small mari-accent-animated p-1.5 active:scale-90 md:hidden"
+              title={localizeUi("navigation.topbar.worldMaps")}
+              aria-label={localizeUi("navigation.topbar.worldMaps")}
+            >
+              <Globe2 size="0.875rem" />
+            </button>
+          )}
           <button
             onClick={() => setSidebarOpen(false)}
             className="mari-chrome-control mari-chrome-control--small mari-accent-animated p-1.5 active:scale-90 md:hidden"
@@ -1293,7 +1313,7 @@ export function ChatSidebar() {
             const isActive = activeTab === tab;
             const tabUnread =
               chats
-                ?.filter((c) => c.mode === tab || (tab === "roleplay" && c.mode === "visual_novel"))
+                ?.filter((c) => c.mode === tab)
                 .reduce((sum, c) => sum + (unreadCounts.get(c.id) || 0), 0) ?? 0;
             return (
               <button

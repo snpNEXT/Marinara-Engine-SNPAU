@@ -49,6 +49,7 @@ import { CHAT_FLOATING_UI_DISMISS_EVENT, isDesktopShellNavigationTarget } from "
 import { getConnectedChatDisplayName } from "../../lib/chat-display";
 import { playConfiguredNotificationPing } from "../../lib/notification-sound";
 import { messageHasPendingPostProcessing } from "../../lib/chat-message-extra";
+import { isMessageHiddenFromUser } from "../../lib/chat-message-visibility";
 import { getTranscriptRenderWindow, TRANSCRIPT_RENDER_WINDOW_STEP } from "../../lib/transcript-render-window";
 import { useUIStore } from "../../stores/ui.store";
 import { useChatStore } from "../../stores/chat.store";
@@ -368,12 +369,6 @@ function RegeneratingMessageContent({
       {...rest}
     />
   );
-}
-
-/** True for stored context messages that should feed generation but not render in the transcript. */
-function isHiddenFromUser(message: MessageWithSwipes) {
-  const extra = typeof message.extra === "string" ? JSON.parse(message.extra) : (message.extra ?? {});
-  return extra.hiddenFromUser === true;
 }
 
 function readStringArray(value: unknown): string[] {
@@ -2015,7 +2010,7 @@ export function ChatRoleplaySurface({
                 )}
 
                 {visibleMessages?.map((msg, i) => {
-                  if (isHiddenFromUser(msg)) return null;
+                  if (isMessageHiddenFromUser(msg)) return null;
                   if (
                     isMessageShadowedByLiveStream({
                       hasLiveStream,

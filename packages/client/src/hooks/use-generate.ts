@@ -15,6 +15,7 @@ import {
   type IllustratorRetryTarget,
 } from "../lib/agent-failures";
 import { chatBackgroundMetadataToUrl, chatBackgroundUrlToMetadata } from "../lib/backgrounds";
+import { hasVisibleUserMessagePayload } from "../lib/chat-message-visibility";
 import { formatGenerationParameterError } from "../lib/generation-parameter-errors";
 import { sanitizeAppCss } from "../lib/theme-css";
 import {
@@ -381,7 +382,6 @@ function replyNotificationTitle(mode: Chat["mode"] | undefined, characterName: s
   if (mode === "game") return "Game turn is ready";
   if (characterName) return undefined;
   if (mode === "roleplay") return "Roleplay reply is ready";
-  if (mode === "visual_novel") return "Visual Novel reply is ready";
   if (mode === "conversation") return "New message is ready";
   return "Reply is ready";
 }
@@ -911,7 +911,7 @@ function createLeadingSpeakerPrefixFilter(initialLabels: string[]) {
 function shouldRefreshGameStateAfterGeneration(qc: QueryClient, chatId: string) {
   const chat = getCachedChatForGeneration(qc, chatId);
   if (chat?.mode === "game") return true;
-  if (chat?.mode !== "roleplay" && chat?.mode !== "visual_novel") return false;
+  if (chat?.mode !== "roleplay") return false;
   const enableAgents = parseChatMetadata(chat.metadata).enableAgents;
   return enableAgents === true || enableAgents === "true";
 }
@@ -1206,24 +1206,14 @@ export function useGenerate() {
       // A stale in-flight message refetch can overwrite the saved assistant
       // message after it is upserted into the cache. Cancel early so the
       // post-save refresh owns the query lifecycle for this generation.
-      await qc.cancelQueries({ queryKey: chatKeys.messages(params.chatId), exact: true });
-      const assistantMessagesBeforeGeneration = snapshotMessagesByRole(qc, params.chatId, "assistant");
-      const expectedPersistedRole: Message["role"] = params.impersonate ? "user" : "assistant";
-      const expectedMessagesBeforeGeneration =
-        expectedPersistedRole === "assistant"
-          ? assistantMessagesBeforeGeneration
-          : snapshotMessagesByRole(qc, params.chatId, expectedPersistedRole);
-      if (params.regenerateMessageId) {
-        forgetRecentMessageContentEdit(params.chatId, params.regenerateMessageId);
-      }
-
+      const cancellation = qc.cancelQueries(
+        { queryKey: chatKeys.messages(params.chatId), exact: true },
+        { silent: true, revert: false },
+      );
       const pendingAttachments = params.attachments ?? [];
 
       // Optimistically show the user message in the chat immediately
-      if (
-        (params.userMessage || pendingAttachments.length > 0 || params.pendingSpatialTransition) &&
-        !params.impersonate
-      ) {
+      if (hasVisibleUserMessagePayload(params.userMessage, pendingAttachments) && !params.impersonate) {
         // Build persona snapshot for per-message persona tracking
         const cachedPersonas = qc.getQueryData<
           Array<{
@@ -1293,6 +1283,17 @@ export function useGenerate() {
           return { ...old, pages };
         });
         requestChatScrollToBottom({ chatId: params.chatId, behavior: "auto" });
+      }
+
+      await cancellation;
+      const assistantMessagesBeforeGeneration = snapshotMessagesByRole(qc, params.chatId, "assistant");
+      const expectedPersistedRole: Message["role"] = params.impersonate ? "user" : "assistant";
+      const expectedMessagesBeforeGeneration =
+        expectedPersistedRole === "assistant"
+          ? assistantMessagesBeforeGeneration
+          : snapshotMessagesByRole(qc, params.chatId, expectedPersistedRole);
+      if (params.regenerateMessageId) {
+        forgetRecentMessageContentEdit(params.chatId, params.regenerateMessageId);
       }
 
       // ── SillyTavern-style smooth streaming ──
@@ -1602,9 +1603,7 @@ export function useGenerate() {
               if (transitionData?.chatId === params.chatId && transitionData.commandId) {
                 spatialTransitionCommitted = true;
                 spatialCapabilityRefreshDispatched = true;
-                useChatStore
-                  .getState()
-                  .clearPendingSpatialTransition(params.chatId, transitionData.commandId);
+                useChatStore.getState().clearPendingSpatialTransition(params.chatId, transitionData.commandId);
                 dispatchCapabilityClientEvent({
                   packageId: "hierarchical-maps",
                   type: event.type,
@@ -1970,7 +1969,7 @@ export function useGenerate() {
                     );
                   const chatList = qc.getQueryData<Chat[]>(chatKeys.list());
                   const thisChat = chatList?.find((c) => c.id === params.chatId);
-                  const isRpMode = thisChat?.mode === "roleplay" || thisChat?.mode === "visual_novel";
+                  const isRpMode = thisChat?.mode === "roleplay";
                   const soundOn = isRpMode
                     ? useUIStore.getState().rpNotificationSound
                     : useUIStore.getState().convoNotificationSound;
@@ -2870,7 +2869,7 @@ export function useGenerate() {
               .getState()
               .addNotification(params.chatId, identity.name ?? "Character", identity.avatarUrl, identity.avatarCrop);
           }
-          const isRp = chat?.mode === "roleplay" || chat?.mode === "visual_novel";
+          const isRp = chat?.mode === "roleplay";
           const isGame = chat?.mode === "game" || isGameGeneration;
           const uiState = useUIStore.getState();
           const soundEnabled = isGame
