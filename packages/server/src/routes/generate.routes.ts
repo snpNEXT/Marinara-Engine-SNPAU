@@ -5039,7 +5039,7 @@ export async function generateRoutes(app: FastifyInstance) {
           useIndividualLoop &&
           groupResponseOrder === "natural" &&
           !input.forCharacterId &&
-          (chatMode === "roleplay" || chatMode === "visual_novel");
+          chatMode === "roleplay";
         const needsSmartResponseQueue =
           useIndividualLoop &&
           groupResponseOrder === "smart" &&
@@ -6833,7 +6833,11 @@ export async function generateRoutes(app: FastifyInstance) {
             lastSavedMsg = genResult.savedMsg;
             recordExpressionTarget(genResult.savedMsg, genResult.characterId);
             allResponses.push(genResult.response);
-            allResponseSegments.push({ characterId: charId, characterName: charName, content: genResult.response });
+            allResponseSegments.push({
+              characterId: genResult.characterId ?? charId ?? "",
+              characterName: charName ?? "Character",
+              content: genResult.response,
+            });
             for (const cmd of genResult.commands) {
               collectedCommands.push({
                 command: cmd,
