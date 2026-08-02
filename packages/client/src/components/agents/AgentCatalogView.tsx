@@ -65,6 +65,7 @@ const OFFICIAL_PACKAGE_MODES: Readonly<Record<string, readonly CatalogMode[]>> =
   "echo-chamber": ["roleplay"],
   haptic: ["conversation", "roleplay"],
   illustrator: ["conversation", "roleplay", "game"],
+  storyboard: ["roleplay", "game"],
   html: ["roleplay"],
   "lorebook-keeper": ["roleplay", "game"],
   spotify: ["conversation", "roleplay", "game"],
@@ -91,6 +92,9 @@ const MODE_BADGES: Record<CatalogMode, { label: string; className: string }> = {
       "border-[color-mix(in_srgb,var(--mari-logo-pink)_55%,var(--border))] bg-[color-mix(in_srgb,var(--mari-logo-pink)_18%,transparent)]",
   },
 };
+
+const DETAIL_ACTION_CLASS =
+  "mari-chrome-control mari-chrome-control--primary px-4 py-2.5 max-sm:flex-1";
 
 type BulkActionProgress = {
   action: "install" | "uninstall";
@@ -622,7 +626,7 @@ export function AgentCatalogView() {
                     href={selected.documentationUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="mari-chrome-control px-4 py-2.5"
+                    className={DETAIL_ACTION_CLASS}
                   >
                     <ExternalLink size="0.85rem" /> {localizeUi("ui.agents.agentcatalogview.readHowThisAgentWorks")}</a>
                 )}
@@ -631,7 +635,7 @@ export function AgentCatalogView() {
                     <>
                       <button
                         type="button"
-                        className="mari-chrome-control mari-chrome-control--primary px-4 py-2.5 max-sm:flex-1"
+                        className={DETAIL_ACTION_CLASS}
                         disabled={packageActionPending}
                         onClick={() => void handleUninstall(selected)}
                       >
@@ -643,7 +647,7 @@ export function AgentCatalogView() {
                       {selectedVersionComparison > 0 && (
                         <button
                           type="button"
-                          className="mari-chrome-control mari-chrome-control--primary px-4 py-2.5 max-sm:flex-1"
+                          className={DETAIL_ACTION_CLASS}
                           disabled={packageActionPending}
                           onClick={() => void handleInstall(selected)}
                         >
@@ -653,7 +657,7 @@ export function AgentCatalogView() {
                   ) : (
                     <button
                       type="button"
-                      className="mari-chrome-control mari-chrome-control--primary px-4 py-2.5 max-sm:flex-1"
+                      className={DETAIL_ACTION_CLASS}
                       disabled={packageActionPending}
                       onClick={() => void handleInstall(selected)}
                     >

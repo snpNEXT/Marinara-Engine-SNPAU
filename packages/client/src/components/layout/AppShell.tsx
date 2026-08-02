@@ -8,6 +8,7 @@ import { YouTubeMobileWidget } from "../chat/YouTubePlayer";
 import { LocalMusicMobileWidget } from "../chat/LocalMusicPlayer";
 import { MusicDjUnavailablePlayer } from "../music/MusicDjUnavailablePlayer";
 import { ProfessorMariFloatingAssistantHost } from "../chat/ProfessorMariFloatingAssistantHost";
+import { ChatResourceMobileDropDock } from "../chat/ChatResourceMobileDropDock";
 import { hasProfessorMariFloatingFollowup } from "../chat/professor-mari-floating-events";
 import {
   getTrackerPanelWidthForProfile,
@@ -1383,6 +1384,8 @@ export function AppShell() {
           onClick={() => closeRightPanel()}
         />
       )}
+
+      {shellOverlayMode && <ChatResourceMobileDropDock />}
 
       {/* Right panel - Context / Settings */}
       {shellOverlayMode ? (

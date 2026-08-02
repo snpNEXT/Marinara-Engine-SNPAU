@@ -53,6 +53,8 @@ import {
   matchesCardLibrarySearch,
   parseCardLibrarySearchQuery,
 } from "../../lib/card-library-search";
+import { clearActiveChatResourceDrag, writeChatResourceDragPayload } from "../../lib/chat-resource-drag";
+import { ChatResourceActionButton } from "../chat/ChatResourceActionButton";
 
 type PersonaRow = {
   id: string;
@@ -793,7 +795,7 @@ export function PersonasPanel() {
                   value2: group.name,
                 })}
                 title={localizeUi("ui.panels.backgroundpicker.doubleClickDoubleTapOrPressF2ToRename")}
-                className="group relative flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 transition-all hover:bg-[var(--sidebar-accent)]/40"
+                className="group relative flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 transition-all hover:bg-[var(--sidebar-accent)]/40 max-md:pr-12 [@media(pointer:coarse)]:pr-12"
                 onClick={(event) =>
                   handleFolderRenameGesture(group.id, event, {
                     onSingleClick: () => setExpandedGroupId(isExpanded ? null : group.id),
@@ -850,7 +852,7 @@ export function PersonasPanel() {
                   </span>
                 )}
 
-                <div className="absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 max-md:opacity-100">
+                <div className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -894,6 +896,7 @@ export function PersonasPanel() {
                             openPersonaDetail(pid);
                           }}
                           onKeyDown={(e) => {
+                            if (e.target !== e.currentTarget) return;
                             if (e.key === "Enter" || e.key === " ") {
                               e.preventDefault();
                               if (selectionMode) {
@@ -914,15 +917,24 @@ export function PersonasPanel() {
                             }
                             const ids = getDraggedPersonaIds(pid);
                             setDraggedPersonaId(pid);
-                            event.dataTransfer.effectAllowed = "move";
+                            event.dataTransfer.effectAllowed = "copyMove";
                             event.dataTransfer.setData("application/x-marinara-persona-ids", JSON.stringify(ids));
                             event.dataTransfer.setData("text/plain", pid);
+                            writeChatResourceDragPayload(event.dataTransfer, {
+                              version: 1,
+                              kind: "persona",
+                              ids: [pid],
+                              label: p.name,
+                            });
                           }}
-                          onDragEnd={() => setDraggedPersonaId(null)}
+                          onDragEnd={() => {
+                            setDraggedPersonaId(null);
+                            clearActiveChatResourceDrag();
+                          }}
                           role="button"
                           tabIndex={0}
                           className={cn(
-                            "group group/member flex touch-pan-y cursor-pointer items-center gap-2 rounded-lg p-1.5 text-xs transition-all hover:bg-[var(--sidebar-accent)]",
+                            "group group/member relative flex touch-pan-y cursor-pointer items-center gap-2 rounded-lg p-1.5 text-xs transition-all hover:bg-[var(--sidebar-accent)]",
                             touchSafePersonaDragMode && "select-none",
                             selectionMode &&
                               isBulkSelected &&
@@ -958,6 +970,7 @@ export function PersonasPanel() {
                             onTouchStart={(event) => {
                               startPersonaTouchDrag(event, pid, {
                                 allowInteractiveTarget: true,
+                                chatResourcePayload: { version: 1, kind: "persona", ids: [pid], label: p.name },
                                 sourceElement: event.currentTarget.closest<HTMLElement>(
                                   '[data-touch-drag-card="persona"]',
                                 ),
@@ -976,7 +989,12 @@ export function PersonasPanel() {
                               <User size="0.625rem" />
                             )}
                           </div>
-                          <div className="min-w-0 flex-1">
+                          <div
+                            className={cn(
+                              "min-w-0 flex-1",
+                              !selectionMode && "pr-0 max-md:pr-14 [@media(pointer:coarse)]:pr-14",
+                            )}
+                          >
                             <div className="truncate text-[0.75rem] font-medium">{p.name}</div>
                             {p.comment && (
                               <div className="truncate text-[0.5625rem] italic text-[var(--muted-foreground)]">
@@ -993,16 +1011,22 @@ export function PersonasPanel() {
                             </div>
                           </div>
                           {!selectionMode && (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void movePersonasToFolder([pid], null);
-                              }}
-                              className="rounded p-0.5 text-[var(--muted-foreground)] opacity-0 transition-all hover:bg-[var(--destructive)]/10 hover:text-[var(--destructive)] group-hover/member:opacity-100 max-md:opacity-100"
-                              title={localizeUi("ui.panels.characterspanel.removeFromFolder")}
-                            >
-                              <UserMinus size="0.625rem" />
-                            </button>
+                            <div className="pointer-events-none absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] p-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover/member:opacity-100 [@media(pointer:fine)]:group-focus-within/member:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover/member:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within/member:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
+                              <ChatResourceActionButton
+                                payload={{ version: 1, kind: "persona", ids: [pid], label: p.name }}
+                                className="flex h-6 min-h-6 w-6 items-center justify-center p-0"
+                              />
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void movePersonasToFolder([pid], null);
+                                }}
+                                className="rounded p-0.5 text-[var(--muted-foreground)] transition-all hover:bg-[var(--destructive)]/10 hover:text-[var(--destructive)]"
+                                title={localizeUi("ui.panels.characterspanel.removeFromFolder")}
+                              >
+                                <UserMinus size="0.625rem" />
+                              </button>
+                            </div>
                           )}
                         </div>
                       );
@@ -1091,11 +1115,20 @@ export function PersonasPanel() {
                 }
                 const ids = getDraggedPersonaIds(persona.id);
                 setDraggedPersonaId(persona.id);
-                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.effectAllowed = "copyMove";
                 event.dataTransfer.setData("application/x-marinara-persona-ids", JSON.stringify(ids));
                 event.dataTransfer.setData("text/plain", persona.id);
+                writeChatResourceDragPayload(event.dataTransfer, {
+                  version: 1,
+                  kind: "persona",
+                  ids: [persona.id],
+                  label: persona.name,
+                });
               }}
-              onDragEnd={() => setDraggedPersonaId(null)}
+              onDragEnd={() => {
+                setDraggedPersonaId(null);
+                clearActiveChatResourceDrag();
+              }}
             >
               {selectionMode && (
                 <button
@@ -1124,6 +1157,12 @@ export function PersonasPanel() {
                 onTouchStart={(event) => {
                   startPersonaTouchDrag(event, persona.id, {
                     allowInteractiveTarget: true,
+                    chatResourcePayload: {
+                      version: 1,
+                      kind: "persona",
+                      ids: [persona.id],
+                      label: persona.name,
+                    },
                     sourceElement: event.currentTarget.closest<HTMLElement>('[data-touch-drag-card="persona"]'),
                   });
                 }}
@@ -1165,8 +1204,13 @@ export function PersonasPanel() {
               </button>
 
               {/* Info */}
-              <div className={cn("min-w-0 flex-1", !selectionMode && "pr-24")}>
-                <div className="truncate text-sm font-medium">{persona.name}</div>
+              <div
+                className={cn(
+                  "min-w-0 flex-1",
+                  !selectionMode && "pr-0 max-md:pr-32 [@media(pointer:coarse)]:pr-32",
+                )}
+              >
+                <div className="w-fit max-w-full truncate text-sm font-medium">{persona.name}</div>
                 {persona.comment && (
                   <div className="truncate text-[0.625rem] italic text-[var(--muted-foreground)]">
                     {persona.comment}
@@ -1182,7 +1226,10 @@ export function PersonasPanel() {
 
               {/* Actions */}
               {!selectionMode && (
-                <div className="absolute right-2 top-1/2 -translate-y-1/2 flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 max-md:opacity-100">
+                <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
+                  <ChatResourceActionButton
+                    payload={{ version: 1, kind: "persona", ids: [persona.id], label: persona.name }}
+                  />
                   {!active && (
                     <button
                       onClick={(e) => {

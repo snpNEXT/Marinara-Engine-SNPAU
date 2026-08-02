@@ -95,7 +95,7 @@ type WorkspaceCommandCall = {
   arguments: Record<string, unknown>;
   raw?: string;
 };
-type WorkspaceCommandResult = {
+export type WorkspaceCommandResult = {
   id: string;
   name: MariWorkspaceToolName;
   input: Record<string, unknown>;
@@ -141,6 +141,7 @@ const RUNTIME_API_KEY = "local-marinara-runtime";
 const SESSION_ID = "professor-mari-workspace";
 const MAX_COMMAND_ROUNDS = 12;
 const MAX_PROTOCOL_REPAIR_ROUNDS = 2;
+const MAX_VERIFICATION_REPAIR_ROUNDS = 2;
 const MAX_REPEATED_COMMAND_FAILURES = 3;
 const MAX_HISTORY_MESSAGES = 40;
 const MAX_PARALLEL_READONLY_COMMANDS = 4;
@@ -521,6 +522,7 @@ ${MARI_GUIDED_SEQUENCES}
 - About Me writing: read the target character or persona first, write the bio in their own voice, then put it in \`patch.aboutMe\` on the matching update action with \`apply:true\`.
 - Lorebook generation: put the complete \`entries\` array inside \`data\` on \`lorebook.create\`. Marinara saves the lorebook and its entries together, so do not create an empty lorebook and promise to fill it later.
 - For \`preset.create\`, put prompt sections in \`data.sections\` and preset variables in \`data.choiceBlocks\`. Each choice block needs \`variableName\`, \`question\`, and \`options\` with \`label\`/\`value\` pairs.
+- Custom image agents are supported by the live runtime. Use \`data.resultType: "image_prompt"\`, enable \`settings.customCapabilities.trigger_image_generation\`, and have the agent return \`shouldGenerate\` plus \`prompt\`. Marker-triggered agents should also set \`activationKeywords\`. Do not claim that only Illustrator can generate image prompts.
 - Existing-data changes: use \`apply:true\` for requested \`*.update\`, \`lorebook.updateEntry\`, and \`theme.setActive\`. Marinara will save first and show the user an in-chat Keep/Restore review card for reversible changes.
 - Personal Extensions: create or update the complete draft with \`apply:true\`, verify it with \`personal_extension.get\`, then tell the user the draft remains disabled until they review and run the exact hash and requested capabilities in Settings → Addons. Browser UI should use \`marinara.ui.registerContribution\` for \`button\`, \`menu-item\`, or \`panel\` slots; panel controls are host-rendered and return values through \`onEvent\`. Use \`marinara.context\` for active IDs and request \`read_active_characters\` or \`read_active_persona\` only for bounded active-record reads. Do not offer or invent an approval action, DOM access, direct app-data access, or network access.
 - Use \`apply:false\` only for explicit preview/dry-run requests or when you need to inspect validation before making a risky change.
@@ -531,10 +533,13 @@ Examples:
 {"say":"I found the lorebook. I'll read its entries now.","commands":[{"name":"app_data","arguments":{"action":"lorebook.entries","lorebookId":"lorebook-id","limit":100}}],"stop":false}
 {"say":"","commands":[{"name":"app_data","arguments":{"action":"persona.create","data":{"name":"Dr. Marisia Voss","description":"A successful alternate version of Mari.","personality":"Confident, witty, organized, still warmly sarcastic."},"reason":"User requested a test persona","apply":true}}],"stop":false}
 {"say":"","commands":[{"name":"app_data","arguments":{"action":"character.create","data":{"name":"Dr. Voss","description":"A brilliant field researcher.","personality":"Exacting, curious, dryly funny.","firstMes":"You are late. Sit down.","appearance":"Silver hair and a white laboratory coat."},"reason":"User requested a character","apply":true}}],"stop":false}
+Verified lorebook creation sequence (three turns):
 {"say":"","commands":[{"name":"app_data","arguments":{"action":"lorebook.create","data":{"name":"The Glass City","description":"People and places in the setting.","entries":[{"name":"The Glass City","content":"A rain-soaked city built from black glass.","keys":["Glass City","black glass"]}]},"reason":"User requested a lorebook","apply":true}}],"stop":false}
+{"say":"","commands":[{"name":"app_data","arguments":{"action":"lorebook.search","query":"The Glass City"}}],"stop":false}
+{"say":"Done — I created the lorebook and the verification read found it.","commands":[],"stop":true}
 {"say":"","commands":[{"name":"app_data","arguments":{"action":"preset.create","data":{"name":"Test preset","sections":[{"name":"Main","content":"You are {{char}}.","role":"system"}],"choiceBlocks":[{"variableName":"tone","question":"Tone","options":[{"label":"Warm","value":"warm"},{"label":"Sharp","value":"sharp"}]}]},"reason":"User requested a preset with variables","apply":true}}],"stop":false}
+{"say":"","commands":[{"name":"app_data","arguments":{"action":"agent.create","data":{"name":"Image Marker","description":"Turns IMG_PROMPT markers into image prompts.","resultType":"image_prompt","activationKeywords":["IMG_PROMPT:"],"activationScanDepth":4,"settings":{"customCapabilities":{"trigger_image_generation":true}}},"reason":"User requested a marker-triggered image agent","apply":true}}],"stop":false}
 {"say":"","commands":[{"name":"app_data","arguments":{"action":"lorebook.updateEntry","entryId":"entry-id","patch":{"content":"new content"},"reason":"Update requested by user","apply":false}}],"stop":false}
-{"say":"Done — I created it and verified it saved.","commands":[],"stop":true}
 
 Available command schemas:
 ${toolDocs}
@@ -1422,6 +1427,63 @@ function isMutatingWorkspaceCommand(command: WorkspaceCommandCall): boolean {
   return typeof rawCommand === "string" && bashLooksMutating(rawCommand);
 }
 
+export type WorkspaceMutationVerification = "none" | "unverified" | "verified";
+
+function commandCallForResult(result: WorkspaceCommandResult): WorkspaceCommandCall {
+  return { id: result.id, name: result.name, arguments: result.input };
+}
+
+function isAppliedWorkspaceMutation(result: WorkspaceCommandResult): boolean {
+  if (!result.success || result.name === "dependency") return false;
+  const command = commandCallForResult(result);
+  if (!isMutatingWorkspaceCommand(command)) return false;
+  if (result.name !== "app_data") return true;
+  return /"saved"\s*:\s*true/u.test(result.output);
+}
+
+export function resolveWorkspaceMutationVerification(
+  results: readonly WorkspaceCommandResult[],
+): WorkspaceMutationVerification {
+  let mutationSeen = false;
+  let verifiedAfterMutation = false;
+  for (const result of results) {
+    if (isAppliedWorkspaceMutation(result)) {
+      mutationSeen = true;
+      verifiedAfterMutation = false;
+      continue;
+    }
+    if (mutationSeen && result.success && isReadOnlyWorkspaceCommand(commandCallForResult(result))) {
+      verifiedAfterMutation = true;
+    }
+  }
+  return !mutationSeen ? "none" : verifiedAfterMutation ? "verified" : "unverified";
+}
+
+export function workspaceTextClaimsMutationCompletion(text: string): boolean {
+  const normalized = text.trim().replace(/\s+/gu, " ");
+  if (!normalized) return false;
+  if (/^(?:all\s+)?(?:done|complete|completed|finished)\b/iu.test(normalized)) return true;
+  const completedMutation =
+    "created|updated|changed|deleted|removed|renamed|wrote|written|fixed|implemented|built|installed|imported|exported|saved|enabled|disabled|assigned|linked|unlinked|generated|moved|copied|replaced|verified";
+  return (
+    new RegExp(`\\b(?:i(?:'ve| have)?|we(?:'ve| have)?|it(?:'s| is)?|that(?:'s| is)?)\\s+(?:successfully\\s+)?(?:${completedMutation})\\b`, "iu").test(
+      normalized,
+    ) ||
+    new RegExp(`\\b(?:is|was|has been)\\s+(?:successfully\\s+)?(?:${completedMutation})\\b`, "iu").test(normalized)
+  );
+}
+
+export function workspaceActionNeedsVerification(
+  action: Pick<AssistantWorkspaceAction, "commands" | "stop" | "visibleText">,
+  results: readonly WorkspaceCommandResult[],
+): WorkspaceMutationVerification | null {
+  if (action.commands.length > 0 || !action.stop || !workspaceTextClaimsMutationCompletion(action.visibleText)) {
+    return null;
+  }
+  const verification = resolveWorkspaceMutationVerification(results);
+  return verification === "verified" ? null : verification;
+}
+
 function workspaceCommandValidationIssue(command: WorkspaceCommandCall): string | null {
   const args = command.arguments;
   const requireString = (key: string) => {
@@ -1659,7 +1721,6 @@ export class ProfessorMariWorkspaceService {
 
     const workspaceTrace: MariWorkspaceTraceItem[] = [];
     let assistantText = "";
-    let streamedVisibleText = "";
     let thinkingText = "";
     let totalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     const commandResultsForContinuity: WorkspaceCommandResult[] = [];
@@ -1705,15 +1766,11 @@ export class ProfessorMariWorkspaceService {
       });
       const repeatedFailureCounts = new Map<string, number>();
       let protocolRepairRounds = 0;
+      let verificationRepairRounds = 0;
 
       for (let round = 0; round < MAX_COMMAND_ROUNDS; round += 1) {
         if (controller.signal.aborted) throw new Error("aborted");
-        streamedVisibleText = "";
-        const onToken = (chunk: string) => {
-          streamedVisibleText += chunk;
-          args.onEvent({ type: "token", data: chunk });
-        };
-        const result = await this.chatCompleteWorkspace(provider, messages, baseOptions, onToken);
+        const result = await this.chatCompleteWorkspace(provider, messages, baseOptions, () => {});
         const usage = mapUsage(result.usage);
         totalUsage = {
           promptTokens: totalUsage.promptTokens + usage.promptTokens,
@@ -1767,6 +1824,29 @@ export class ProfessorMariWorkspaceService {
           for (const chunk of chunkText(content)) args.onEvent({ type: "token", data: chunk });
           break;
         }
+        const verificationIssue = workspaceActionNeedsVerification(action, commandResultsForContinuity);
+        if (verificationIssue) {
+          verificationRepairRounds += 1;
+          if (verificationRepairRounds <= MAX_VERIFICATION_REPAIR_ROUNDS) {
+            messages.push({ role: "assistant", content: action.assistantHistoryContent });
+            messages.push({
+              role: "user",
+              content:
+                verificationIssue === "none"
+                  ? "Your previous reply claimed the requested workspace change was complete, but no mutating command succeeded in this run. Do not repeat the completion claim. Use a read command to inspect the requested state; if it is missing, perform the mutation, then verify it with another read before setting stop to true."
+                  : "A mutating workspace command succeeded, but no successful read verified the resulting state. Run a confirmatory read now. Only claim completion after that read confirms the change.",
+              contextKind: "history",
+            });
+            continue;
+          }
+          const content =
+            "Professor Mari could not verify the requested workspace change, so I stopped before showing an unsupported completion claim. Ask her to continue and she can use the saved workspace trace.";
+          assistantText = appendVisibleText(assistantText, content);
+          appendTraceStatus(workspaceTrace, content);
+          args.onEvent({ type: "status", data: { content, kind: "retry", level: "warning" } });
+          for (const chunk of chunkText(content)) args.onEvent({ type: "token", data: chunk });
+          break;
+        }
         if (action.commands.length === 0 && !action.stop) {
           if (!action.protocolValid) {
             protocolRepairRounds += 1;
@@ -1798,10 +1878,10 @@ export class ProfessorMariWorkspaceService {
         if (action.visibleText) {
           assistantText = appendVisibleText(assistantText, action.visibleText);
           appendTraceText(workspaceTrace, `${action.visibleText}\n`);
+          for (const chunk of chunkText(action.visibleText)) args.onEvent({ type: "token", data: chunk });
         }
         if (action.suggestions.length > 0) args.onEvent({ type: "suggestions", data: action.suggestions });
         if (action.plan.length > 0) args.onEvent({ type: "plan", data: action.plan });
-        streamedVisibleText = "";
 
         messages.push({ role: "assistant", content: action.assistantHistoryContent });
 
@@ -1851,7 +1931,7 @@ export class ProfessorMariWorkspaceService {
             content:
               "You reached the workspace command round limit. Do not issue more commands. Summarize what you learned or what remains blocked.",
           });
-          const finalResult = await this.chatCompleteWorkspace(provider, messages, baseOptions, onToken);
+          const finalResult = await this.chatCompleteWorkspace(provider, messages, baseOptions, () => {});
           const finalUsage = mapUsage(finalResult.usage);
           totalUsage = {
             promptTokens: totalUsage.promptTokens + finalUsage.promptTokens,
@@ -1859,9 +1939,18 @@ export class ProfessorMariWorkspaceService {
             totalTokens: totalUsage.totalTokens + finalUsage.totalTokens,
           };
           const finalAction = parseAssistantWorkspaceAction(finalResult.content ?? "");
-          if (finalAction.visibleText) {
+          const finalVerificationIssue = workspaceActionNeedsVerification(finalAction, commandResultsForContinuity);
+          if (finalVerificationIssue) {
+            const content =
+              "Professor Mari reached the workspace command limit without verification, so I stopped before showing an unsupported completion claim. Ask her to continue from the saved trace.";
+            assistantText = appendVisibleText(assistantText, content);
+            appendTraceStatus(workspaceTrace, content);
+            args.onEvent({ type: "status", data: { content, kind: "retry", level: "warning" } });
+            for (const chunk of chunkText(content)) args.onEvent({ type: "token", data: chunk });
+          } else if (finalAction.visibleText) {
             assistantText = appendVisibleText(assistantText, finalAction.visibleText);
             appendTraceText(workspaceTrace, finalAction.visibleText);
+            for (const chunk of chunkText(finalAction.visibleText)) args.onEvent({ type: "token", data: chunk });
             if (finalAction.suggestions.length > 0)
               args.onEvent({ type: "suggestions", data: finalAction.suggestions });
             if (finalAction.plan.length > 0) args.onEvent({ type: "plan", data: finalAction.plan });
@@ -1873,7 +1962,6 @@ export class ProfessorMariWorkspaceService {
             args.onEvent({ type: "status", data: { content, kind: "info", level: "warning" } });
             for (const chunk of chunkText(content)) args.onEvent({ type: "token", data: chunk });
           }
-          streamedVisibleText = "";
         }
       }
 
@@ -1895,10 +1983,6 @@ export class ProfessorMariWorkspaceService {
       args.onEvent({ type: "metadata", data: { connection: connectionSummary(connection) ?? undefined } });
     } catch (err) {
       if (controller.signal.aborted) {
-        if (streamedVisibleText.trim()) {
-          assistantText = appendVisibleText(assistantText, streamedVisibleText);
-          streamedVisibleText = "";
-        }
         const hadPartialWorkspaceState =
           assistantText.trim().length > 0 || thinkingText.trim().length > 0 || workspaceTrace.length > 0;
         const content = assistantText.trim()

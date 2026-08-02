@@ -28,7 +28,6 @@ import {
   Tag,
   Loader2,
   PhoneIncoming,
-  Globe2,
 } from "lucide-react";
 import { useBulkExportChats, useChats, useCreateChat, useDeleteChat, useDeleteChatGroup } from "../../hooks/use-chats";
 import { useChatPresets, useApplyChatPreset } from "../../hooks/use-chat-presets";
@@ -56,7 +55,6 @@ import { toast } from "sonner";
 import {
   BACKGROUND_THUMBNAIL_WIDTH,
   includesTextForMatch,
-  isInstalledCapabilityReady,
   normalizeTextForMatch,
   type Chat,
   type ChatFolder,
@@ -78,7 +76,6 @@ import { SelectionActionBar } from "../ui/SelectionActionBar";
 import { SmoothFolderContent } from "../ui/SmoothFolderContent";
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
-import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
 
 type ChatSortOption = "recent" | "newest" | "oldest" | "name-asc" | "name-desc";
 const CHAT_LIST_PAGE_SIZE = 100;
@@ -253,13 +250,8 @@ export function ChatSidebar() {
   const editorDirty = useUIStore((s) => s.editorDirty);
   const closeAllDetails = useUIStore((s) => s.closeAllDetails);
   const setSidebarOpen = useUIStore((s) => s.setSidebarOpen);
-  const openAgentDetail = useUIStore((s) => s.openAgentDetail);
   const chatModeShortcutRequest = useUIStore((s) => s.chatModeShortcutRequest);
   const setPendingNewChatMode = useChatStore((s) => s.setPendingNewChatMode);
-  const { data: installedCapabilities = [] } = useInstalledCapabilityPackages();
-  const worldMapsReady = installedCapabilities.some(
-    (capability) => capability.id === "hierarchical-maps" && isInstalledCapabilityReady(capability),
-  );
 
   // Folder hooks
   const { data: folders } = useChatFolders();
@@ -1280,20 +1272,6 @@ export function ChatSidebar() {
           <h2 className="mari-chrome-text-strong text-sm font-semibold">{localize("Chats")}</h2>
         </div>
         <div className="flex items-center gap-1">
-          {worldMapsReady && (
-            <button
-              type="button"
-              onClick={() => {
-                setSidebarOpen(false);
-                openAgentDetail("hierarchical-maps");
-              }}
-              className="mari-chrome-control mari-chrome-control--small mari-accent-animated p-1.5 active:scale-90 md:hidden"
-              title={localizeUi("navigation.topbar.worldMaps")}
-              aria-label={localizeUi("navigation.topbar.worldMaps")}
-            >
-              <Globe2 size="0.875rem" />
-            </button>
-          )}
           <button
             onClick={() => setSidebarOpen(false)}
             className="mari-chrome-control mari-chrome-control--small mari-accent-animated p-1.5 active:scale-90 md:hidden"
@@ -1405,7 +1383,7 @@ export function ChatSidebar() {
             <select
               value={sort}
               onChange={(e) => setSort(e.target.value as ChatSortOption)}
-              className="mari-chrome-field mari-chrome-sort-field mari-accent-animated h-10 w-[6.5rem] appearance-none py-0 pl-2.5 pr-7 text-[0.6875rem] md:h-9"
+              className="mari-chrome-field mari-chrome-sort-field mari-accent-animated h-10 appearance-none py-0 pl-2.5 pr-7 text-[0.6875rem] md:h-9"
               title={localize("Sort chats")}
             >
               <option value="recent">{localizeUi("ui.layout.chatsidebar.recent")}</option>

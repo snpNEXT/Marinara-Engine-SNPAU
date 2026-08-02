@@ -200,6 +200,28 @@ const DIR_LABELS_BY_DOCS_LANG: Record<string, Record<string, string>> = {
     integrations: "연동",
     development: "개발",
   },
+  "zh-hans": {
+    "": "指南",
+    home: "主页",
+    installation: "安装",
+    connections: "连接",
+    conversation: "Conversation",
+    roleplay: "Roleplay",
+    game: "Game Mode",
+    characters: "角色",
+    chats: "聊天",
+    lorebooks: "世界书",
+    agents: "智能体",
+    media: "媒体",
+    prompts: "提示词",
+    noodle: "Noodle",
+    appearance: "外观",
+    settings: "设置",
+    data: "数据",
+    extending: "扩展",
+    integrations: "集成",
+    development: "开发",
+  },
 };
 
 function dirLabel(dir: string, docsLanguage: string) {

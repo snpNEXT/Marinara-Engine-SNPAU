@@ -417,7 +417,7 @@ function MobileTimelineBackButton({ onClick }: { onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--noodle-accent)] transition-colors hover:bg-[var(--noodle-accent)]/10 lg:hidden"
+      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--noodle-accent)] transition-colors hover:bg-[var(--noodle-accent)]/10 @min-[1024px]:hidden"
       title={localizeUi("ui.noodle.mobiletimelinebackbutton.backToTimeline")}
       aria-label={localizeUi("ui.noodle.mobiletimelinebackbutton.backToNoodleTimeline")}
     >
@@ -3623,7 +3623,7 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
       <div className="sticky top-0 z-20 flex items-center gap-2 border-b border-[var(--noodle-divider)] bg-[var(--background)]/95 px-2 py-3 backdrop-blur">
         <MobileTimelineBackButton onClick={openMobileHomeTimeline} />
         <label className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-full bg-[var(--accent)] px-4 text-sm ring-1 ring-inset ring-[var(--noodle-divider)] transition-colors focus-within:ring-[var(--noodle-accent)]">
-          <Search size={18} className="shrink-0 text-[var(--noodle-accent)]" />
+          <Search size={18} className="shrink-0 !text-[var(--noodle-accent)]" />
           <input
             type="search"
             value={postSearch}
@@ -3703,10 +3703,10 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
   );
 
   const rightRailContent = (
-    <aside className="hidden w-[22rem] shrink-0 px-4 py-3 xl:block">
+    <aside className="hidden w-[22rem] shrink-0 px-4 py-3 @min-[1280px]:block">
       <div className="sticky top-3 space-y-4">
         <label className="flex h-11 items-center gap-2 rounded-full border border-[var(--noodle-divider)] bg-[var(--background)] px-4 text-sm transition-colors focus-within:border-[var(--noodle-accent)]">
-          <Search size={17} className="shrink-0 text-[var(--noodle-accent)]" />
+          <Search size={17} className="shrink-0 !text-[var(--noodle-accent)]" />
           <input
             value={postSearch}
             onChange={(event) => handleSearchChange(event.target.value)}
@@ -3765,7 +3765,7 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
 
   const rightRail =
     activeNoodleView === "settings" ? (
-      <aside className="hidden w-[22rem] shrink-0 px-4 py-3 xl:block" aria-hidden="true" />
+      <aside className="hidden w-[22rem] shrink-0 px-4 py-3 @min-[1280px]:block" aria-hidden="true" />
     ) : (
       rightRailContent
     );
@@ -3836,7 +3836,7 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
             <div className="min-h-full w-full border-x border-[var(--noodle-divider)] bg-[var(--background)]">
               {activeNoodleView === "home" && (
                 <div
-                  className="sticky top-0 z-30 grid h-14 grid-cols-[3rem_minmax(0,1fr)_3rem] items-center border-b border-[var(--noodle-divider)] bg-[var(--background)]/95 px-3 backdrop-blur lg:hidden"
+                  className="sticky top-0 z-30 grid h-14 grid-cols-[3rem_minmax(0,1fr)_3rem] items-center border-b border-[var(--noodle-divider)] bg-[var(--background)]/95 px-3 backdrop-blur @min-[1024px]:hidden"
                   data-component="NoodleView.MobileHeader"
                 >
                   <button
@@ -3861,7 +3861,7 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
               )}
               {activeNoodleView === "home" &&
                 (isAccountSearch ? (
-                  <div className="sticky top-14 z-20 flex h-12 items-center gap-3 border-b border-[var(--noodle-divider)] bg-[var(--background)]/95 px-4 backdrop-blur lg:top-0">
+                  <div className="sticky top-14 z-20 flex h-12 items-center gap-3 border-b border-[var(--noodle-divider)] bg-[var(--background)]/95 px-4 backdrop-blur @min-[1024px]:top-0">
                     <AtSign size={19} className="text-[var(--noodle-accent)]" />
                     <div className="min-w-0">
                       <h2 className="truncate text-sm font-bold">{localizeUi("ui.noodle.noodlehome.accounts")}</h2>
@@ -3871,7 +3871,7 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
                     </div>
                   </div>
                 ) : (
-                  <div className="sticky top-14 z-20 grid grid-cols-2 border-b border-[var(--noodle-divider)] bg-[var(--background)]/95 backdrop-blur lg:top-0">
+                  <div className="sticky top-14 z-20 grid grid-cols-2 border-b border-[var(--noodle-divider)] bg-[var(--background)]/95 backdrop-blur @min-[1024px]:top-0">
                     {TIMELINE_TABS.map((tab) => (
                       <button
                         key={tab.id}
@@ -3992,9 +3992,9 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
               ) : activeNoodleView === "notifications" ? (
                 <div className="min-h-full">
                   <div className="sticky top-0 z-20 border-b border-[var(--noodle-divider)] bg-[var(--background)]/95 backdrop-blur">
-                    <div className="flex min-h-14 items-center gap-3 px-2 py-2 lg:px-4">
+                    <div className="flex min-h-14 items-center gap-3 px-2 py-2 @min-[1024px]:px-4">
                       <MobileTimelineBackButton onClick={openMobileHomeTimeline} />
-                      <Bell size={22} className="hidden text-[var(--noodle-accent)] lg:block" />
+                      <Bell size={22} className="hidden text-[var(--noodle-accent)] @min-[1024px]:block" />
                       <div className="min-w-0">
                         <h2 className="truncate text-lg font-bold">{localizeUi("settings.sections.notifications.title")}</h2>
                         <p className="truncate text-xs text-[var(--muted-foreground)]">
@@ -4054,10 +4054,10 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
                 </div>
               ) : activeNoodleView === "settings" ? (
                 <div className="min-h-full">
-                  <div className="border-b border-[var(--noodle-divider)] px-2 py-3 lg:px-4 lg:py-5">
+                  <div className="border-b border-[var(--noodle-divider)] px-2 py-3 @min-[1024px]:px-4 @min-[1024px]:py-5">
                     <div className="flex items-center gap-3">
                       <MobileTimelineBackButton onClick={openMobileHomeTimeline} />
-                      <Settings2 size={22} className="hidden text-[var(--noodle-accent)] lg:block" />
+                      <Settings2 size={22} className="hidden text-[var(--noodle-accent)] @min-[1024px]:block" />
                       <div className="min-w-0">
                         <h2 className="text-lg font-bold">{localizeUi("ui.noodle.noodlehome.noodleSettings")}</h2>
                         <p className="truncate text-xs text-[var(--muted-foreground)]">
@@ -4076,7 +4076,7 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
                       <button
                         type="button"
                         onClick={() => openProfileConnection(null)}
-                        className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--noodle-accent)] transition-colors hover:bg-[var(--noodle-accent)]/10 lg:flex"
+                        className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--noodle-accent)] transition-colors hover:bg-[var(--noodle-accent)]/10 @min-[1024px]:flex"
                         title={localizeUi("ui.noodle.noodlehome.backToProfile")}
                         aria-label={localizeUi("ui.noodle.noodlehome.backToProfile")}
                       >
@@ -4124,7 +4124,7 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
               ) : activeNoodleView === "profile" ? (
                 <NoodleProfileSurface
                   mobileHeader={
-                    <div className="sticky top-0 z-20 flex min-h-14 items-center gap-3 border-b border-[var(--noodle-divider)] bg-[var(--background)]/95 px-2 py-2 backdrop-blur lg:hidden">
+                    <div className="sticky top-0 z-20 flex min-h-14 items-center gap-3 border-b border-[var(--noodle-divider)] bg-[var(--background)]/95 px-2 py-2 backdrop-blur @min-[1024px]:hidden">
                       <MobileTimelineBackButton onClick={openMobileHomeTimeline} />
                       <div className="min-w-0">
                         <h2 className="truncate text-base font-bold">{localizeUi("ui.noodle.noodlehome.profile")}</h2>

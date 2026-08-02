@@ -1964,7 +1964,7 @@ export function ChatRoleplaySurface({
               </Suspense>
             )}
 
-            <div className="absolute inset-0 z-10 overflow-hidden">
+            <div data-chat-resource-drop-surface className="absolute inset-0 z-10 overflow-hidden">
               <div
                 ref={scrollRef}
                 data-chat-scroll

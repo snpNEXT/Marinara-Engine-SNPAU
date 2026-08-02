@@ -18,7 +18,6 @@ import {
   Check,
   FolderPlus,
   ArrowUpDown,
-  GripVertical,
   ShieldCheck,
   TriangleAlert,
 } from "lucide-react";
@@ -49,6 +48,8 @@ import { confirmNonEmptyFolderDelete, showChoiceDialog, showConfirmDialog } from
 import { cn } from "../../lib/utils";
 import { sortBasicPanelItems } from "../../lib/panel-sort";
 import { downloadZipFile } from "../../lib/download-zip";
+import { useTouchFolderDrag } from "../../hooks/use-touch-folder-drag";
+import { TouchDragHandle } from "../ui/TouchDragHandle";
 import {
   countSkippedAgentImportFunctions,
   createAgentFolderPackageFilename,
@@ -79,6 +80,8 @@ import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { Modal } from "../ui/Modal";
+import { clearActiveChatResourceDrag, writeChatResourceDragPayload } from "../../lib/chat-resource-drag";
+import { ChatResourceActionButton } from "../chat/ChatResourceActionButton";
 
 type JsonRecord = Record<string, unknown>;
 type NormalizedAgentImport = NonNullable<ReturnType<typeof normalizeAgentImportEntry>>;
@@ -454,6 +457,13 @@ export function AgentsPanel() {
     (agentId: string) => (selectionMode && selectedAgentIds.has(agentId) ? Array.from(selectedAgentIds) : [agentId]),
     [selectedAgentIds, selectionMode],
   );
+  const getDraggedAgentTypes = useCallback(
+    (agentId: string) =>
+      getDraggedAgentIds(agentId)
+        .map((id) => selectableAgentById.get(id)?.type)
+        .filter((type): type is string => Boolean(type)),
+    [getDraggedAgentIds, selectableAgentById],
+  );
 
   const handleCreateFolder = useCallback(() => {
     createAgentFolder.mutate(
@@ -482,6 +492,44 @@ export function AgentsPanel() {
     },
     [draggedAgentId, moveAgentItem],
   );
+
+  const finishAgentTouchDrag = useCallback(
+    (agentId: string, x: number, y: number) => {
+      const target = document.elementFromPoint(x, y);
+      const folderElement = target?.closest("[data-agent-folder-id]") as HTMLElement | null;
+      const rootElement = target?.closest("[data-agent-folder-root]") as HTMLElement | null;
+      if (folderElement?.dataset.agentFolderId) {
+        handleAgentDrop(folderElement.dataset.agentFolderId, getDraggedAgentIds(agentId));
+      } else if (rootElement) {
+        handleAgentDrop(null, getDraggedAgentIds(agentId));
+      }
+      setDraggedAgentId(null);
+      window.setTimeout(() => {
+        suppressAgentClickRef.current = false;
+      }, 0);
+    },
+    [getDraggedAgentIds, handleAgentDrop],
+  );
+
+  const cancelAgentTouchDrag = useCallback((_agentId: string, wasActive: boolean) => {
+    setDraggedAgentId(null);
+    if (wasActive) {
+      window.setTimeout(() => {
+        suppressAgentClickRef.current = false;
+      }, 0);
+    } else {
+      suppressAgentClickRef.current = false;
+    }
+  }, []);
+
+  const { startTouchDrag: startAgentTouchDrag } = useTouchFolderDrag({
+    onActivate: (agentId) => {
+      suppressAgentClickRef.current = true;
+      setDraggedAgentId(agentId);
+    },
+    onDrop: finishAgentTouchDrag,
+    onCancel: cancelAgentTouchDrag,
+  });
 
   const handleExportSelectedAgents = useCallback(async () => {
     if (selectedAgents.length === 0) {
@@ -748,12 +796,41 @@ export function AgentsPanel() {
         isDragging: draggedAgentId === agent.id,
         onDragStart: (event) => {
           const ids = getDraggedAgentIds(agent.id);
+          const agentTypes = getDraggedAgentTypes(agent.id);
           setDraggedAgentId(agent.id);
-          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.effectAllowed = "copyMove";
           event.dataTransfer.setData("application/x-marinara-agent-ids", JSON.stringify(ids));
           event.dataTransfer.setData("text/plain", agent.id);
+          writeChatResourceDragPayload(event.dataTransfer, {
+            version: 1,
+            kind: "agent",
+            ids: agentTypes,
+            label:
+              ids.length === 1
+                ? getAgentLibraryDisplayName(agent)
+                : localizeUi("ui.chat.chatresourcedropoverlay.agentCount", { count: ids.length }),
+          });
         },
-        onDragEnd: () => setDraggedAgentId(null),
+        onDragEnd: () => {
+          setDraggedAgentId(null);
+          clearActiveChatResourceDrag();
+        },
+        onTouchStart: (event) =>
+          startAgentTouchDrag(event, agent.id, {
+            allowInteractiveTarget: true,
+            sourceElement: event.currentTarget.closest<HTMLElement>('[data-touch-drag-card="agent"]'),
+            chatResourcePayload: {
+              version: 1,
+              kind: "agent",
+              ids: getDraggedAgentTypes(agent.id),
+              label:
+                getDraggedAgentIds(agent.id).length === 1
+                  ? getAgentLibraryDisplayName(agent)
+                  : localizeUi("ui.chat.chatresourcedropoverlay.agentCount", {
+                      count: getDraggedAgentIds(agent.id).length,
+                    }),
+            },
+          }),
         nativeDragEnabled: nativeAgentDragEnabled,
         touchSafeDragMode: touchSafeAgentDragMode,
         suppressClickRef: suppressAgentClickRef,
@@ -780,10 +857,12 @@ export function AgentsPanel() {
       deleteAgent,
       draggedAgentId,
       getDraggedAgentIds,
+      getDraggedAgentTypes,
       handlePickAgentImage,
       handleDuplicateAgent,
       nativeAgentDragEnabled,
       openAgentDetail,
+      startAgentTouchDrag,
       selectedAgentIds,
       selectionMode,
       touchSafeAgentDragMode,
@@ -1010,7 +1089,7 @@ export function AgentsPanel() {
                 aria-expanded={isExpanded}
                 aria-label={localizeUi("ui.panels.agentspanel.value1FolderValue2DoubleTapOrPressF2To", { value1: isExpanded ?localizeUi("ui.panels.ttsconfigcard.collapse") :localizeUi("ui.panels.ttsconfigcard.expand"), value2: folder.name })}
                 title={localizeUi("ui.panels.backgroundpicker.doubleClickDoubleTapOrPressF2ToRename")}
-                className="group relative flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 transition-all hover:bg-[var(--sidebar-accent)]/40"
+                className="group relative flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 transition-all hover:bg-[var(--sidebar-accent)]/40 max-md:pr-12 [@media(pointer:coarse)]:pr-12"
                 onClick={(event) =>
                   handleFolderRenameGesture(folder.id, event, {
                     onSingleClick: () => setExpandedFolderId(isExpanded ? null : folder.id),
@@ -1064,7 +1143,7 @@ export function AgentsPanel() {
                     {agentSearchActive ? folderAgents.length : folder.itemIds.length}
                   </span>
                 )}
-                <div className="absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 max-md:opacity-100">
+                <div className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
                   <button
                     onClick={(event) => {
                       event.stopPropagation();
@@ -1140,12 +1219,41 @@ export function AgentsPanel() {
                   isDragging: draggedAgentId === agent.id,
                   onDragStart: (event) => {
                     const ids = getDraggedAgentIds(agent.id);
+                    const agentTypes = getDraggedAgentTypes(agent.id);
                     setDraggedAgentId(agent.id);
-                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.effectAllowed = "copyMove";
                     event.dataTransfer.setData("application/x-marinara-agent-ids", JSON.stringify(ids));
                     event.dataTransfer.setData("text/plain", agent.id);
+                    writeChatResourceDragPayload(event.dataTransfer, {
+                      version: 1,
+                      kind: "agent",
+                      ids: agentTypes,
+                      label:
+                        ids.length === 1
+                          ? agent.name
+                          : localizeUi("ui.chat.chatresourcedropoverlay.agentCount", { count: ids.length }),
+                    });
                   },
-                  onDragEnd: () => setDraggedAgentId(null),
+                  onDragEnd: () => {
+                    setDraggedAgentId(null);
+                    clearActiveChatResourceDrag();
+                  },
+                  onTouchStart: (event) =>
+                    startAgentTouchDrag(event, agent.id, {
+                      allowInteractiveTarget: true,
+                      sourceElement: event.currentTarget.closest<HTMLElement>('[data-touch-drag-card="agent"]'),
+                      chatResourcePayload: {
+                        version: 1,
+                        kind: "agent",
+                        ids: getDraggedAgentTypes(agent.id),
+                        label:
+                          getDraggedAgentIds(agent.id).length === 1
+                            ? agent.name
+                            : localizeUi("ui.chat.chatresourcedropoverlay.agentCount", {
+                                count: getDraggedAgentIds(agent.id).length,
+                              }),
+                      },
+                    }),
                   nativeDragEnabled: nativeAgentDragEnabled,
                   touchSafeDragMode: touchSafeAgentDragMode,
                   suppressClickRef: suppressAgentClickRef,
@@ -1194,12 +1302,41 @@ export function AgentsPanel() {
                 isDragging: draggedAgentId === agent.id,
                 onDragStart: (event) => {
                   const ids = getDraggedAgentIds(agent.id);
+                  const agentTypes = getDraggedAgentTypes(agent.id);
                   setDraggedAgentId(agent.id);
-                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.effectAllowed = "copyMove";
                   event.dataTransfer.setData("application/x-marinara-agent-ids", JSON.stringify(ids));
                   event.dataTransfer.setData("text/plain", agent.id);
+                  writeChatResourceDragPayload(event.dataTransfer, {
+                    version: 1,
+                    kind: "agent",
+                    ids: agentTypes,
+                    label:
+                      ids.length === 1
+                        ? agent.name
+                        : localizeUi("ui.chat.chatresourcedropoverlay.agentCount", { count: ids.length }),
+                  });
                 },
-                onDragEnd: () => setDraggedAgentId(null),
+                onDragEnd: () => {
+                  setDraggedAgentId(null);
+                  clearActiveChatResourceDrag();
+                },
+                onTouchStart: (event) =>
+                  startAgentTouchDrag(event, agent.id, {
+                    allowInteractiveTarget: true,
+                    sourceElement: event.currentTarget.closest<HTMLElement>('[data-touch-drag-card="agent"]'),
+                    chatResourcePayload: {
+                      version: 1,
+                      kind: "agent",
+                      ids: getDraggedAgentTypes(agent.id),
+                      label:
+                        getDraggedAgentIds(agent.id).length === 1
+                          ? agent.name
+                          : localizeUi("ui.chat.chatresourcedropoverlay.agentCount", {
+                              count: getDraggedAgentIds(agent.id).length,
+                            }),
+                    },
+                  }),
                 nativeDragEnabled: nativeAgentDragEnabled,
                 touchSafeDragMode: touchSafeAgentDragMode,
                 suppressClickRef: suppressAgentClickRef,
@@ -1378,6 +1515,7 @@ function renderAgentCard({
   isDragging = false,
   onDragStart,
   onDragEnd,
+  onTouchStart,
   nativeDragEnabled = true,
   touchSafeDragMode = false,
   suppressClickRef,
@@ -1400,6 +1538,7 @@ function renderAgentCard({
   isDragging?: boolean;
   onDragStart?: (event: React.DragEvent<HTMLDivElement>) => void;
   onDragEnd?: () => void;
+  onTouchStart?: (event: React.TouchEvent<HTMLButtonElement>) => void;
   nativeDragEnabled?: boolean;
   touchSafeDragMode?: boolean;
   suppressClickRef?: { current: boolean };
@@ -1413,6 +1552,7 @@ function renderAgentCard({
     <div
       key={id}
       data-agent-card
+      data-touch-drag-card="agent"
       data-agent-name={name}
       draggable={nativeDragEnabled}
       onContextMenu={(event) => {
@@ -1440,6 +1580,9 @@ function renderAgentCard({
         touchSafeDragMode && "select-none",
       )}
     >
+      {onTouchStart && (
+        <TouchDragHandle label={localizeUi("ui.panels.agentcard.dragAgent")} onTouchStart={onTouchStart} />
+      )}
       {selectionMode && (
         <div
           className={cn(
@@ -1451,22 +1594,6 @@ function renderAgentCard({
         >
           {selected && <Check size="0.75rem" />}
         </div>
-      )}
-      {!selectionMode && (
-        <button
-          type="button"
-          aria-hidden="true"
-          tabIndex={-1}
-          title={localizeUi("ui.panels.agentcard.dragAgent")}
-          className="mari-chrome-accent-text-muted mari-accent-animated flex h-7 w-5 shrink-0 cursor-grab touch-none items-center justify-center rounded-md opacity-0 transition-all hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] active:cursor-grabbing active:scale-95 group-focus-within:opacity-100 group-hover:opacity-100 [@media(pointer:coarse)]:hidden"
-          onClick={(event) => event.stopPropagation()}
-          onContextMenu={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-          }}
-        >
-          <GripVertical size="0.8125rem" />
-        </button>
       )}
       <button
         type="button"
@@ -1506,7 +1633,13 @@ function renderAgentCard({
         )}
       </button>
       <button
-        className={cn("min-w-0 flex-1 text-left", !selectionMode && (onDelete ? "pr-16" : "pr-10"))}
+        className={cn(
+          "min-w-0 flex-1 text-left",
+          !selectionMode &&
+            (onDelete
+              ? "pr-0 max-md:pr-24 [@media(pointer:coarse)]:pr-24"
+              : "pr-0 max-md:pr-16 [@media(pointer:coarse)]:pr-16"),
+        )}
         onClick={(event) => {
           event.stopPropagation();
           if (suppressClickRef?.current) return;
@@ -1526,7 +1659,8 @@ function renderAgentCard({
         </div>
       </button>
       {!selectionMode && (
-        <div className="absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 max-md:opacity-100">
+        <div className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
+          <ChatResourceActionButton payload={{ version: 1, kind: "agent", ids: [type], label: name }} />
           <button
             className="mari-chrome-control mari-chrome-control--small p-1.5"
             title={localizeUi("ui.panels.agentcard.copyAgent")}

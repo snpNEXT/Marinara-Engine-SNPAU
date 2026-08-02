@@ -75,7 +75,7 @@ function NoodlerBulkCreatePanel() {
         <p className={eyebrowClass}>{localizeUi("ui.noodle.noodlerbulkcreatepanel.bulkCreateCreators")}</p>
       </div>
       <label className="relative mt-2.5 block">
-        <Search size={14} className="absolute left-2.5 top-2.5 text-[var(--muted-foreground)]" />
+        <Search size={14} className="absolute left-2.5 top-2.5 !text-[var(--noodle-accent)]" />
         <input
           value={search}
           onChange={(event) => setSearch(event.target.value)}
@@ -216,7 +216,7 @@ export function NoodlerBulkCreateButton({ label = "Bulk-create creators" }: { la
         onClick={() => setOpen(true)}
         className="flex min-h-9 w-full items-center justify-center gap-2 rounded-md border border-[var(--noodle-accent)]/40 bg-[var(--noodle-accent)]/10 px-3 text-xs font-semibold text-[var(--noodle-accent)] transition-colors hover:bg-[var(--noodle-accent)]/15"
       >
-        <Plus size={15} />
+        <Plus size={15} className="!text-[var(--noodle-accent)]" />
         {label}
       </button>
       <Modal

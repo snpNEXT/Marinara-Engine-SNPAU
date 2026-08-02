@@ -331,7 +331,7 @@ const JSON_COLUMNS: Record<string, readonly string[]> = {
   // chat_images, character_images, assets, and custom_themes
   // have no JSON columns; their former entries named columns that do not exist.
   game_engine_state: ["state"],
-  regex_scripts: ["trimStrings", "placement", "targetCharacterIds"],
+  regex_scripts: ["trimStrings", "placement", "targetCharacterIds", "targetPromptPresetIds"],
 };
 
 function buildTableMetas() {
@@ -2205,6 +2205,7 @@ export class MariDbService {
           category: "uncategorized",
           isGlobal: "false",
           enabled: "true",
+          hiddenFromLibrary: "false",
           scanDepth: 2,
           tokenBudget: 2048,
           entryLimit: 100,
@@ -3698,12 +3699,16 @@ export class MariDbService {
           category: normalizeLorebookCategory(flagString(flags, "category")),
           isGlobal: hasFlag(flags, "global") ? "true" : "false",
           enabled: "true",
+          hiddenFromLibrary: "false",
           scanDepth: 2,
           tokenBudget: 2048,
           entryLimit: 100,
           recursiveScanning: "false",
           maxRecursionDepth: 3,
           excludeFromVectorization: "false",
+          vectorQueryDepth: 10,
+          vectorScoreThreshold: 0.3,
+          vectorMaxResults: 10,
           scope: { mode: "all", chatIds: [] },
           tags: [],
           generatedBy: "agent",

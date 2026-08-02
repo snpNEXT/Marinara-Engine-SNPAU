@@ -1762,6 +1762,7 @@ export async function generateRoutes(app: FastifyInstance) {
             resolveMacros: (value, randomSeed) =>
               resolveMacros(value, promptMacroContext, { trimResult: false, randomSeed }),
             targetCharacterId: promptTargetCharacterId,
+            targetPromptPresetId: presetId ?? null,
           });
           if (regenerateUserSourceMessage) {
             const sourceMessages = [regenerateUserSourceMessage];
@@ -1769,6 +1770,7 @@ export async function generateRoutes(app: FastifyInstance) {
               resolveMacros: (value, randomSeed) =>
                 resolveMacros(value, promptMacroContext, { trimResult: false, randomSeed }),
               targetCharacterId: promptTargetCharacterId,
+              targetPromptPresetId: presetId ?? null,
             });
           }
 
@@ -5264,6 +5266,7 @@ export async function generateRoutes(app: FastifyInstance) {
               resolveMacros: (value, randomSeed) =>
                 resolveMacros(value, promptMacroContext, { trimResult: false, randomSeed }),
               targetCharacterId: targetCharId,
+              targetPromptPresetId: presetId ?? null,
               targetedOnly: true,
             });
           }
@@ -9375,6 +9378,7 @@ export async function generateRoutes(app: FastifyInstance) {
             applyRegexScriptsToPromptMessages([newMariMsg], await regexScriptsStore.list(), {
               resolveMacros: (value, randomSeed) =>
                 resolveMacros(value, promptMacroContext, { trimResult: false, randomSeed }),
+              targetPromptPresetId: presetId ?? null,
             });
             newMariMsg.content = newMariMsg.content.replace(/\n([ \t]*\n){2,}/g, "\n\n");
             runningMessagesForFollowUp.push(resolveHistoryMessageMacros([newMariMsg])[0] ?? newMariMsg);

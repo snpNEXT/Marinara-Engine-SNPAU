@@ -235,7 +235,7 @@ export function NoodleShell({
             animate={prefersReducedMotion ? { opacity: 1 } : { x: 0 }}
             exit={prefersReducedMotion ? { opacity: 0 } : { x: "-100%" }}
             transition={prefersReducedMotion ? { duration: 0.1 } : { duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
-            className="absolute inset-0 z-[80] h-full w-full bg-[var(--background)] lg:hidden"
+            className="absolute inset-0 z-[80] h-full w-full bg-[var(--background)] @min-[1024px]:hidden"
             data-component="NoodleView.MobileDrawer"
             data-motion="slide-x"
           >
@@ -381,7 +381,7 @@ export function NoodleShell({
       </AnimatePresence>
       <div className="flex min-h-0 flex-1 justify-center overflow-hidden">
         <div className="flex min-h-0 w-full max-w-[1264px] justify-center">
-          <aside className="hidden w-[17rem] shrink-0 border-r border-[var(--noodle-divider)] bg-[var(--background)] lg:flex lg:flex-col">
+          <aside className="hidden w-[17rem] shrink-0 border-r border-[var(--noodle-divider)] bg-[var(--background)] @min-[1024px]:flex @min-[1024px]:flex-col">
             <div className="flex min-h-0 flex-1 flex-col px-5 py-4">
               <div className="mb-5 flex h-12 items-center">
                 <NoodleLogo
@@ -524,7 +524,7 @@ export function NoodleShell({
             </div>
           </aside>
 
-          <main className="flex min-h-0 w-full flex-1 flex-col pb-[calc(52px+env(safe-area-inset-bottom))] lg:max-w-[640px] lg:border-r lg:border-[var(--noodle-divider)] lg:pb-0">
+          <main className="flex min-h-0 w-full flex-1 flex-col pb-[calc(52px+env(safe-area-inset-bottom))] @min-[1024px]:max-w-[640px] @min-[1024px]:border-r @min-[1024px]:border-[var(--noodle-divider)] @min-[1024px]:pb-0">
             {children}
           </main>
           {rightRail}
@@ -532,7 +532,7 @@ export function NoodleShell({
       </div>
 
       <nav
-        className="absolute inset-x-0 bottom-0 z-50 border-t border-[var(--noodle-divider)] bg-[var(--background)]/95 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden"
+        className="absolute inset-x-0 bottom-0 z-50 border-t border-[var(--noodle-divider)] bg-[var(--background)]/95 pb-[env(safe-area-inset-bottom)] backdrop-blur @min-[1024px]:hidden"
         aria-label={localizeUi("ui.noodle.noodleshell.noodleMobileNavigation")}
         data-component="NoodleView.MobileBottomNav"
       >
@@ -547,7 +547,7 @@ export function NoodleShell({
               <Avatar account={personaAccount} size="sm" />
             ) : (
               <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--noodle-accent)]/15 ring-1 ring-[var(--noodle-accent)]/25">
-                <AtSign size={18} />
+                <AtSign size={18} className="!text-[var(--noodle-accent)]" />
               </span>
             )}
           </button>
@@ -558,7 +558,7 @@ export function NoodleShell({
             aria-current={homeActive ? "page" : undefined}
             className="relative flex items-center justify-center transition-colors hover:bg-[var(--accent)]"
           >
-            <Home size={22} strokeWidth={homeActive ? 2.8 : 2} />
+            <Home size={22} strokeWidth={homeActive ? 2.8 : 2} className="!text-[var(--noodle-accent)]" />
             {homeActive && <span className="absolute top-1 h-1 w-1 rounded-full bg-[var(--noodle-accent)]" />}
           </button>
           <button
@@ -569,7 +569,7 @@ export function NoodleShell({
             aria-current={activeView === "search" ? "page" : undefined}
             className="relative flex items-center justify-center transition-colors hover:bg-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
           >
-            <Search size={22} strokeWidth={activeView === "search" ? 2.8 : 2} />
+            <Search size={22} strokeWidth={activeView === "search" ? 2.8 : 2} className="!text-[var(--noodle-accent)]" />
             {activeView === "search" && <span className="absolute top-1 h-1 w-1 rounded-full bg-[var(--noodle-accent)]" />}
           </button>
           <button
@@ -581,7 +581,7 @@ export function NoodleShell({
             className="relative flex items-center justify-center transition-colors hover:bg-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
           >
             <span className="relative flex h-6 w-6 items-center justify-center">
-              <Bell size={22} strokeWidth={activeView === "notifications" ? 2.8 : 2} />
+              <Bell size={22} strokeWidth={activeView === "notifications" ? 2.8 : 2} className="!text-[var(--noodle-accent)]" />
               {notificationCount > 0 && (
                 <span
                   data-component="NoodleView.NotificationBadge"

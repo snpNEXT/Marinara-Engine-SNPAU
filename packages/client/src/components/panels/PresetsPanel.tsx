@@ -89,6 +89,8 @@ import { TouchDragHandle } from "../ui/TouchDragHandle";
 import { getTouchReorderDropIndex } from "../../lib/touch-reorder";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { clearActiveChatResourceDrag, writeChatResourceDragPayload } from "../../lib/chat-resource-drag";
+import { ChatResourceActionButton } from "../chat/ChatResourceActionButton";
 
 type PresetRow = {
   id: string;
@@ -196,6 +198,7 @@ function serializeRegexScript(script: RegexScriptRow) {
       ? script.applyMode
       : readRegexApplyMode(script as unknown as Record<string, unknown>),
     targetCharacterIds: parseStringArray(script.targetCharacterIds),
+    targetPromptPresetIds: parseStringArray(script.targetPromptPresetIds),
     order: script.order,
     minDepth: script.minDepth,
     maxDepth: script.maxDepth,
@@ -264,6 +267,7 @@ function normalizeRegexImportEntry(entry: unknown, fallbackOrder: number) {
     promptOnly: readRegexApplyMode(entry) === "prompt",
     applyMode: readRegexApplyMode(entry),
     targetCharacterIds: parseStringArray(entry.targetCharacterIds),
+    targetPromptPresetIds: parseStringArray(entry.targetPromptPresetIds),
     order: typeof entry.order === "number" ? fallbackOrder + entry.order : fallbackOrder,
     minDepth: parseNullableNumber(entry.minDepth),
     maxDepth: parseNullableNumber(entry.maxDepth),
@@ -832,17 +836,27 @@ export function PresetsPanel() {
           onDragStart={(event) => {
             const ids = getDraggedPresetIds(preset.id);
             setDraggedPresetId(preset.id);
-            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.effectAllowed = "copyMove";
             event.dataTransfer.setData("application/x-marinara-preset-ids", JSON.stringify(ids));
             event.dataTransfer.setData("text/plain", preset.id);
+            writeChatResourceDragPayload(event.dataTransfer, {
+              version: 1,
+              kind: "preset",
+              ids: [preset.id],
+              label: preset.name,
+            });
           }}
-          onDragEnd={() => setDraggedPresetId(null)}
+          onDragEnd={() => {
+            setDraggedPresetId(null);
+            clearActiveChatResourceDrag();
+          }}
         >
           <TouchDragHandle
             label={localizeUi("ui.panels.presetspanel.dragPreset")}
             onTouchStart={(event) => {
               startPresetTouchDrag(event, preset.id, {
                 allowInteractiveTarget: true,
+                chatResourcePayload: { version: 1, kind: "preset", ids: [preset.id], label: preset.name },
                 sourceElement: event.currentTarget.closest<HTMLElement>('[data-touch-drag-card="preset"]'),
               });
             }}
@@ -888,7 +902,7 @@ export function PresetsPanel() {
               className={cn(
                 "min-w-0 flex-1",
                 !selectionMode &&
-                  "pr-0 transition-[padding] max-md:pr-32 [@media(pointer:coarse)]:pr-32 [@media(pointer:fine)]:group-hover:pr-32",
+                  "pr-0 max-md:pr-36 [@media(pointer:coarse)]:pr-36",
               )}
             >
               <div className="flex min-w-0 items-center gap-1.5">
@@ -922,8 +936,11 @@ export function PresetsPanel() {
           </div>
 
           {!selectionMode && (
-            <div className="absolute right-2 top-1/2 -translate-y-1/2 flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 max-md:opacity-100">
-              {canAssignToActiveChat && (
+            <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
+              <ChatResourceActionButton
+                payload={{ version: 1, kind: "preset", ids: [preset.id], label: preset.name }}
+              />
+              {canAssignToActiveChat && isSelected && (
                 <button
                   type="button"
                   onClick={(event) => {
@@ -1082,7 +1099,7 @@ export function PresetsPanel() {
           />
           <input
             type="text"
-            placeholder={localize("Search presets…")}
+            placeholder={localize("Search presets")}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="mari-chrome-field h-10 w-full py-0 pl-8 pr-3 text-xs md:h-9"
@@ -1166,7 +1183,7 @@ export function PresetsPanel() {
                     value2: folder.name,
                   })}
                   title={localizeUi("ui.panels.backgroundpicker.doubleClickDoubleTapOrPressF2ToRename")}
-                  className="group relative flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 transition-all hover:bg-[var(--sidebar-accent)]/40"
+                  className="group relative flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 transition-all hover:bg-[var(--sidebar-accent)]/40 max-md:pr-12 [@media(pointer:coarse)]:pr-12"
                   onClick={(event) =>
                     handleFolderRenameGesture(folder.id, event, {
                       onSingleClick: () => setExpandedFolderId(isExpanded ? null : folder.id),
@@ -1222,7 +1239,7 @@ export function PresetsPanel() {
                       {presetSearchActive ? folderItems.length : folder.itemIds.length}
                     </span>
                   )}
-                  <div className="absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 max-md:opacity-100">
+                  <div className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 rounded-lg bg-[var(--sidebar)] px-1 py-0.5 opacity-0 shadow-sm ring-1 ring-[var(--border)] transition-opacity group-hover:opacity-100 [@media(pointer:fine)]:group-focus-within:opacity-100 max-md:opacity-100 [@media(pointer:coarse)]:opacity-100 group-hover:[&_button]:pointer-events-auto [@media(pointer:fine)]:group-focus-within:[&_button]:pointer-events-auto max-md:[&_button]:pointer-events-auto [@media(pointer:coarse)]:[&_button]:pointer-events-auto">
                     <button
                       type="button"
                       onClick={(event) => {

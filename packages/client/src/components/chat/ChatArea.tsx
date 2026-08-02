@@ -90,6 +90,7 @@ import {
   shouldAutoplayGeneratedTTS,
 } from "../../lib/tts-autoplay";
 import { CHAT_SCROLL_TO_BOTTOM_EVENT, type ChatScrollToBottomDetail } from "../../lib/chat-scroll-events";
+import { CHAT_RESOURCE_AGENT_SETUP_EVENT } from "../../lib/chat-resource-drag";
 import { blurActiveChatFloatingUiControl, CHAT_FLOATING_UI_DISMISS_EVENT } from "../../lib/chat-floating-ui-events";
 import {
   CHAT_TOOLBAR_ACTION_EVENT,
@@ -131,6 +132,7 @@ import {
   type ImagePromptReviewItem,
 } from "../ui/ImagePromptReviewModal";
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
+import { ChatResourceDropOverlay } from "./ChatResourceDropOverlay";
 
 export type { CharacterMap };
 
@@ -686,6 +688,7 @@ export function ChatArea() {
     setSettingsAnchor(null);
     setSettingsInitialSection(null);
   }, []);
+
   const handleCloseGalleryPanel = useCallback(() => {
     blurActiveChatFloatingUiControl();
     setGalleryOpen(false);
@@ -712,6 +715,17 @@ export function ChatArea() {
     setPeekPromptData(null);
     setDeleteDialogMessageId(null);
   }, []);
+  // A dropped agent parks a setup request; open chat settings so its modal can run.
+  useEffect(() => {
+    const openAgentSetup = (event: Event) => {
+      const chatId = (event as CustomEvent<{ chatId?: string }>).detail?.chatId;
+      if (chatId && chatId !== useChatStore.getState().activeChatId) return;
+      handleOpenSettingsPanel();
+    };
+    window.addEventListener(CHAT_RESOURCE_AGENT_SETUP_EVENT, openAgentSetup);
+    return () => window.removeEventListener(CHAT_RESOURCE_AGENT_SETUP_EVENT, openAgentSetup);
+  }, [handleOpenSettingsPanel]);
+
   useEffect(() => {
     window.addEventListener(CHAT_TOOLBAR_ACTION_EVENT, closeFloatingChatDrawers);
     window.addEventListener(CHAT_FLOATING_UI_DISMISS_EVENT, closeFloatingChatDrawers);
@@ -3103,6 +3117,7 @@ export function ChatArea() {
       />
     </Suspense>
   ) : null;
+  const resourceDropOverlay = chat ? <ChatResourceDropOverlay chat={chat} /> : null;
 
   // ═══════════════════════════════════════════════
   // Game mode — RPG surface with GM narration, map, party chat
@@ -3115,6 +3130,7 @@ export function ChatArea() {
         <>
           {cardCssInjector}
           {scheduleModal}
+          {resourceDropOverlay}
           <GameSurface
             activeChatId={activeChatId}
             chat={chat!}
@@ -3192,6 +3208,7 @@ export function ChatArea() {
       <>
         {cardCssInjector}
         {scheduleModal}
+        {resourceDropOverlay}
         <Suspense fallback={surfaceFallback}>
           <ChatConversationSurface
             activeChatId={activeChatId}
@@ -3288,6 +3305,7 @@ export function ChatArea() {
     <>
       {cardCssInjector}
       {scheduleModal}
+      {resourceDropOverlay}
       <Suspense fallback={surfaceFallback}>
         <ChatRoleplaySurface
           activeChatId={activeChatId}
