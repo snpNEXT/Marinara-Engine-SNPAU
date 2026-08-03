@@ -8,6 +8,7 @@ import type { Chat, ChatMode, Message } from "../../packages/shared/src/types/ch
 import { chatModeSchema } from "../../packages/shared/src/schemas/chat.schema.js";
 import playwrightConfig from "../../playwright.config.js";
 import { resolveDevSharedBuildScript } from "../dev-shared-build.mjs";
+import { validatePullRequestTriage } from "../validate-pr-triage.mjs";
 import { characterCardVersions, characters, chatPresets, chats, messages } from "../../packages/server/src/db/schema/index.js";
 import { eq } from "../../packages/server/src/db/file-query.js";
 import { parseBuildMeta, resolveBuildBranch } from "../../packages/server/src/config/build-info.js";
@@ -188,7 +189,11 @@ import { createLorebooksStorage } from "../../packages/server/src/services/stora
 import { createNoodleStorage } from "../../packages/server/src/services/storage/noodle.storage.js";
 import { createChatPresetsStorage } from "../../packages/server/src/services/storage/chat-presets.storage.js";
 import { buildGoogleModelsPageUrl } from "../../packages/server/src/routes/connections.routes.js";
-import { buildReferencedCharacterContext } from "../../packages/server/src/services/prompt/macro-context.js";
+import {
+  buildReferencedCharacterContext,
+  MAX_REFERENCED_CHARACTERS,
+} from "../../packages/server/src/services/prompt/macro-context.js";
+import { assemblePrompt } from "../../packages/server/src/services/prompt/assembler.js";
 import { resolveRunPodComfyUiTimeoutSeconds } from "../../packages/server/src/services/image/runpod-comfyui.service.js";
 import {
   findMissingComfyReferenceSlots,
@@ -199,6 +204,7 @@ import {
   buildInitialAgentAddSetupState,
 } from "../../packages/client/src/components/chat/AgentAddSetupFields.js";
 import { resolveSpriteTransition } from "../../packages/client/src/lib/sprite-transition.js";
+import { resolveSpriteExpressionState } from "../../packages/client/src/lib/sprite-expression-state.js";
 import {
   parseIllustratorPromptReviewOverride,
   resolveIllustratorPromptSubmission,
@@ -309,6 +315,36 @@ assert.equal(shouldSuppressAutonomousMessages("dnd"), true);
 assert.equal(resolveSpriteTransition("full-body", "none"), "crossfade");
 assert.equal(resolveSpriteTransition("full-body", "shake"), "shake");
 assert.equal(resolveSpriteTransition("expressions", "none"), "none");
+assert.deepEqual(
+  resolveSpriteExpressionState([
+    { extra: { spriteExpressions: { "character-a": "happy" } } },
+    { extra: {} },
+  ]),
+  { "character-a": "happy" },
+);
+assert.deepEqual(
+  resolveSpriteExpressionState(
+    [
+      { extra: { spriteExpressions: { "character-a": "happy" } } },
+      { extra: { spriteExpressions: { persona: "excited" } } },
+      { extra: JSON.stringify({ spriteExpressions: { "character-c": "angry" } }) },
+    ],
+    { "character-b": "thinking" },
+  ),
+  {
+    "character-a": "happy",
+    "character-b": "thinking",
+    "character-c": "angry",
+    persona: "excited",
+  },
+);
+assert.deepEqual(
+  resolveSpriteExpressionState([
+    { extra: { spriteExpressions: { "character-a": "happy" } } },
+    { extra: { spriteExpressions: { "character-a": "neutral" } } },
+  ]),
+  { "character-a": "neutral" },
+);
 assert.deepEqual(findMissingComfyReferenceSlots(comfyReferenceWorkflow, "reference_image", 1), [1]);
 assert.deepEqual(findMissingComfyReferenceSlots(comfyReferenceWorkflow, "reference_image_name", 1), [2]);
 assert.equal(numberedComfyReferencePlaceholder("reference_image_name", 2), "%reference_image_name_03%");
@@ -757,7 +793,7 @@ try {
       name: "Susie",
       description: "A trusted friend from the western district.",
       first_mes: "REFERENCED_GREETING_MUST_STAY_OUT",
-      mes_example: "REFERENCED_EXAMPLE_MUST_STAY_OUT",
+      mes_example: "REFERENCED_EXAMPLE_SHOULD_APPEAR",
       extensions: {
         appearance: "Blonde hair and a blue summer dress.",
       },
@@ -814,7 +850,124 @@ try {
   assert.match(referencedContext.content, /Blonde hair and a blue summer dress\./u);
   assert.match(referencedContext.content, /REFERENCED_LOREBOOK_MEMORY/u);
   assert.doesNotMatch(referencedContext.content, /REFERENCED_GREETING_MUST_STAY_OUT/u);
-  assert.doesNotMatch(referencedContext.content, /REFERENCED_EXAMPLE_MUST_STAY_OUT/u);
+  assert.match(referencedContext.content, /REFERENCED_EXAMPLE_SHOULD_APPEAR/u);
+
+  const macroLorebook = await lorebookStorage.create(
+    createLorebookSchema.parse({
+      name: "Active character references",
+      category: "character",
+      characterIds: [storageTrimFixture.id],
+    }),
+  );
+  await lorebookStorage.createEntry(
+    createLorebookEntrySchema.parse({
+      lorebookId: macroLorebook.id,
+      name: "Cafe companion",
+      content: `The cafe companion is {{${referencedCharacter.id}}}.`,
+      keys: ["cafe"],
+    }),
+  );
+  const assembleCharacterReferenceFixture = (chatId: string, content: string) =>
+    assemblePrompt({
+      db,
+      preset: {
+        id: "character-reference-preset",
+        name: "Character reference fixture",
+        sectionOrder: JSON.stringify(["lorebook", "history"]),
+        groupOrder: JSON.stringify([]),
+        wrapFormat: "xml",
+        parameters: JSON.stringify({}),
+        variableGroups: JSON.stringify([]),
+        variableValues: JSON.stringify({}),
+      },
+      sections: [
+        {
+          id: "lorebook",
+          presetId: "character-reference-preset",
+          identifier: "lorebook",
+          name: "Lorebook",
+          content: "",
+          role: "system",
+          enabled: "true",
+          isMarker: "true",
+          groupId: null,
+          markerConfig: JSON.stringify({ type: "lorebook" }),
+          injectionPosition: "relative",
+          injectionDepth: 0,
+          injectionOrder: 0,
+          forbidOverrides: "false",
+        },
+        {
+          id: "history",
+          presetId: "character-reference-preset",
+          identifier: "chatHistory",
+          name: "Chat History",
+          content: "",
+          role: "system",
+          enabled: "true",
+          isMarker: "true",
+          groupId: null,
+          markerConfig: JSON.stringify({ type: "chat_history" }),
+          injectionPosition: "relative",
+          injectionDepth: 0,
+          injectionOrder: 1,
+          forbidOverrides: "false",
+        },
+      ],
+      groups: [],
+      choiceBlocks: [],
+      chatChoices: {},
+      chatId,
+      characterIds: [storageTrimFixture.id],
+      personaName: "Mari",
+      personaDescription: "",
+      chatMessages: [{ role: "user", content }],
+    });
+  const assembledReference = await assembleCharacterReferenceFixture(
+    "character-reference-regression",
+    "I went to the cafe.",
+  );
+  const assembledReferenceText = assembledReference.messages.map((message) => message.content).join("\n");
+  assert.match(assembledReferenceText, /The cafe companion is Susie\./u);
+  assert.match(assembledReferenceText, /A trusted friend from the western district\./u);
+  assert.match(assembledReferenceText, /REFERENCED_EXAMPLE_SHOULD_APPEAR/u);
+  assert.doesNotMatch(assembledReferenceText, /REFERENCED_GREETING_MUST_STAY_OUT/u);
+
+  const cappedDirectReferences = [];
+  for (let index = 0; index < MAX_REFERENCED_CHARACTERS; index += 1) {
+    cappedDirectReferences.push(
+      await characterStorage.create(
+        characterDataSchema.parse({
+          name: `Reference cap ${index + 1}`,
+          description: `DIRECT_REFERENCE_${index + 1}_MUST_APPEAR`,
+        }),
+      ),
+    );
+  }
+  const overflowReference = await characterStorage.create(
+    characterDataSchema.parse({
+      name: "Overflow reference must stay out",
+      description: "OVERFLOW_REFERENCE_CONTEXT_MUST_STAY_OUT",
+    }),
+  );
+  await lorebookStorage.createEntry(
+    createLorebookEntrySchema.parse({
+      lorebookId: macroLorebook.id,
+      name: "Reference cap overflow",
+      content: `The overflow reference is {{${overflowReference.id}}}.`,
+      keys: ["reference-cap"],
+    }),
+  );
+  const cappedReferencePrompt = await assembleCharacterReferenceFixture(
+    "character-reference-cap-regression",
+    `${cappedDirectReferences.map((character) => `{{${character.id}}}`).join(" ")} reference-cap`,
+  );
+  const cappedReferenceText = cappedReferencePrompt.messages.map((message) => message.content).join("\n");
+  for (let index = 0; index < MAX_REFERENCED_CHARACTERS; index += 1) {
+    assert.match(cappedReferenceText, new RegExp(`DIRECT_REFERENCE_${index + 1}_MUST_APPEAR`, "u"));
+  }
+  assert.doesNotMatch(cappedReferenceText, /OVERFLOW_REFERENCE_CONTEXT_MUST_STAY_OUT/u);
+  assert.doesNotMatch(cappedReferenceText, /Overflow reference must stay out/u);
 
   await lorebookStorage.update(hiddenCharacterLorebook.id, { hiddenFromLibrary: false });
   assert.equal(
@@ -1581,26 +1734,7 @@ assert.deepEqual(
   ZAI_IMAGE_MODELS.map((model) => model.id),
   ["glm-image", "cogview-4-250304"],
 );
-const pullRequestTriageWorkflow = readFileSync(
-  new URL("../../.github/workflows/pull-request-triage.yml", import.meta.url),
-  "utf8",
-);
-assert.match(pullRequestTriageWorkflow, /pull_request_review:\s+types: \[submitted, dismissed\]/u);
-assert.match(pullRequestTriageWorkflow, /github\.event\.review\.user\.login == 'SpicyMarinara'/u);
-assert.match(pullRequestTriageWorkflow, /github\.event\.review\.state == 'commented'/u);
-assert.match(pullRequestTriageWorkflow, /'Ignore unrelated triage event'/u);
-assert.match(pullRequestTriageWorkflow, /APPROVAL_EVENT_RELEVANT/u);
-assert.match(pullRequestTriageWorkflow, /if: env\.APPROVAL_EVENT_RELEVANT != 'true'/u);
-assert.match(
-  pullRequestTriageWorkflow,
-  /name: "\$\{\{ github\.event\.pull_request\.base\.ref == 'staging'.*'Ignore unrelated triage event' \}\}"/u,
-);
-assert.match(
-  pullRequestTriageWorkflow,
-  /github\.event\.action != 'edited' \|\| contains\(toJSON\(github\.event\.changes\), '\\?"base\\?"'\)/u,
-);
-assert.doesNotMatch(pullRequestTriageWorkflow, /github\.event\.changes\.base != null/u);
-assert.doesNotMatch(pullRequestTriageWorkflow, /github\.event\.changes\.base\.ref\.from != ''/u);
+validatePullRequestTriage();
 assert.equal(
   buildAtlasCloudUrl("https://api.atlascloud.ai/v1/", "generateImage"),
   "https://api.atlascloud.ai/api/v1/model/generateImage",
@@ -3853,7 +3987,17 @@ assert.match(
 );
 assert.match(
   chatRoutesSource,
-  /combinedTokenEstimate[\s\S]{0,500}Selected summaries are too large to combine at once[\s\S]{0,3000}provider\.chatComplete/u,
+  /estimateChatSummaryTokens\(summaryPrompt\)[\s\S]{0,200}estimateChatSummaryTokens\(combinePrompt\)/u,
+  "The combine input budget must reserve the actual system and combine prompt sizes",
+);
+assert.match(
+  chatRoutesSource,
+  /combinedSummaryInputBudget[\s\S]{0,500}SUMMARY_COMBINE_MESSAGE_OVERHEAD_TOKENS/u,
+  "The combine input budget must reserve message overhead",
+);
+assert.match(
+  chatRoutesSource,
+  /estimateChatSummaryTokens\(sourceText\) > combinedSummaryInputBudget[\s\S]{0,500}Selected summaries are too large to combine at once[\s\S]{0,3000}provider\.chatComplete/u,
   "Combined summaries must be rejected before provider generation when they exceed the input budget",
 );
 const chatSidebarSource = readFileSync(

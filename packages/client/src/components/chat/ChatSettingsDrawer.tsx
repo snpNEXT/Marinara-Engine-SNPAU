@@ -110,7 +110,7 @@ import { ConversationTimeZoneSelect } from "./ConversationTimeZoneSelect";
 import { RoleplayMessagePreview } from "./ChatMessage";
 import { CHAT_SETTINGS_SURFACES } from "./chat-settings-surfaces";
 import { useCharacters, usePersonas, useCharacterGroups, type SpriteInfo } from "../../hooks/use-characters";
-import { useLorebooks, useEntriesAcrossLorebooks } from "../../hooks/use-lorebooks";
+import { lorebookKeys, useLorebooks, useEntriesAcrossLorebooks } from "../../hooks/use-lorebooks";
 import { useDefaultPreset, usePresetFull, usePresets } from "../../hooks/use-presets";
 import { useConnections } from "../../hooks/use-connections";
 import { useKnowledgeSources, useUploadKnowledgeSource } from "../../hooks/use-knowledge-sources";
@@ -1062,12 +1062,17 @@ export function ChatSettingsDrawer({
     openRightPanel("agents");
     openAgentCatalog();
   }, [onClose, openAgentCatalog, openRightPanel]);
+  const refreshLorebooks = useCallback(
+    () => qc.invalidateQueries({ queryKey: lorebookKeys.all }),
+    [qc],
+  );
   const openLorebookFromSettings = useCallback(
     (lorebookId: string) => {
+      void refreshLorebooks();
       onClose();
       openLorebookDetail(lorebookId);
     },
-    [onClose, openLorebookDetail],
+    [onClose, openLorebookDetail, refreshLorebooks],
   );
   const inactiveCharacterIds = useMemo<string[]>(
     () =>
@@ -8189,6 +8194,7 @@ export function ChatSettingsDrawer({
                                             confirmAction: showConfirmDialog,
                                             onDirtyChange: setEditorDirty,
                                             onOpenLorebook: openLorebookFromSettings,
+                                            onLorebooksChanged: refreshLorebooks,
                                           }}
                                           className="block overflow-hidden rounded-lg"
                                         />
@@ -8510,6 +8516,7 @@ export function ChatSettingsDrawer({
                                                 confirmAction: showConfirmDialog,
                                                 onDirtyChange: setEditorDirty,
                                                 onOpenLorebook: openLorebookFromSettings,
+                                                onLorebooksChanged: refreshLorebooks,
                                               }}
                                               className="mt-2 block overflow-hidden rounded-lg"
                                             />
