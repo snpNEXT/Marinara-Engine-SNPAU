@@ -695,6 +695,12 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
   const [replyImageUrl, setReplyImageUrl] = useState("");
   const [replyImageUrlDraft, setReplyImageUrlDraft] = useState("");
   const [activeReplyComposerTool, setActiveReplyComposerTool] = useState<ReplyComposerTool | null>(null);
+  const [nudgePostAccountId, setNudgePostAccountId] = useState<string | null>(null);
+  const [nudgePostPrompt, setNudgePostPrompt] = useState("");
+  const [nudgePostFastMode, setNudgePostFastMode] = useState(false);
+  const [nudgeReplyTarget, setNudgeReplyTarget] = useState<NoodlePostCardModel | null>(null);
+  const [nudgeReplyAccountId, setNudgeReplyAccountId] = useState("");
+  const [nudgeReplyPrompt, setNudgeReplyPrompt] = useState("");
   const [imageLightbox, setImageLightbox] = useState<ChatImage | null>(null);
   const [notificationFocusTarget, setNotificationFocusTarget] = useState<NoodleNotificationFocusTarget | null>(null);
   const [highlightedInteractionId, setHighlightedInteractionId] = useState<string | null>(null);
@@ -2426,24 +2432,72 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
     );
   };
 
-  const nudgeReply = (post: NoodlePostCardModel) => {
-    const author = accountById.get(post.authorAccountId);
-    if (!author || author.kind !== "character") {
-      toast.error(localizeUi("ui.noodle.noodlehome.onlyCharactersCanBeNudged"));
-      return;
-    }
+  const openNudgePost = (accountId: string) => {
+    setNudgePostAccountId(accountId);
+    setNudgePostPrompt("");
+    setNudgePostFastMode(false);
+  };
+
+  const closeNudgePost = () => {
+    setNudgePostAccountId(null);
+    setNudgePostPrompt("");
+    setNudgePostFastMode(false);
+  };
+
+  const submitNudgePost = () => {
+    if (!nudgePostAccountId || nudgeCharacter.isPending) return;
     if (!settings?.generationConnectionId) {
       toast.error(localizeUi("ui.noodle.noodlehome.chooseAGenerationConnectionForNoodleFirst"));
       return;
     }
     nudgeCharacter.mutate(
       {
-        accountId: author.id,
+        accountId: nudgePostAccountId,
         personaId: personaAccount?.entityId,
-        targetPostId: post.id,
+        prompt: nudgePostPrompt.trim() || undefined,
+        fastMode: nudgePostFastMode,
       },
       {
-        onSuccess: () => toast.success(localizeUi("ui.noodle.noodlehome.nudgeReplySent")),
+        onSuccess: () => {
+          closeNudgePost();
+          toast.success(localizeUi("ui.noodle.noodlehome.nudgeReplySent"));
+        },
+        onError: (error) =>
+          toast.error(error instanceof Error ? error.message : localizeUi("ui.noodle.noodlehome.nudgeFailed")),
+      },
+    );
+  };
+
+  const nudgeReply = (post: NoodlePostCardModel) => {
+    setNudgeReplyTarget(post);
+    setNudgeReplyAccountId("");
+    setNudgeReplyPrompt("");
+  };
+
+  const closeNudgeReply = () => {
+    setNudgeReplyTarget(null);
+    setNudgeReplyAccountId("");
+    setNudgeReplyPrompt("");
+  };
+
+  const submitNudgeReply = () => {
+    if (!nudgeReplyTarget || !nudgeReplyAccountId || nudgeCharacter.isPending) return;
+    if (!settings?.generationConnectionId) {
+      toast.error(localizeUi("ui.noodle.noodlehome.chooseAGenerationConnectionForNoodleFirst"));
+      return;
+    }
+    nudgeCharacter.mutate(
+      {
+        accountId: nudgeReplyAccountId,
+        personaId: personaAccount?.entityId,
+        targetPostId: nudgeReplyTarget.id,
+        prompt: nudgeReplyPrompt.trim() || undefined,
+      },
+      {
+        onSuccess: () => {
+          closeNudgeReply();
+          toast.success(localizeUi("ui.noodle.noodlehome.nudgeReplySent"));
+        },
         onError: (error) =>
           toast.error(error instanceof Error ? error.message : localizeUi("ui.noodle.noodlehome.couldNotNudgeReply")),
       },
@@ -4716,10 +4770,7 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
                       type="button"
                       disabled={nudgeCharacter.isPending}
                       onClick={() =>
-                        nudgeCharacter.mutate({
-                          accountId: viewedProfileAccount.id,
-                          personaId: personaAccount?.id,
-                        })
+                        openNudgePost(viewedProfileAccount.id)
                       }
                       className="h-9 rounded-full border border-[var(--noodle-divider)] px-4 text-xs font-semibold text-[var(--foreground)] transition-colors hover:border-[var(--noodle-accent)] hover:text-[var(--noodle-accent)] disabled:opacity-50"
                     >
@@ -4930,6 +4981,123 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
                 pollRef: modalPollToolRef,
                 mediaRef: modalMediaToolRef,
               })}
+          </div>
+        </div>
+      </Modal>
+      <Modal
+        open={Boolean(nudgePostAccountId)}
+        onClose={closeNudgePost}
+        closeDisabled={nudgeCharacter.isPending}
+        title={localizeUi("ui.noodle.noodlehome.nudgePostTitle", {
+          value1: accountById.get(nudgePostAccountId ?? "")?.displayName ?? "Character",
+        })}
+        width="max-w-md"
+        panelClassName={NOODLE_ICON_SCOPE_CLASS}
+        panelStyle={getNoodleAccentStyle(NOODLE_BLUE)}
+      >
+        <div className="space-y-4">
+          <label className="block space-y-1.5">
+            <span className={labelClass}>{localizeUi("ui.noodle.noodlehome.generationGuidance")}</span>
+            <textarea
+              value={nudgePostPrompt}
+              onChange={(event) => setNudgePostPrompt(event.target.value)}
+              placeholder={localizeUi("ui.noodle.noodlehome.nudgePromptPlaceholder")}
+              maxLength={1000}
+              rows={4}
+              autoFocus
+              className={textareaClass}
+            />
+          </label>
+          <label className="flex items-start gap-3 rounded-md border border-[var(--noodle-divider)] px-3 py-2.5 text-xs text-[var(--foreground)]">
+            <input
+              type="checkbox"
+              checked={nudgePostFastMode}
+              onChange={(event) => setNudgePostFastMode(event.target.checked)}
+              className="mt-0.5 accent-[var(--noodle-accent)]"
+            />
+            <span>{localizeUi("ui.noodle.noodlehome.nudgeFastMode")}</span>
+          </label>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={closeNudgePost}
+              disabled={nudgeCharacter.isPending}
+              className="h-9 rounded-md border border-[var(--noodle-divider)] px-4 text-xs font-semibold text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] disabled:opacity-50"
+            >
+              {localizeUi("chat.delete.dialog.cancel")}
+            </button>
+            <button
+              type="button"
+              onClick={submitNudgePost}
+              disabled={nudgeCharacter.isPending}
+              className="flex h-9 items-center gap-2 rounded-md bg-[var(--noodle-accent)] px-4 text-xs font-bold text-zinc-950 transition-opacity hover:opacity-90 disabled:opacity-50"
+            >
+              {nudgeCharacter.isPending && <Loader2 size={14} className="animate-spin" />}
+              {nudgeCharacter.isPending
+                ? localizeUi("ui.noodle.noodlehome.nudgeSending")
+                : localizeUi("ui.noodle.noodlehome.nudgeSend")}
+            </button>
+          </div>
+        </div>
+      </Modal>
+      <Modal
+        open={Boolean(nudgeReplyTarget)}
+        onClose={closeNudgeReply}
+        closeDisabled={nudgeCharacter.isPending}
+        title={localizeUi("ui.noodle.noodlehome.nudgeReplyTitle")}
+        width="max-w-md"
+        panelClassName={NOODLE_ICON_SCOPE_CLASS}
+        panelStyle={getNoodleAccentStyle(NOODLE_BLUE)}
+      >
+        <div className="space-y-4">
+          <label className="block space-y-1.5">
+            <span className={labelClass}>{localizeUi("ui.noodle.noodlehome.nudgeCharacter")}</span>
+            <select
+              value={nudgeReplyAccountId}
+              onChange={(event) => setNudgeReplyAccountId(event.target.value)}
+              className={fieldClass}
+            >
+              <option value="" disabled>
+                {localizeUi("ui.noodle.noodlehome.nudgeCharacterPlaceholder")}
+              </option>
+              {mentionableCharacterAccounts.map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.displayName} (@{account.handle})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block space-y-1.5">
+            <span className={labelClass}>{localizeUi("ui.noodle.noodlehome.generationGuidance")}</span>
+            <textarea
+              value={nudgeReplyPrompt}
+              onChange={(event) => setNudgeReplyPrompt(event.target.value)}
+              placeholder={localizeUi("ui.noodle.noodlehome.nudgePromptPlaceholder")}
+              maxLength={1000}
+              rows={4}
+              className={textareaClass}
+            />
+          </label>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={closeNudgeReply}
+              disabled={nudgeCharacter.isPending}
+              className="h-9 rounded-md border border-[var(--noodle-divider)] px-4 text-xs font-semibold text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] disabled:opacity-50"
+            >
+              {localizeUi("chat.delete.dialog.cancel")}
+            </button>
+            <button
+              type="button"
+              onClick={submitNudgeReply}
+              disabled={!nudgeReplyAccountId || nudgeCharacter.isPending}
+              className="flex h-9 items-center gap-2 rounded-md bg-[var(--noodle-accent)] px-4 text-xs font-bold text-zinc-950 transition-opacity hover:opacity-90 disabled:opacity-50"
+            >
+              {nudgeCharacter.isPending && <Loader2 size={14} className="animate-spin" />}
+              {nudgeCharacter.isPending
+                ? localizeUi("ui.noodle.noodlehome.nudgeSending")
+                : localizeUi("ui.noodle.noodlehome.nudgeSend")}
+            </button>
           </div>
         </div>
       </Modal>
