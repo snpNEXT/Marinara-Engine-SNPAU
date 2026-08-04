@@ -4271,7 +4271,7 @@ test("legacy browser records are cleaned while extension imports stay locked", a
         };
       }),
     )
-    .toEqual({ version: 87, hasExtensionRecords: false, hasCleanupFlag: false });
+    .toEqual({ version: 88, hasExtensionRecords: false, hasCleanupFlag: false });
 
   expect(
     await page.evaluate(
@@ -4771,6 +4771,44 @@ test("chat toolbar panels close when their trigger is clicked again across modes
     await expect.poll(() => summaryPanel.evaluate((element) => element.parentElement === document.body)).toBe(true);
     await expect(summaryPanel).toHaveCSS("position", "fixed");
     await expect(summaryPanel).toHaveCSS("z-index", "9999");
+    const summaryPromptCard = summaryPanel
+      .getByText("Summary Prompt", { exact: true })
+      .locator("xpath=../../..");
+    const chatSummaryPromptTab = summaryPromptCard.getByRole("tab", { name: "Chat Summary", exact: true });
+    const combinePromptTab = summaryPromptCard.getByRole("tab", { name: "Combine prompt", exact: true });
+    await expect(chatSummaryPromptTab).toHaveAttribute("aria-selected", "true");
+    const summaryPromptViewHeight = await summaryPromptCard.locator(".h-48").first().evaluate((element) =>
+      element.getBoundingClientRect().height,
+    );
+    await combinePromptTab.click();
+    await expect(combinePromptTab).toHaveAttribute("aria-selected", "true");
+    const combinePromptViewHeight = await summaryPromptCard.locator(".h-48").first().evaluate((element) =>
+      element.getBoundingClientRect().height,
+    );
+    expect(combinePromptViewHeight).toBe(summaryPromptViewHeight);
+
+    const promptEditButton = summaryPromptCard.getByRole("button", { name: "Edit", exact: true });
+    await expect(promptEditButton).toBeEnabled();
+    await promptEditButton.click();
+    await expect(summaryPromptCard.getByRole("button", { name: "Done", exact: true })).toBeVisible();
+    const combinePromptInput = summaryPromptCard.getByRole("textbox", { name: "Combine prompt", exact: true });
+    const originalCombinePrompt = await combinePromptInput.inputValue();
+    const updatedCombinePrompt = `${originalCombinePrompt}\nE2E save probe`;
+    await expect(combinePromptInput).toHaveAttribute("rows", "5");
+    await combinePromptInput.fill(updatedCombinePrompt);
+    await summaryPromptCard.getByRole("button", { name: "Done", exact: true }).click();
+    await expect(combinePromptInput).toHaveCount(0);
+    await summaryPromptCard.getByRole("button", { name: "Edit", exact: true }).click();
+    await expect(combinePromptInput).toHaveValue(updatedCombinePrompt);
+    await combinePromptInput.fill(originalCombinePrompt);
+    await summaryPromptCard.getByRole("button", { name: "Done", exact: true }).click();
+    await expect(combinePromptInput).toHaveCount(0);
+
+    await chatSummaryPromptTab.click();
+    await summaryPromptCard.getByRole("button", { name: "Edit", exact: true }).click();
+    await expect(summaryPromptCard.getByRole("button", { name: "Done", exact: true })).toBeVisible();
+    await summaryPromptCard.getByRole("button", { name: "Done", exact: true }).click();
+    await expect(summaryPromptCard.getByRole("button", { name: "Edit", exact: true })).toBeVisible();
     await summaryButton.click();
     await expect(summaryPanel).toHaveCount(0);
 
@@ -4850,6 +4888,11 @@ test("roleplay quick preset editor uses chat settings spacing and surfaces", asy
     await expect(quickEditorToggle).toHaveAttribute("aria-expanded", "true");
     await expect(quickEditorToggle).toContainText("Collapse preset editor");
     await expect(drawer.locator('[data-prompt-preset-chevron="select"]')).toBeVisible();
+
+    await quickEditor.getByRole("button", { name: "Add Section", exact: true }).click();
+    await expect(quickEditor.getByRole("button", { name: "ID Macro Cards", exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(quickEditor.getByRole("button", { name: "ID Macro Cards", exact: true })).toBeHidden();
 
     const toolbar = quickEditor.locator(".mari-editor-toolbar");
     const firstToolbarControl = toolbar.locator("button").first();
@@ -5718,6 +5761,11 @@ test("PocketTTS discovers server voices and uses its speech endpoint", async ({ 
       receivedPath = incoming.url ?? "";
       receivedContentType = String(incoming.headers["content-type"] ?? "");
       receivedBody = Buffer.concat(chunks).toString("utf8");
+      if (incoming.method === "GET" && incoming.url === "/openapi.json") {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ paths: { "/v1/audio/speech": {}, "/v1/voices": {} } }));
+        return;
+      }
       if (incoming.method === "GET" && incoming.url === "/v1/voices") {
         response.writeHead(200, { "Content-Type": "application/json" });
         response.end(
@@ -5850,6 +5898,82 @@ test("PocketTTS discovers server voices and uses its speech endpoint", async ({ 
         return config.dialoguePauseMs;
       })
       .toBe(60_000);
+  } finally {
+    try {
+      if (originalConfig !== undefined) await request.put("/api/tts/config", { data: originalConfig });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        pocketTts.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  }
+});
+
+test("PocketTTS uses the official multipart speech API", async ({ request }, testInfo) => {
+  test.skip(!testInfo.project.name.includes("desktop"), "PocketTTS routing is covered on desktop.");
+
+  let receivedPath = "";
+  let receivedContentType = "";
+  let receivedBody = "";
+  const pocketTts = createServer((incoming, response) => {
+    const chunks: Buffer[] = [];
+    incoming.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    incoming.on("end", () => {
+      receivedPath = incoming.url ?? "";
+      receivedContentType = String(incoming.headers["content-type"] ?? "");
+      receivedBody = Buffer.concat(chunks).toString("utf8");
+      if (incoming.method === "GET" && incoming.url === "/openapi.json") {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ paths: { "/health": {}, "/tts": {} } }));
+        return;
+      }
+      if (incoming.method === "POST" && incoming.url === "/tts") {
+        response.writeHead(200, { "Content-Type": "audio/wav" });
+        response.end(Buffer.from("RIFF\u0000\u0000\u0000\u0000WAVE", "binary"));
+        return;
+      }
+      response.writeHead(404).end();
+    });
+  });
+  await new Promise<void>((resolve) => pocketTts.listen(0, "127.0.0.1", resolve));
+  let originalConfig: unknown;
+
+  try {
+    const address = pocketTts.address();
+    if (!address || typeof address === "string") throw new Error("PocketTTS mock did not bind to a TCP port");
+
+    const originalConfigResponse = await request.get("/api/tts/config");
+    expect(originalConfigResponse.ok()).toBeTruthy();
+    originalConfig = await originalConfigResponse.json();
+
+    const configResponse = await request.put("/api/tts/config", {
+      data: {
+        enabled: true,
+        source: "pockettts",
+        baseUrl: `http://127.0.0.1:${address.port}`,
+        model: "pocket-tts",
+        voice: "alba",
+        audioFormat: "wav",
+      },
+    });
+    expect(configResponse.ok()).toBeTruthy();
+
+    const voicesResponse = await request.get("/api/tts/voices");
+    expect(voicesResponse.ok()).toBeTruthy();
+    const voices = (await voicesResponse.json()) as { voices: string[]; fromProvider: boolean };
+    expect(voices.fromProvider).toBe(false);
+    expect(voices.voices).toEqual(expect.arrayContaining(["alba", "giovanni", "lola", "estelle"]));
+
+    const speechResponse = await request.post("/api/tts/speak", {
+      data: { text: "Hello from the official server." },
+    });
+    expect(speechResponse.ok()).toBeTruthy();
+    expect(receivedPath).toBe("/tts");
+    expect(receivedContentType).toContain("multipart/form-data; boundary=");
+    expect(receivedBody).toContain('name="text"');
+    expect(receivedBody).toContain("Hello from the official server.");
+    expect(receivedBody).toContain('name="voice_url"');
+    expect(receivedBody).toContain("alba");
   } finally {
     try {
       if (originalConfig !== undefined) await request.put("/api/tts/config", { data: originalConfig });
@@ -9486,6 +9610,57 @@ test("Professor Mari chat fills the mobile home viewport and keeps its composer 
       );
     })
     .toBe(true);
+});
+
+test("Professor Mari history opens a loaded chat at its newest message", async ({ page }) => {
+  const createdChatIds: string[] = [];
+
+  try {
+    const firstResponse = await page.request.get("/api/chats/internal/professor-mari");
+    expect(firstResponse.ok()).toBeTruthy();
+    const firstChat = (await firstResponse.json()) as { id: string };
+    createdChatIds.push(firstChat.id);
+    for (let index = 0; index < 18; index += 1) {
+      const messageResponse = await page.request.post(`/api/chats/${firstChat.id}/messages`, {
+        data: {
+          role: index % 2 === 0 ? "user" : "assistant",
+          content: `Professor Mari history message ${index + 1}. ${"A long transcript line makes the pane overflow. ".repeat(8)}`,
+        },
+      });
+      expect(messageResponse.ok()).toBeTruthy();
+    }
+    const secondResponse = await page.request.post("/api/chats/internal/professor-mari/restart");
+    expect(secondResponse.ok()).toBeTruthy();
+    const secondChat = (await secondResponse.json()) as { id: string };
+    createdChatIds.push(secondChat.id);
+
+    await page.goto("/");
+    await page
+      .locator('[data-component="HomeProfessorMariChat.MariPanel"]')
+      .getByRole("button", { name: "Ask Professor Mari" })
+      .click();
+
+    const window = page.locator('[data-component="HomeProfessorMariChat.Window"]');
+    await window.getByRole("button", { name: "Chats" }).click();
+    await window.locator(`[data-professor-mari-chat-id="${firstChat.id}"] button`).first().click();
+
+    const transcript = window.locator('[data-component="HomeProfessorMariChat.Transcript"]');
+    await expect(transcript).toBeVisible();
+    await expect
+      .poll(() =>
+        transcript.evaluate((node) => ({
+          atBottom: Math.abs(node.scrollHeight - node.clientHeight - node.scrollTop) <= 2,
+          overflows: node.scrollHeight > node.clientHeight,
+        })),
+      )
+      .toEqual({ atBottom: true, overflows: true });
+  } finally {
+    await Promise.all(
+      createdChatIds.map((id) =>
+        page.request.delete(`/api/chats/internal/professor-mari/chats/${id}`).catch(() => undefined),
+      ),
+    );
+  }
 });
 
 test("Professor Mari bulk chat deletion follows the active accent", async ({ page }) => {

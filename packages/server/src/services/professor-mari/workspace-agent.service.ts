@@ -36,6 +36,12 @@ import { DATA_DIR } from "../../utils/data-dir.js";
 import { logger } from "../../lib/logger.js";
 import { PROFESSOR_MARI_AGENT_CATALOG_KNOWLEDGE } from "./official-agent-knowledge.js";
 import {
+  formatDocumentationRead,
+  formatDocumentationSearch,
+  readCanonicalDocumentation,
+  searchCanonicalDocumentation,
+} from "./documentation-tools.js";
+import {
   GENERATION_PARAMETER_SEND_KEYS,
   findKnownModel,
   LOCAL_SIDECAR_CONNECTION_ID,
@@ -127,6 +133,8 @@ type AssistantWorkspaceAction = {
 };
 
 const WORKSPACE_TOOLS: MariWorkspaceToolName[] = [
+  "docs_search",
+  "docs_read",
   "read",
   "grep",
   "find",
@@ -164,6 +172,33 @@ const SKIPPED_DIRS = new Set([
 ]);
 
 const WORKSPACE_TOOL_DEFINITIONS: WorkspaceToolDefinition[] = [
+  {
+    name: "docs_search",
+    description:
+      "Search Marinara's canonical local README and English documentation. Use this first for user-facing feature, configuration, installation, and troubleshooting questions. Results include the source path, heading, line, and a bounded excerpt.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", minLength: 2, maxLength: 200 },
+        limit: { type: "integer", minimum: 1, maximum: 8 },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "docs_read",
+    description:
+      "Read a canonical local documentation file or one exact heading with bounded output. Paths must be README.md or English Markdown files under docs/. Cite the returned path and heading in the answer.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        heading: { type: "string" },
+        maxChars: { type: "integer", minimum: 1000, maximum: 16000 },
+      },
+      required: ["path"],
+    },
+  },
   {
     name: "read",
     description: "Read a text file from the workspace with optional 1-indexed line offset and line limit.",
@@ -435,7 +470,7 @@ Workspace defaults:
 - Use the structured \`app_data\` workspace command, not shell, for character/persona/lorebook/lorebook-entry/theme/Personal Extension/agent/preset reads, creation, and updates.
 - Use Mari CLI commands for images, wiki reads, code/workspace tasks, agents, tools, raw DB work, or anything \`app_data\` does not cover. Only write raw files when no CLI/helper path fits.
 - You may create and update Personal Extension drafts with \`personal_extension.create\` and \`personal_extension.update\`. These actions always disable changed code and clear its approval. Browser Extensions receive active chat and Character IDs through \`marinara.context\`; request \`read_active_characters\` or \`read_active_persona\` only when the extension truly needs bounded active-record fields. Never claim to approve, enable, or run an extension: only the user can review the exact code hash and requested permissions, then choose **Review and Run** in **Settings → Addons → Personal Extensions**.
-- For user-facing Browser Extension UI, use \`marinara.ui.registerContribution(...)\`. It can add a trusted Marinara-rendered top-bar button, Extensions menu item, or right-side panel. Panels may contain headings, text, preformatted output, buttons, text inputs, selects, toggles, sliders, color controls, and spacers. Use \`onActivate\` and \`onEvent\` for behavior and update the returned handle when the view changes. Never write extension code that expects \`document\`, \`window\`, \`innerHTML\`, host CSS selectors, React internals, unrestricted \`fetch\`, or direct Marinara API access; those capabilities are deliberately absent.
+- For user-facing Browser Extension UI, use \`marinara.ui.registerContribution(...)\`. It can add a trusted Marinara-rendered top-bar button, Extensions menu item, right-side panel, or button in the Chats, Bots, Characters, Personas, Lorebooks, Presets, Connections, Agents, and Settings surfaces. For a side-panel \`button\`, set \`surface\` to the requested surface and choose \`position: "header"\`, \`"before-content"\`, or \`"after-content"\`; omit both fields for the top bar. The \`icon\` may be any kebab-case Lucide icon name supported by Marinara. Panels may contain headings, text, preformatted output, buttons, text inputs, selects, toggles, sliders, color controls, and spacers. Use \`onActivate\` and \`onEvent\` for behavior and update the returned handle when the view changes. Never write extension code that expects \`document\`, \`window\`, \`innerHTML\`, host CSS selectors, React internals, unrestricted \`fetch\`, or direct Marinara API access; those capabilities are deliberately absent.
 - Raw \`bash\` commands run in an OS sandbox with network access denied, inherited secrets removed, and filesystem writes confined to the workspace. If the sandbox is unavailable, raw shell fails closed; use structured workspace tools.
 - Use the \`dependency\` tool when a source change needs a public npm package. Raw package-manager installs are blocked. The tool resolves an exact version and integrity, then waits for the user to approve installation with lifecycle scripts disabled.
 - Ordinary source files can still be edited directly. Dependency manifests, lockfiles, launchers, installers, and CI workflows are staged for a separate user review instead of being changed silently. Never bypass that review through \`bash\`.
@@ -474,7 +509,8 @@ Raw DB row contracts:
 - Generic \`mari db patch\` only accepts real table columns; app-visible nested fields must stay inside their owning JSON column instead of being written as invented top-level columns.
 
 Workspace files:
-Use workspace files to understand Marinara internals, answer source-code questions, or find content that is not available through CLI/app-data commands. Do not inspect source files instead of live app data when the user asks about saved characters, chats, agents, tools, presets, lorebooks, or other app content.`;
+For user-facing questions about Marinara features, configuration, installation, or troubleshooting, use \`docs_search\` and then \`docs_read\` before broad workspace searches. Cite the documentation path and heading in the answer. Use built-in or CLI help when exact command syntax matters. Inspect source only when canonical documentation is missing or ambiguous, or when the user explicitly asks about internals; if source inspection was required, say that the answer used an implementation-level source.
+Use other workspace files to understand Marinara internals, answer source-code questions, or find content that is not available through documentation, CLI, or app-data commands. Do not inspect source files instead of live app data when the user asks about saved characters, chats, agents, tools, presets, lorebooks, or other app content.`;
 
 function workspaceCommandProtocolPrompt() {
   const toolDocs = WORKSPACE_TOOL_DEFINITIONS.map(
@@ -488,7 +524,7 @@ Required schema:
 {
   "say": "visible text for the user, or empty string for silent work",
   "commands": [
-    { "name": "read|grep|find|ls|edit|write|bash|app_data", "arguments": {} }
+    { "name": "docs_search|docs_read|read|grep|find|ls|edit|write|bash|dependency|app_data", "arguments": {} }
   ],
   "suggestions": [
     { "label": "short button text", "prompt": "exact message to send if tapped", "entity": "characters|lorebooks|personas|presets|connections|agents|settings|chat", "tone": "danger|caution|success" }
@@ -524,7 +560,7 @@ ${MARI_GUIDED_SEQUENCES}
 - For \`preset.create\`, put prompt sections in \`data.sections\` and preset variables in \`data.choiceBlocks\`. Each choice block needs \`variableName\`, \`question\`, and \`options\` with \`label\`/\`value\` pairs.
 - Custom image agents are supported by the live runtime. Use \`data.resultType: "image_prompt"\`, enable \`settings.customCapabilities.trigger_image_generation\`, and have the agent return \`shouldGenerate\` plus \`prompt\`. Marker-triggered agents should also set \`activationKeywords\`. Do not claim that only Illustrator can generate image prompts.
 - Existing-data changes: use \`apply:true\` for requested \`*.update\`, \`lorebook.updateEntry\`, and \`theme.setActive\`. Marinara will save first and show the user an in-chat Keep/Restore review card for reversible changes.
-- Personal Extensions: create or update the complete draft with \`apply:true\`, verify it with \`personal_extension.get\`, then tell the user the draft remains disabled until they review and run the exact hash and requested capabilities in Settings → Addons. Browser UI should use \`marinara.ui.registerContribution\` for \`button\`, \`menu-item\`, or \`panel\` slots; panel controls are host-rendered and return values through \`onEvent\`. Use \`marinara.context\` for active IDs and request \`read_active_characters\` or \`read_active_persona\` only for bounded active-record reads. Do not offer or invent an approval action, DOM access, direct app-data access, or network access.
+- Personal Extensions: create or update the complete draft with \`apply:true\`, verify it with \`personal_extension.get\`, then tell the user the draft remains disabled until they review and run the exact hash and requested capabilities in Settings → Addons. Browser UI should use \`marinara.ui.registerContribution\` for \`button\`, \`menu-item\`, or \`panel\` slots; a button targets the top bar when \`surface\` and \`position\` are omitted. A side-panel button sets \`surface\` to \`chats\`, \`bots\`, \`characters\`, \`personas\`, \`lorebooks\`, \`presets\`, \`connections\`, \`agents\`, or \`settings\`, and sets \`position\` to \`header\`, \`before-content\`, or \`after-content\`. Panel controls are host-rendered and return values through \`onEvent\`. Use \`marinara.context\` for active IDs and request \`read_active_characters\` or \`read_active_persona\` only for bounded active-record reads. Do not offer or invent an approval action, DOM access, direct app-data access, or network access.
 - Use \`apply:false\` only for explicit preview/dry-run requests or when you need to inspect validation before making a risky change.
 - Do not say "preview" unless you show the concrete fields/content in \`say\` or the UI has returned an explicit preview artifact.
 
@@ -840,6 +876,7 @@ function createProviderForConnection(connection: WorkspaceConnection): BaseLLMPr
     bool(connection.claudeFastMode),
     bool(connection.treatAsLocalEndpoint),
     connection.defaultParameters,
+    connection.id,
   );
 }
 
@@ -1046,7 +1083,8 @@ function jsonPayloadStopValue(payload: Record<string, unknown>): boolean | undef
   return undefined;
 }
 
-const COMMAND_BLOCK_RE = /<(read|grep|find|ls|edit|write|bash|app_data)>\s*([\s\S]*?)\s*<\/\1>/gi;
+const COMMAND_BLOCK_RE =
+  /<(docs_search|docs_read|read|grep|find|ls|edit|write|bash|dependency|app_data)>\s*([\s\S]*?)\s*<\/\1>/gi;
 
 function parseXmlCommandCalls(content: string): WorkspaceCommandCall[] {
   const calls: WorkspaceCommandCall[] = [];
@@ -1074,17 +1112,17 @@ function parseQuotedParam(params: string, key: string): string | undefined {
 
 function parseBracketCommandCalls(content: string): WorkspaceCommandCall[] {
   const calls: WorkspaceCommandCall[] = [];
-  const re = /\[(read|grep|find|ls|bash):\s*([^\]\r\n]+)\]/gi;
+  const re = /\[(docs_search|docs_read|read|grep|find|ls|bash):\s*([^\]\r\n]+)\]/gi;
   for (const [index, match] of [...content.matchAll(re)].entries()) {
     const name = match[1];
     if (!name || !isWorkspaceToolName(name)) continue;
     const params = match[2] ?? "";
     const args: Record<string, unknown> = {};
-    for (const key of ["path", "pattern", "glob", "command"]) {
+    for (const key of ["path", "heading", "query", "pattern", "glob", "command"]) {
       const value = parseQuotedParam(params, key);
       if (value !== undefined) args[key] = value;
     }
-    for (const key of ["offset", "limit", "context", "timeout"]) {
+    for (const key of ["offset", "limit", "maxChars", "context", "timeout"]) {
       const numberMatch = params.match(new RegExp(`${key}=(-?[0-9]+)`, "i"));
       if (numberMatch) args[key] = Number.parseInt(numberMatch[1] ?? "", 10);
     }
@@ -1144,7 +1182,7 @@ function stripWorkspaceCommands(content: string): string {
   const withoutJson = removeJsonActionFrames(content).content;
   return withoutJson
     .replace(COMMAND_BLOCK_RE, "")
-    .replace(/\[(read|grep|find|ls|bash):\s*[^\]\r\n]+\]/gi, "")
+    .replace(/\[(docs_search|docs_read|read|grep|find|ls|bash):\s*[^\]\r\n]+\]/gi, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -1381,7 +1419,14 @@ function isWithin(parent: string, child: string): boolean {
 }
 
 function isReadOnlyWorkspaceCommand(command: WorkspaceCommandCall): boolean {
-  if (command.name === "read" || command.name === "grep" || command.name === "find" || command.name === "ls")
+  if (
+    command.name === "docs_search" ||
+    command.name === "docs_read" ||
+    command.name === "read" ||
+    command.name === "grep" ||
+    command.name === "find" ||
+    command.name === "ls"
+  )
     return true;
   if (command.name !== "app_data") return false;
   return appDataActionLooksReadOnly(command.arguments.action);
@@ -1492,6 +1537,10 @@ function workspaceCommandValidationIssue(command: WorkspaceCommandCall): string 
   };
 
   switch (command.name) {
+    case "docs_search":
+      return requireString("query");
+    case "docs_read":
+      return requireString("path");
     case "read":
       return requireString("path");
     case "grep":
@@ -2207,6 +2256,20 @@ ${sections.join("\n\n")}
 
   private async runWorkspaceCommand(command: WorkspaceCommandCall, signal: AbortSignal): Promise<string> {
     switch (command.name) {
+      case "docs_search": {
+        const query = stringArg(command.arguments, "query");
+        const limit = numberArg(command.arguments, "limit", 5, 1, 8);
+        return formatDocumentationSearch(query, await searchCanonicalDocumentation(this.workspaceRoot, query, limit));
+      }
+      case "docs_read":
+        return formatDocumentationRead(
+          await readCanonicalDocumentation(
+            this.workspaceRoot,
+            stringArg(command.arguments, "path"),
+            stringArg(command.arguments, "heading") || undefined,
+            numberArg(command.arguments, "maxChars", 8_000, 1_000, 16_000),
+          ),
+        );
       case "read":
         return this.commandRead(command.arguments);
       case "ls":
