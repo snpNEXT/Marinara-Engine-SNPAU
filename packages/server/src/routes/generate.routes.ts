@@ -75,6 +75,7 @@ import {
 } from "../services/spatial-context/projection.js";
 import { isHierarchicalMapsEnabledForChat } from "../services/spatial-context/activation.js";
 import {
+  createAssistantSpatialDirectiveStreamFilter,
   extractAssistantSpatialDirective,
   materializeAssistantSpatialState,
 } from "../services/spatial-context/state-resolution.js";
@@ -280,6 +281,7 @@ import {
 import { prepareConversationPromptHistory } from "./generate/conversation-history-runtime.js";
 import { resolveConversationPresenceRuntime } from "./generate/conversation-presence-runtime.js";
 import { resolveProfessorMariPromptContext } from "./generate/professor-mari-prompt-context.js";
+import { collectCapabilityPromptContext } from "../services/capability-packages/capability-prompt-context.service.js";
 import {
   appendToFirstSystemMessage,
   CONVERSATION_NO_REPEAT_INSTRUCTION,
@@ -1682,12 +1684,20 @@ export async function generateRoutes(app: FastifyInstance) {
           .filter((agentId) => isAgentAvailableInChatMode(chatMode, agentId))
           .filter((agentId) => !(gameSpotifyMusicEnabled && agentId === "spotify"));
         const customAgentImportsEnabled = (await getCustomAgentImportPolicy(app.db)).enabled;
-        const configuredPromptAgents =
-          chatEnableAgents && rawChatActiveAgentIds.length > 0
-            ? (await agentsStore.list()).filter(
-                (agent) => !isExternallyImportedAgent(agent.type, agent.settings) || customAgentImportsEnabled,
-              )
-            : [];
+        const allConfiguredPromptAgents =
+          chatEnableAgents && rawChatActiveAgentIds.length > 0 ? await agentsStore.list() : [];
+        const skippedImportedPromptAgents = customAgentImportsEnabled
+          ? []
+          : allConfiguredPromptAgents.filter((agent) => isExternallyImportedAgent(agent.type, agent.settings));
+        if (skippedImportedPromptAgents.length > 0) {
+          logger.debug(
+            "[agents] Skipping %d externally imported Agent configurations because custom imports are disabled",
+            skippedImportedPromptAgents.length,
+          );
+        }
+        const configuredPromptAgents = allConfiguredPromptAgents.filter(
+          (agent) => !isExternallyImportedAgent(agent.type, agent.settings) || customAgentImportsEnabled,
+        );
         const deletedBuiltInAgentTypes = new Set(
           configuredPromptAgents
             .filter((agent) => BUILT_IN_AGENTS.some((builtIn) => builtIn.id === agent.type))
@@ -1786,6 +1796,10 @@ export async function generateRoutes(app: FastifyInstance) {
           idleDuration: promptIdleDuration,
           timeZone: promptTimeZone,
         });
+        const conversationMacroFieldsByCharacterId = new Map<
+          string,
+          NonNullable<MacroContext["convoFields"]>
+        >();
         const historyMacroProfilesById = (await resolveCharacterMacroData(app.db, allCharacterIds)).profilesById;
         const resolveHistoryMessageMacros = <T extends { content: string; characterId?: string | null }>(
           messages: T[],
@@ -2333,6 +2347,16 @@ export async function generateRoutes(app: FastifyInstance) {
               postHistoryInstructions: "",
             });
           }
+          const personaProfile = profileParticipants.find((participant) => participant.isPersona);
+          for (const participant of profileParticipants) {
+            if (participant.isPersona) continue;
+            conversationMacroFieldsByCharacterId.set(participant.id, {
+              charDisplayName: participant.displayName,
+              charAbout: participant.aboutMe ?? "",
+              personaAbout: personaProfile?.aboutMe ?? "",
+              convoBehavior: participant.behavior?.instruction ?? "",
+            });
+          }
           const convoProfileBlocks = buildConversationProfileBlocks({
             participants: profileParticipants,
             primaryCharacterId: input.forCharacterId ?? convoCharInfo[0]?.charId ?? null,
@@ -2370,7 +2394,7 @@ export async function generateRoutes(app: FastifyInstance) {
             // filled in later; the decode pass below evaluates them (#3448).
             {
               deferConditionalOperand: isRelocationConditionOperand,
-              ...(deferCharacterMacros ? { deferCharacterMacros: "names" as const } : {}),
+              ...(deferCharacterMacros ? { deferCharacterMacros: "all" as const } : {}),
             },
           );
           // Mark each relocation macro a deferred conditional actually references
@@ -3037,6 +3061,23 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           }
 
+          // A package holding `prompt-context` appends its live state to the system message, the same way
+          // the lorebook block above does. Nothing registered (the normal case) ⇒ no effect on the prompt.
+          const capabilityPromptContext = await collectCapabilityPromptContext({
+            chatId: input.chatId,
+            chatMeta,
+            mode: "game",
+          });
+          if (capabilityPromptContext.blocks.length > 0) {
+            const capabilityBlock = capabilityPromptContext.blocks.join("\n\n");
+            const sysMsg = finalMessages.find((m) => m.role === "system");
+            if (sysMsg) {
+              sysMsg.content += "\n\n" + capabilityBlock;
+            } else {
+              finalMessages.unshift({ role: "system" as const, content: capabilityBlock });
+            }
+          }
+
           // Game bypasses the preset assembler, so card-authored depth and
           // post-history instructions must be injected explicitly before the
           // final GM format reminder claims the generation tail.
@@ -3098,6 +3139,8 @@ export async function generateRoutes(app: FastifyInstance) {
               artStylePrompt: gmCtx.artStylePrompt,
               addressMode,
               playerDiceRollSubmitted,
+              // A package that brought its own inventory takes the built-in one out of the prompt.
+              experienceProvidedSystems: capabilityPromptContext.provides,
               playerInventory: (() => {
                 try {
                   const inv = (chatMeta.gameInventory as Array<{ name: string; quantity: number }>) ?? [];
@@ -4859,7 +4902,11 @@ export async function generateRoutes(app: FastifyInstance) {
         const TOKEN_CHUNK_SIZE = 6;
         const TOKEN_CHUNK_YIELD_EVERY = 64;
         let tokenChunksSinceYield = 0;
-        const sendTokenTextChunked = async (text: string) => {
+        const spatialDirectiveStreamFilter =
+          hierarchicalMapsEnabledForChat && (requestChatMode === "roleplay" || requestChatMode === "game")
+            ? createAssistantSpatialDirectiveStreamFilter()
+            : null;
+        const emitTokenTextChunked = async (text: string) => {
           for (let i = 0; i < text.length; i += TOKEN_CHUNK_SIZE) {
             const chunk = text.slice(i, i + TOKEN_CHUNK_SIZE);
             trySendSseEvent(reply, { type: "token", data: chunk });
@@ -4869,18 +4916,13 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           }
         };
+        const sendTokenTextChunked = async (text: string) => {
+          const visibleText = spatialDirectiveStreamFilter?.push(text) ?? text;
+          if (visibleText) await emitTokenTextChunked(visibleText);
+        };
         const writeContentChunked = async (text: string) => {
-          for (let i = 0; i < text.length; i += TOKEN_CHUNK_SIZE) {
-            const chunk = text.slice(i, i + TOKEN_CHUNK_SIZE);
-            fullResponse += chunk;
-            tokenChunksSinceYield += 1;
-            if (!holdForTextRewrite) {
-              trySendSseEvent(reply, { type: "token", data: chunk });
-            }
-            if (tokenChunksSinceYield % TOKEN_CHUNK_YIELD_EVERY === 0) {
-              await yieldToEventLoop();
-            }
-          }
+          fullResponse += text;
+          if (!holdForTextRewrite) await sendTokenTextChunked(text);
         };
 
         const resolveMessageSpeakerName = (message: any): string => {
@@ -5340,10 +5382,17 @@ export async function generateRoutes(app: FastifyInstance) {
             targetScopedMessagesForGen,
             ownerSpatialProjection,
           );
+          const responderMacroContext = targetCharId
+            ? {
+                ...promptMacroContext,
+                convoFields:
+                  conversationMacroFieldsByCharacterId.get(targetCharId) ?? promptMacroContext.convoFields,
+              }
+            : promptMacroContext;
           const macroScopedMessagesForGen = spatiallyScopedMessagesForGen.map((message) => ({
             ...message,
             content: (deferredTargetCharacterProfile
-              ? resolveDeferredCharacterMacros(message.content, deferredTargetCharacterProfile, promptMacroContext)
+              ? resolveDeferredCharacterMacros(message.content, deferredTargetCharacterProfile, responderMacroContext)
               : message.content
             ).replace(/\n([ \t]*\n){2,}/g, "\n\n"),
           }));
@@ -5351,8 +5400,8 @@ export async function generateRoutes(app: FastifyInstance) {
           // earlier, but guide/system/depth blocks can be appended afterward; a
           // last scoped pass prevents raw identity macros from escaping (#3704).
           const providerMacroContext = targetCharacterProfile
-            ? scopePromptMacroContextToCharacter(promptMacroContext, targetCharacterProfile)
-            : promptMacroContext;
+            ? scopePromptMacroContextToCharacter(responderMacroContext, targetCharacterProfile)
+            : responderMacroContext;
           const preparedMessagesForGen = resolvePromptMessageMacros(
             macroScopedMessagesForGen,
             providerMacroContext,
@@ -6016,6 +6065,11 @@ export async function generateRoutes(app: FastifyInstance) {
             await flushNaturalBuffer();
           }
 
+          if (!holdForTextRewrite) {
+            const pendingSpatialText = spatialDirectiveStreamFilter?.flush() ?? "";
+            if (pendingSpatialText) await emitTokenTextChunked(pendingSpatialText);
+          }
+
           const durationMs = Date.now() - genStartTime;
 
           if (input.debugMode && chatMode === "game") {
@@ -6029,6 +6083,8 @@ export async function generateRoutes(app: FastifyInstance) {
             debugLog("[generate/game/raw] chatId=%s characterId=%s END", input.chatId, targetCharId ?? "gm");
           }
 
+          let contentReplaced = false;
+
           // Some models inline reasoning blocks instead of using provider-native
           // thinking channels. Lift those blocks into message.extra.thinking.
           const inlineThinking = extractLeadingThinkingBlocks(fullResponse, customThinkingTags);
@@ -6037,9 +6093,7 @@ export async function generateRoutes(app: FastifyInstance) {
               fullThinking = fullThinking ? fullThinking + "\n\n" + inlineThinking.thinking : inlineThinking.thinking;
             }
             fullResponse = inlineThinking.content;
-            if (!holdForTextRewrite) {
-              reply.raw.write(`data: ${JSON.stringify({ type: "content_replace", data: fullResponse })}\n\n`);
-            }
+            contentReplaced = true;
           }
 
           // ── LOG_LEVEL=debug or Settings -> Advanced -> Debug mode: log full response + usage to server console ──
@@ -6088,7 +6142,6 @@ export async function generateRoutes(app: FastifyInstance) {
           let parsedRawCommandCount = 0;
           let assistantSpatialDirective: ReturnType<typeof extractAssistantSpatialDirective>["directive"] = null;
           let conversationCommandContent: string | null = null;
-          let contentReplaced = false;
           if (tailMessages.assistantPrefillInjected && assistantPrefill && fullResponse.startsWith(assistantPrefill)) {
             const responseAfterPrefill = fullResponse.slice(assistantPrefill.length);
             if (responseAfterPrefill.startsWith(assistantPrefill)) {
@@ -6395,14 +6448,10 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           }
 
-          if (
-            !input.impersonate &&
-            hierarchicalMapsEnabledForChat &&
-            (requestChatMode === "roleplay" || requestChatMode === "game")
-          ) {
+          if (hierarchicalMapsEnabledForChat && (requestChatMode === "roleplay" || requestChatMode === "game")) {
             const parsedSpatial = extractAssistantSpatialDirective(fullResponse);
-            assistantSpatialDirective = parsedSpatial.directive;
-            if (parsedSpatial.cleanContent !== fullResponse) {
+            assistantSpatialDirective = input.impersonate ? null : parsedSpatial.directive;
+            if (parsedSpatial.matched) {
               fullResponse = parsedSpatial.cleanContent;
               contentReplaced = true;
             }
@@ -6410,6 +6459,12 @@ export async function generateRoutes(app: FastifyInstance) {
               logger.debug(
                 "[generate/spatial] Parsed assistant %s directive for chat %s",
                 assistantSpatialDirective.type,
+                input.chatId,
+              );
+            } else if (input.impersonate && parsedSpatial.directive) {
+              logger.debug(
+                "[generate/spatial] Stripped impersonated %s directive for chat %s",
+                parsedSpatial.directive.type,
                 input.chatId,
               );
             }
@@ -9183,6 +9238,20 @@ export async function generateRoutes(app: FastifyInstance) {
                 ) {
                   const edData = editorResult.data as Record<string, unknown>;
                   const editedText = typeof edData.editedText === "string" ? edData.editedText : "";
+                  let sanitizedEditedText = editedText;
+                  if (
+                    hierarchicalMapsEnabledForChat &&
+                    (requestChatMode === "roleplay" || requestChatMode === "game")
+                  ) {
+                    const parsedRewriteSpatial = extractAssistantSpatialDirective(editedText);
+                    if (parsedRewriteSpatial.matched) {
+                      sanitizedEditedText = parsedRewriteSpatial.cleanContent;
+                      logger.warn(
+                        "[text-rewrite] Stripped package-owned spatial directive from rewritten message %s",
+                        messageId,
+                      );
+                    }
+                  }
                   const changes = Array.isArray(edData.changes)
                     ? (edData.changes as Array<{ description: string }>)
                     : [{ description: "Rewrote the assistant response." }];
@@ -9195,7 +9264,7 @@ export async function generateRoutes(app: FastifyInstance) {
                         ? explicitlyRequestsTextRewrite(editNeededValue)
                         : true;
                   const droppedProtectedMarkup =
-                    strictEditNeeded && textRewriteDropsProtectedMarkup(currentResponseForRewrite, editedText);
+                    strictEditNeeded && textRewriteDropsProtectedMarkup(currentResponseForRewrite, sanitizedEditedText);
                   if (droppedProtectedMarkup) {
                     logger.warn(
                       "[text-rewrite] Skipping %s rewrite because it dropped protected markup from message %s",
@@ -9214,11 +9283,11 @@ export async function generateRoutes(app: FastifyInstance) {
                     !input.impersonate &&
                     !input.regenerateMessageId &&
                     !input.continueMessageId &&
-                    editedText.trim().length > 0 &&
+                    sanitizedEditedText.trim().length > 0 &&
                     isRepeatedConversationResponse(
                       await chats.listMessages(input.chatId),
                       rewriteCharacterId,
-                      editedText,
+                      sanitizedEditedText,
                       { excludeMessageId: messageId },
                     );
                   if (repeatsPriorConversationResponse) {
@@ -9231,16 +9300,16 @@ export async function generateRoutes(app: FastifyInstance) {
                     rewriteAllowed &&
                     !droppedProtectedMarkup &&
                     !repeatsPriorConversationResponse &&
-                    editedText.trim().length > 0 &&
-                    editedText !== currentResponseForRewrite;
+                    sanitizedEditedText.trim().length > 0 &&
+                    sanitizedEditedText !== currentResponseForRewrite;
                   if (changedMessage) {
                     const originalText = strictEditNeeded ? originalResponseBeforeRewrite : null;
-                    currentResponseForRewrite = editedText;
-                    await chats.updateMessageContent(messageId, editedText);
+                    currentResponseForRewrite = sanitizedEditedText;
+                    await chats.updateMessageContent(messageId, sanitizedEditedText);
                     if (originalText) {
                       await chats.updateMessageExtra(messageId, {
                         proseGuardianOriginalText: originalText,
-                        proseGuardianRewrittenText: editedText,
+                        proseGuardianRewrittenText: sanitizedEditedText,
                         proseGuardianRewrittenAt: new Date().toISOString(),
                       });
                     }
@@ -9249,7 +9318,7 @@ export async function generateRoutes(app: FastifyInstance) {
                       `data: ${JSON.stringify({
                         type: "text_rewrite",
                         data: {
-                          editedText,
+                          editedText: sanitizedEditedText,
                           changes,
                           rewriteApplied: true,
                           ...(originalText ? { originalText, agentType: editorResult.agentType } : {}),
