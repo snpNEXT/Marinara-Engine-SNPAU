@@ -79,7 +79,7 @@ export interface CapabilityLanguageModelCompletionOptions {
   temperature?: number;
   maxTokens?: number;
   debugMode?: boolean;
-  reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh" | "max";
+  reasoningEffort?: "none" | "low" | "medium" | "high" | "minimal" | "xhigh" | "max";
   verbosity?: "low" | "medium" | "high";
   signal?: AbortSignal;
   responseFormat?: Readonly<{ type: string; [key: string]: unknown }>;

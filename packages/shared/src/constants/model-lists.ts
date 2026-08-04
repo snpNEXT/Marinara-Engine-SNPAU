@@ -58,7 +58,7 @@ export type StoredReasoningEffort =
   | "maximum"
   | "max"
   | null;
-export type ProviderReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | null;
+export type ProviderReasoningEffort = "low" | "medium" | "high" | "minimal" | "xhigh" | "max" | null;
 
 export function resolveProviderReasoningEffort(args: {
   provider: string;
@@ -89,7 +89,9 @@ export function resolveProviderReasoningEffort(args: {
   if (args.reasoningEffort === "xhigh") {
     return supportsXhigh ? "xhigh" : "high";
   }
-  if (args.reasoningEffort === "minimal") return "low";
+  if (args.reasoningEffort === "minimal") {
+    return providerLower === "local-sidecar" ? "minimal" : "low";
+  }
   return args.reasoningEffort;
 }
 

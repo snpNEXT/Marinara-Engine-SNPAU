@@ -184,12 +184,38 @@ try {
   assert.ok(customParametersRequestBody);
   assert.equal(customParametersRequestBody.top_k, 44);
   assert.equal(customParametersRequestBody.min_p, 0.12);
-  assert.equal(
-    "reasoning_effort" in customParametersRequestBody,
-    false,
-    "unknown custom models must not receive inherited reasoning effort",
-  );
+  assert.equal(customParametersRequestBody.reasoning_effort, "high");
   assert.equal(customParametersRequestBody.verbosity, "low");
+
+  const localSidecarProvider = new OpenAIProvider(
+    `http://127.0.0.1:${address.port}/v1`,
+    "local-sidecar",
+    undefined,
+    undefined,
+    undefined,
+    "local-sidecar",
+  );
+  customParametersRequestBody = null;
+  await localSidecarProvider.chatComplete([{ role: "user", content: "minimal local thinking" }], {
+    model: "koboldcpp-model",
+    stream: false,
+    reasoningEffort: "minimal",
+    enabledParameters: { reasoningEffort: true },
+  });
+  assert.ok(customParametersRequestBody);
+  assert.equal(customParametersRequestBody.reasoning_effort, "minimal");
+  assert.deepEqual(customParametersRequestBody.chat_template_kwargs, { enable_thinking: true });
+
+  customParametersRequestBody = null;
+  await localSidecarProvider.chatComplete([{ role: "user", content: "disable local thinking" }], {
+    model: "koboldcpp-model",
+    stream: false,
+    reasoningEffort: "none",
+    enabledParameters: { reasoningEffort: true },
+  });
+  assert.ok(customParametersRequestBody);
+  assert.equal(customParametersRequestBody.reasoning_format, "none");
+  assert.deepEqual(customParametersRequestBody.chat_template_kwargs, { enable_thinking: false });
 
   customParametersRequestBody = null;
   await provider.chatComplete([{ role: "user", content: "disable reasoning" }], {
@@ -209,7 +235,7 @@ try {
     enabledParameters: { reasoningEffort: false },
   });
   assert.ok(customParametersRequestBody);
-  assert.equal("reasoning_effort" in customParametersRequestBody, false);
+  assert.equal(customParametersRequestBody.reasoning_effort, "high");
 
   customParametersRequestBody = null;
   await provider.chatComplete([{ role: "user", content: "fetch current data" }], {
@@ -365,6 +391,14 @@ assert.equal(
     reasoningEffort: "maximum",
   }),
   "max",
+);
+assert.equal(
+  resolveProviderReasoningEffort({ provider: "local-sidecar", model: "koboldcpp-model", reasoningEffort: "minimal" }),
+  "minimal",
+);
+assert.equal(
+  resolveProviderReasoningEffort({ provider: "openai", model: "gpt-5.1", reasoningEffort: "minimal" }),
+  "low",
 );
 
 // OpenAI Responses always requests a readable reasoning summary when reasoning

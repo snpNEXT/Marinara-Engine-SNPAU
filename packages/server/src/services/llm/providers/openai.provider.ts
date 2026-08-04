@@ -617,7 +617,7 @@ export class OpenAIProvider extends BaseLLMProvider {
   }
 
   private applyCustomEndpointThinkingArgs(body: Record<string, unknown>, options: ChatOptions): void {
-    if (!this.isGenericCustomProvider()) return;
+    if (!this.isGenericCustomProvider() && this.providerKind !== "local-sidecar") return;
 
     const mappedEffort = this.mapCustomReasoningEffort(options.reasoningEffort);
     if (mappedEffort) {

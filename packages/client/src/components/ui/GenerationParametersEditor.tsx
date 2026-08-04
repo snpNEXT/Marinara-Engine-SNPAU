@@ -37,7 +37,7 @@ export type EditableGenerationParameters = Pick<
 
 type EditableGenerationParameterOverrides = Partial<EditableGenerationParameters>;
 
-const REASONING_LEVELS = [null, "low", "medium", "high", "xhigh", "maximum"] as const;
+const REASONING_LEVELS = [null, "minimal", "low", "medium", "high", "xhigh", "maximum"] as const;
 const VERBOSITY_LEVELS = [null, "low", "medium", "high"] as const;
 const OPENROUTER_SERVICE_TIERS = [null, "flex", "priority"] as const;
 const THINKING_TAG_CONTENT_PLACEHOLDER = "{{thinking}}";
@@ -142,6 +142,7 @@ export function parseEditableGenerationParameters(raw: unknown): EditableGenerat
   if (typeof source.presencePenalty === "number") next.presencePenalty = source.presencePenalty;
   if (
     source.reasoningEffort === null ||
+    source.reasoningEffort === "minimal" ||
     source.reasoningEffort === "low" ||
     source.reasoningEffort === "medium" ||
     source.reasoningEffort === "high" ||
