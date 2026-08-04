@@ -3,6 +3,48 @@
 // ──────────────────────────────────────────────
 import {
   AtSign,
+  AlertTriangle,
+  Bell,
+  ChevronLeft,
+  ChevronRight,
+  CalendarClock,
+  Crop,
+  Dices,
+  FileText,
+  FolderOpen,
+  Heart,
+  Image as ImageIcon,
+  ListChecks,
+  SlidersHorizontal,
+  Loader2,
+  MessageCircle,
+  Pencil,
+  RefreshCw,
+  RotateCcw,
+  Save,
+  Search,
+  Settings2,
+  Smile,
+  Trash2,
+  X,
+  UserMinus,
+  UserPlus,
+} from "lucide-react";
+import { useReducedMotion } from "framer-motion";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type CSSProperties,
+  type RefObject,
+} from "react";
+import { toast } from "sonner";
+import {
+  noodleTextMentionsHandle as textMentionsHandle,
+  noodlePollInputSchema,
   NOODLER_POSTS_PER_DAY_MAX,
   parseConnectionImageCaptioningDefaults,
   PROFESSOR_MARI_ID,
@@ -551,6 +593,7 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
   const updateSettings = useUpdateNoodleSettings();
   const updateAccountFollow = useUpdateNoodleAccountFollow();
   const updateAccountProfile = useUpdateNoodleAccountProfile();
+  const nudgeCharacter = useNudgeNoodleCharacter();
   const patchAccountSettings = usePatchNoodleAccountSettings();
   const inviteCharacter = useInviteNoodleCharacter();
   const inviteCharacters = useInviteNoodleCharacters();
@@ -567,7 +610,6 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
   const refreshNoodle = useRefreshNoodle();
   const confirmNoodleImagePrompts = useConfirmNoodleImagePrompts();
   const resetNoodleTimeline = useResetNoodleTimeline();
-  const nudgeNoodleCharacter = useNudgeNoodleCharacter();
   const noodlePromptDetail = usePromptOverride(NOODLE_TIMELINE_BASE_PROMPT_KEY);
   const noodlePromptDefault = usePromptOverrideDefault(NOODLE_TIMELINE_BASE_PROMPT_KEY);
   const saveNoodlePrompt = useSavePromptOverride();
@@ -682,14 +724,6 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
   const [imageGenerationPromptDraft, setImageGenerationPromptDraft] = useState("");
   const [pollEditorValue, setPollEditorValue] = useState<NoodlePollInput | null>(null);
   const [noodlerGenerationGuidanceDraft, setNoodlerGenerationGuidanceDraft] = useState("");
-  const [scheduleManagerOpen, setScheduleManagerOpen] = useState(false);
-  const [nudgeRequest, setNudgeRequest] = useState<{
-    accountId: string;
-    displayName: string;
-    targetPostId?: string;
-  } | null>(null);
-  const [nudgePrompt, setNudgePrompt] = useState("");
-  const [nudgeFastMode, setNudgeFastMode] = useState(false);
   const [draftPoll, setDraftPoll] = useState<NoodlePollInput | null>(null);
   const postImageEditor = useNoodlePostImageEditor(async (post) => {
     if (!post.imageUrl) throw new Error("This post does not have an image.");
@@ -2392,6 +2426,30 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
     );
   };
 
+  const nudgeReply = (post: NoodlePostCardModel) => {
+    const author = accountById.get(post.authorAccountId);
+    if (!author || author.kind !== "character") {
+      toast.error(localizeUi("ui.noodle.noodlehome.onlyCharactersCanBeNudged"));
+      return;
+    }
+    if (!settings?.generationConnectionId) {
+      toast.error(localizeUi("ui.noodle.noodlehome.chooseAGenerationConnectionForNoodleFirst"));
+      return;
+    }
+    nudgeCharacter.mutate(
+      {
+        accountId: author.id,
+        personaId: personaAccount?.entityId,
+        targetPostId: post.id,
+      },
+      {
+        onSuccess: () => toast.success(localizeUi("ui.noodle.noodlehome.nudgeReplySent")),
+        onError: (error) =>
+          toast.error(error instanceof Error ? error.message : localizeUi("ui.noodle.noodlehome.couldNotNudgeReply")),
+      },
+    );
+  };
+
   const confirmReviewedNoodleImagePrompts = (overrides: ImagePromptOverride[]) => {
     confirmNoodleImagePrompts.mutate(overrides, {
       onSuccess: () => {
@@ -3668,14 +3726,7 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
         replyValueRef,
         replyMediaToolRef,
         openProfile,
-        onNudgeReply: (() => {
-          if (mentionableCharacterAccounts.length === 0) return undefined;
-          return () => {
-            setNudgePrompt("");
-            setNudgeFastMode(false);
-            setNudgeRequest({ accountId: "", displayName: "", targetPostId: post.id });
-          };
-        })(),
+        onNudgeReply: nudgeReply,
         startEditingPost,
         deleteNoodlePost,
         cancelEditingPost,
@@ -4602,121 +4653,6 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
                 </div>
               )}
             </div>
-          ) : (
-            <>
-                  <ProfileHeader
-                  account={profilePreviewAccount}
-                  displayHandle={profileDisplayHandle}
-                  banner={{
-                    url: profileBannerPreview,
-                    canEdit: canEditViewedProfile,
-                    uploadTarget: profileUploadTarget,
-                    fileRef: bannerFileRef,
-                    onFileChange: (event) => handleProfileImageFile("banner", event),
-                  }}
-                                mode: "noodler",
-                                view: "create-profile",
-                                noodleAccountId: viewedProfileAccount.id,
-                              })
-                            }
-                            className="h-9 rounded-full border border-[var(--noodle-divider)] px-4 text-xs font-semibold text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]"
-                          >{localizeUi("ui.noodle.noodlehome.createStageProfile")}</button>
-                        )}
-                        {viewedProfileAccount.kind === "character" && viewedProfileAccount.invited && !viewingOwnProfile && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setNudgePrompt("");
-                              setNudgeFastMode(false);
-                              setNudgeRequest({ accountId: viewedProfileAccount.id, displayName: viewedProfileAccount.displayName });
-                            }}
-                            className="inline-flex h-9 items-center gap-2 rounded-full border border-[var(--noodle-divider)] px-4 text-xs font-semibold text-[var(--foreground)] transition-colors hover:border-[var(--noodle-accent)] hover:text-[var(--noodle-accent)]"
-                          >
-                            <Send size={14} />
-                            {localizeUi("ui.noodle.noodlehome.nudge")}
-                          </button>
-                        )}
-                      </div>
-                    ) : undefined
-                  }
-                  bioContent={
-                    profileBioPreview ? (
-                      <p className="mt-3 whitespace-pre-wrap text-sm leading-6">
-                        <NoodleCustomEmojiText
-                          text={profileBioPreview}
-                          emojiMap={noodleCustomEmojiMap}
-                          keyPrefix={`noodle-profile-bio-${viewedProfileAccount?.id ?? "preview"}`}
-                        />
-                      </p>
-                    ) : null
-                  }
-                  location={profileLocationPreview}
-                  connections={{
-                    followingCount: profileFollowingCount,
-                    followerCount: profileFollowerCount,
-                    onOpenFollowing: () => openProfileConnection("following"),
-                    onOpenFollowers: () => openProfileConnection("followers"),
-                  }}
-                  activeTab={profileTab}
-                  onTabChange={setProfileTab}
-                  postList={
-                    profileVisiblePosts.length > 0 ? (
-                      profileVisiblePosts.map(renderPostArticle)
-                    ) : (
-                      <div className="px-8 py-14 text-center">
-                    <p className="text-sm font-semibold text-[var(--muted-foreground)]">{localizeUi("ui.noodle.noodlehome.nothingBoilingHereYet")}</p>
-                      </div>
-                    )
-                  }
-                />
-              ) : isLoading ? (
-                <div className="space-y-0">
-                  {Array.from({ length: 4 }).map((_, index) => (
-                    <div key={index} className="flex gap-3 border-b border-[var(--noodle-divider)] px-4 py-4">
-                      <div className="h-11 w-11 shrink-0 rounded-full bg-[var(--muted)]" />
-                      <div className="min-w-0 flex-1 space-y-3">
-                        <div className="h-3 w-40 rounded bg-[var(--muted)]" />
-                        <div className="h-3 w-full rounded bg-[var(--muted)]" />
-                        <div className="h-3 w-2/3 rounded bg-[var(--muted)]" />
-                      </div>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2">
-                  {PROFILE_CONNECTION_TABS.map((tab) => (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      onClick={() => openProfileConnection(tab.id)}
-                      className={cn(
-                        "relative flex h-12 items-center justify-center text-sm font-bold text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
-                        profileConnectionTab === tab.id && "text-[var(--foreground)]",
-                      )}
-                    >
-                      {tab.label}
-                      {profileConnectionTab === tab.id && (
-                        <span className="absolute bottom-0 left-1/2 h-1 w-16 -translate-x-1/2 rounded-full bg-[var(--noodle-accent)]" />
-                      )}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {profileConnectionAccounts.length > 0 ? (
-                <div>
-                  {profileConnectionAccounts.map((account) => renderAccountRow(account, { showFollowButton: true }))}
-                </div>
-              ) : (
-                <div className="px-8 py-14 text-center">
-                  <p className="text-base font-bold">
-                    {profileConnectionTab === "following"
-                      ? localizeUi("ui.noodle.noodlehome.notFollowingAnyoneYet")
-                      : localizeUi("ui.noodle.noodlehome.noFollowersYet")}
-                  </p>
-                  <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[var(--muted-foreground)]">
-                    {localizeUi("ui.noodle.noodlehome.nothingBoilingHereYet")}
-                  </p>
-                </div>
-              )}
-            </div>
           ) : activeNoodleView === "profile" ? (
             <NoodleProfileSurface
               mobileHeader={
@@ -4774,34 +4710,46 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
                   : undefined
               }
               secondaryActions={
-                canCreateStageProfileFromViewed && viewedProfileAccount ? (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onNavigate({
-                        mode: "noodler",
-                        view: "create-profile",
-                        noodleAccountId: viewedProfileAccount.id,
-                      })
-                    }
-                    title={localizeUi("ui.noodle.noodlehome.createStageProfile")}
-                    aria-label={localizeUi("ui.noodle.noodlehome.createStageProfile")}
-                    // NoodleR pink on a blue Noodle page, so the accent is scoped to the control.
-                    style={getNoodleAccentStyle(NOODLE_PINK)}
-                    className="h-9 rounded-full border border-[var(--noodle-accent)]/45 px-4 text-sm font-black tracking-tight text-[var(--noodle-accent)] transition-colors hover:bg-[var(--noodle-accent)]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]"
-                  >
-                    {NOODLER_ADD_MARK}
-                  </button>
-                ) : viewedProfileHasStageProfile ? (
-                  <span
-                    title={localizeUi("ui.noodle.noodlehome.hasStageProfile")}
-                    style={getNoodleAccentStyle(NOODLE_PINK)}
-                    className="flex h-9 items-center rounded-full border border-[var(--noodle-accent)]/45 bg-[var(--noodle-accent)]/10 px-4 text-sm font-black tracking-tight text-[var(--noodle-accent)]"
-                  >
-                    {NOODLER_MARK}
-                    <span className="sr-only"> {localizeUi("ui.noodle.noodlehome.hasStageProfile")}</span>
-                  </span>
-                ) : undefined
+                <div className="flex flex-wrap gap-2">
+                  {viewedProfileAccount?.kind === "character" && !viewingOwnProfile && (
+                    <button
+                      type="button"
+                      disabled={nudgeCharacter.isPending}
+                      onClick={() =>
+                        nudgeCharacter.mutate({
+                          accountId: viewedProfileAccount.id,
+                          personaId: personaAccount?.id,
+                        })
+                      }
+                      className="h-9 rounded-full border border-[var(--noodle-divider)] px-4 text-xs font-semibold text-[var(--foreground)] transition-colors hover:border-[var(--noodle-accent)] hover:text-[var(--noodle-accent)] disabled:opacity-50"
+                    >
+                      {nudgeCharacter.isPending ? localizeUi("ui.loading") : localizeUi("ui.noodle.noodlehome.nudge")}
+                    </button>
+                  )}
+                  {canCreateStageProfileFromViewed && viewedProfileAccount ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onNavigate({ mode: "noodler", view: "create-profile", noodleAccountId: viewedProfileAccount.id })
+                      }
+                      title={localizeUi("ui.noodle.noodlehome.createStageProfile")}
+                      aria-label={localizeUi("ui.noodle.noodlehome.createStageProfile")}
+                      style={getNoodleAccentStyle(NOODLE_PINK)}
+                      className="h-9 rounded-full border border-[var(--noodle-accent)]/45 px-4 text-sm font-black tracking-tight text-[var(--noodle-accent)] transition-colors hover:bg-[var(--noodle-accent)]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--noodle-accent)]"
+                    >
+                      {NOODLER_ADD_MARK}
+                    </button>
+                  ) : viewedProfileHasStageProfile ? (
+                    <span
+                      title={localizeUi("ui.noodle.noodlehome.hasStageProfile")}
+                      style={getNoodleAccentStyle(NOODLE_PINK)}
+                      className="flex h-9 items-center rounded-full border border-[var(--noodle-accent)]/45 bg-[var(--noodle-accent)]/10 px-4 text-sm font-black tracking-tight text-[var(--noodle-accent)]"
+                    >
+                      {NOODLER_MARK}
+                      <span className="sr-only"> {localizeUi("ui.noodle.noodlehome.hasStageProfile")}</span>
+                    </span>
+                  ) : null}
+                </div>
               }
               bioContent={
                 profileBioPreview ? (
@@ -4890,87 +4838,6 @@ export function NoodleHome({ navigation, onNavigate }: NoodleHomeProps) {
           )}
         </div>
       </div>
-      <Modal
-        open={Boolean(nudgeRequest)}
-        onClose={() => setNudgeRequest(null)}
-        title={
-          nudgeRequest?.targetPostId
-            ? localizeUi("ui.noodle.noodlehome.nudgeReplyTitle")
-            : localizeUi("ui.noodle.noodlehome.nudgePostTitle", { value1: nudgeRequest?.displayName ?? "" })
-        }
-        width="max-w-md"
-      >
-        <div className="space-y-3">
-          {nudgeRequest?.targetPostId && (
-            <label className="block space-y-1">
-              <span className={labelClass}>{localizeUi("ui.noodle.noodlehome.nudgeCharacter")}</span>
-              <select
-                value={nudgeRequest.accountId}
-                onChange={(event) => {
-                  const account = accountById.get(event.target.value);
-                  setNudgeRequest((current) =>
-                    current
-                      ? {
-                          ...current,
-                          accountId: event.target.value,
-                          displayName: account?.displayName ?? "",
-                        }
-                      : null,
-                  );
-                }}
-                className={fieldClass}
-              >
-                <option value="">{localizeUi("ui.noodle.noodlehome.nudgeCharacterPlaceholder")}</option>
-                {mentionableCharacterAccounts.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.displayName}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          <textarea
-            value={nudgePrompt}
-            onChange={(event) => setNudgePrompt(event.target.value)}
-            placeholder={localizeUi("ui.noodle.noodlehome.nudgePromptPlaceholder")}
-            className={textareaClass}
-            rows={4}
-          />
-          {!nudgeRequest?.targetPostId && (
-            <label className="flex items-center gap-2 text-xs text-[var(--muted-foreground)]">
-              <input type="checkbox" checked={nudgeFastMode} onChange={(event) => setNudgeFastMode(event.target.checked)} />
-              {localizeUi("ui.noodle.noodlehome.nudgeFastMode")}
-            </label>
-          )}
-          <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => setNudgeRequest(null)} className="h-9 rounded-full border border-[var(--noodle-divider)] px-4 text-xs font-semibold">
-              {localizeUi("common.cancel")}
-            </button>
-            <button
-              type="button"
-              disabled={!nudgeRequest?.accountId || nudgeNoodleCharacter.isPending}
-              onClick={() => {
-                if (!nudgeRequest) return;
-                nudgeNoodleCharacter.mutate(
-                  {
-                    accountId: nudgeRequest.accountId,
-                    targetPostId: nudgeRequest.targetPostId,
-                    prompt: nudgePrompt.trim() || undefined,
-                    fastMode: nudgeRequest.targetPostId ? undefined : nudgeFastMode || undefined,
-                  },
-                  {
-                    onSuccess: () => setNudgeRequest(null),
-                    onError: (error) => toast.error(error instanceof Error ? error.message : localizeUi("ui.noodle.noodlehome.nudgeFailed")),
-                  },
-                );
-              }}
-              className="h-9 rounded-full bg-[var(--noodle-accent)] px-4 text-xs font-bold text-white disabled:opacity-50"
-            >
-              {nudgeNoodleCharacter.isPending ? localizeUi("ui.noodle.noodlehome.nudgeSending") : localizeUi("ui.noodle.noodlehome.nudgeSend")}
-            </button>
-          </div>
-        </div>
-      </Modal>
       <Modal
         open={composeOpen}
         onClose={closeComposeModal}
