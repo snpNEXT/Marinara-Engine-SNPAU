@@ -84,13 +84,15 @@ import { PromptPresetSection } from "../../features/chat-settings/sections/Promp
 import { SceneInstructionsSection } from "../../features/chat-settings/sections/SceneInstructionsSection";
 import { TranslationSection } from "../../features/chat-settings/sections/TranslationSection";
 import { CapabilityElement } from "../capabilities/CapabilityElement";
-import { cn, getAvatarCropStyle, type AvatarCrop } from "../../lib/utils";
+import { normalizeAvatarCrop, type AvatarCrop } from "@marinara-engine/shared";
+import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { showAlertDialog, showConfirmDialog, showPromptDialog } from "../../lib/app-dialogs";
 import { HelpTooltip } from "../ui/HelpTooltip";
 import { ExpandedTextarea } from "../ui/ExpandedTextarea";
 import { Modal } from "../ui/Modal";
 import { DraftNumberInput } from "../ui/DraftNumberInput";
 import {
+  AGENT_SETTINGS_SURFACE_CLASS,
   AgentCategorySection,
   AgentDefaultStatus,
   AgentSettingsCard,
@@ -159,6 +161,7 @@ import {
   stepCadenceValue,
 } from "../../lib/agent-cadence";
 import { characterMatchesSearch, getCharacterTitle, parseCharacterDisplayData } from "../../lib/character-display";
+import { buildRoleplayAgentSettingsOrder } from "../../lib/agent-settings-order";
 import { extractCreatorNotesCss } from "../../lib/creator-notes-css";
 import { isLorebookScopeActiveForChat } from "../../lib/lorebook-scope";
 import { addSilentGreetingSwipes } from "../../lib/message-swipes";
@@ -204,7 +207,6 @@ import { useAgentConfigs, useCreateAgent, useUpdateAgent, type AgentConfigRow } 
 import { useAgentStore } from "../../stores/agent.store";
 import { useSidecarStore } from "../../stores/sidecar.store";
 import {
-  BUILT_IN_AGENTS,
   BUILT_IN_TOOLS,
   DEFAULT_AGENT_CONTEXT_SIZE,
   DEFAULT_AGENT_TOOLS,
@@ -342,33 +344,6 @@ const DEFAULT_PROSE_GUARDIAN_BANNED_WORDS = "ozone";
 const DEFAULT_PROSE_GUARDIAN_AVOID =
   "no repetition of any phrases or sentence structure from the last messages, if the last output started with dialogue line, this one needs to start with narration, no purple prose";
 
-const AGENTS_TAB_CATEGORY_ORDER: Record<string, number> = {
-  writer: 0,
-  tracker: 1,
-  misc: 2,
-};
-
-const ROLEPLAY_AGENT_SETTINGS_ORDER = new Map<string, number>(
-  BUILT_IN_AGENTS.map((agent, manifestIndex) => ({ agent, manifestIndex }))
-    .filter(({ agent }) => !agent.libraryHidden)
-    .sort((a, b) => {
-      const categoryDiff =
-        (AGENTS_TAB_CATEGORY_ORDER[a.agent.category] ?? 99) - (AGENTS_TAB_CATEGORY_ORDER[b.agent.category] ?? 99);
-      return categoryDiff || a.manifestIndex - b.manifestIndex;
-    })
-    .map(({ agent }, index) => [agent.id, index]),
-);
-ROLEPLAY_AGENT_SETTINGS_ORDER.set(
-  STORYBOARD_AGENT_ID,
-  ROLEPLAY_AGENT_SETTINGS_ORDER.get(STORYBOARD_AGENT_ID) ??
-    (ROLEPLAY_AGENT_SETTINGS_ORDER.get("illustrator") ?? ROLEPLAY_AGENT_SETTINGS_ORDER.size) + 0.5,
-);
-const CUSTOM_AGENT_SETTINGS_ORDER = ROLEPLAY_AGENT_SETTINGS_ORDER.size + 100;
-
-function getRoleplayAgentSettingsOrder(agentId: string): number {
-  return ROLEPLAY_AGENT_SETTINGS_ORDER.get(agentId) ?? CUSTOM_AGENT_SETTINGS_ORDER;
-}
-
 function getAgentSettingsMenuId(chatId: string, agentId: string): string {
   return `chat-settings-agent-menu-${chatId}-${agentId}`.replace(/[^a-zA-Z0-9_-]/g, "-");
 }
@@ -454,6 +429,8 @@ function renderRoleplayAgentMenuIcon(agentId: string, variant: "card" | "chip" =
       return <Music2 size={size} className={className} />;
     case "haptic":
       return <Vibrate size={size} className={className} />;
+    case "long-term-memory":
+      return <Brain size={size} className={className} />;
     case "hierarchical-maps":
       return <MapIcon size={size} className={className} />;
     case "custom-agents":
@@ -641,6 +618,35 @@ type DrawerPersona = {
   avatarCrop?: AvatarCrop | string | null;
 };
 
+function DrawerPersonaAvatar({ persona, size = "sm" }: { persona: DrawerPersona; size?: "sm" | "md" }) {
+  const sizeClass = size === "md" ? "h-7 w-7" : "h-6 w-6";
+
+  if (!persona.avatarPath) {
+    return (
+      <div
+        className={cn(
+          "mari-avatar-placeholder mari-avatar-placeholder--persona flex shrink-0 items-center justify-center rounded-full",
+          sizeClass,
+        )}
+      >
+        <User size={size === "md" ? "0.75rem" : "0.625rem"} />
+      </div>
+    );
+  }
+
+  return (
+    <span className={cn("relative block shrink-0 overflow-hidden rounded-full", sizeClass)}>
+      <img
+        src={persona.avatarPath}
+        alt={persona.name}
+        loading="lazy"
+        className="h-full w-full object-cover"
+        style={getAvatarCropStyle(normalizeAvatarCrop(persona.avatarCrop))}
+      />
+    </span>
+  );
+}
+
 type AgentAddPreview = {
   agent: AvailableAgent;
   config: AgentConfigRow | null;
@@ -814,6 +820,15 @@ export function ChatSettingsDrawer({
   const { data: presets } = usePresets();
   const { data: defaultPromptPreset } = useDefaultPreset();
   const { data: installedAgentManifests = [] } = useCapabilityAgentRegistry();
+  const roleplayAgentSettingsOrder = useMemo(
+    () => buildRoleplayAgentSettingsOrder(installedAgentManifests),
+    [installedAgentManifests],
+  );
+  const customAgentSettingsOrder = roleplayAgentSettingsOrder.size + 100;
+  const getRoleplayAgentSettingsOrder = useCallback(
+    (agentId: string) => roleplayAgentSettingsOrder.get(agentId) ?? customAgentSettingsOrder,
+    [customAgentSettingsOrder, roleplayAgentSettingsOrder],
+  );
   const { data: installedCapabilities = [] } = useInstalledCapabilityPackages(open);
   const persistedChatMode = (chat as unknown as { mode?: unknown }).mode;
   const chatMode: ChatMode =
@@ -1185,6 +1200,7 @@ export function ChatSettingsDrawer({
   const ltmPackage = installedCapabilities.find(
     (item) => item.status === "active" && item.id === "long-term-memory" && item.manifest.entrypoints.client,
   );
+  const ltmPackageId = ltmPackage?.id;
   const callsPackage = installedCapabilities.find(
     (item) =>
       item.status === "active" && item.manifest.kind.includes("conversation-calls") && item.manifest.entrypoints.client,
@@ -1210,6 +1226,20 @@ export function ChatSettingsDrawer({
     const ids = latestChat ? getChatActiveAgentIds(latestChat) : [...activeAgentIds];
     return ids.filter((id) => !deletedBuiltInAgentTypes.has(id));
   }, [activeAgentIds, chat.id, deletedBuiltInAgentTypes, qc]);
+  const setLtmEnabledForChat = useCallback(
+    async (enabled: boolean) => {
+      if (!ltmPackageId) return;
+      const current = readLatestActiveAgentIds();
+      await updateMeta.mutateAsync({
+        id: chat.id,
+        ...(enabled ? { enableAgents: true } : {}),
+        activeAgentIds: enabled
+          ? Array.from(new Set([...current, ltmPackageId]))
+          : current.filter((id) => id !== ltmPackageId),
+      });
+    },
+    [chat.id, ltmPackageId, readLatestActiveAgentIds, updateMeta],
+  );
   const activeToolIds: string[] = metadata.activeToolIds ?? [];
   const spotifyActive = activeAgentIds.includes("spotify");
   const gameLorebookKeeperLorebook = gameLorebookKeeperLorebookId
@@ -1975,6 +2005,7 @@ export function ChatSettingsDrawer({
     [activeAgentIds, customAgents],
   );
   const mapsAgent = availableAgents.find((agent) => agent.id === mapsPackage?.id);
+  const ltmAgent = availableAgents.find((agent) => agent.id === ltmPackage?.id);
   const storyboardAgent = availableAgents.find((agent) => agent.id === STORYBOARD_AGENT_ID);
   const [pendingAgentMenuTargetId, setPendingAgentMenuTargetId] = useState<string | null>(null);
   const roleplayAgentMenuLinks = useMemo(() => {
@@ -2008,6 +2039,9 @@ export function ChatSettingsDrawer({
     addLink("illustrator", illustratorActive, illustratorAgentMeta.name);
     addLink("spotify", spotifyActive, musicDjAgentMeta.name);
     addLink("haptic", hapticActive, hapticAgentMeta.name);
+    if (ltmAgent && ltmPackage) {
+      addLink(ltmPackage.id, metadata.enableAgents === true && activeAgentIds.includes(ltmPackage.id), ltmAgent.name);
+    }
     if (storyboardAgent) {
       addLink(STORYBOARD_AGENT_ID, activeAgentIds.includes(STORYBOARD_AGENT_ID), storyboardAgent.name);
     }
@@ -2017,7 +2051,7 @@ export function ChatSettingsDrawer({
         id: "custom-agents",
         label: activeCustomAgents.length === 1 ? activeCustomAgents[0]!.name : "Custom Agents",
         targetId: getAgentSettingsMenuId(chat.id, "custom-agents"),
-        order: CUSTOM_AGENT_SETTINGS_ORDER,
+        order: customAgentSettingsOrder,
         count: activeCustomAgents.length > 1 ? activeCustomAgents.length : undefined,
       });
     }
@@ -2030,6 +2064,7 @@ export function ChatSettingsDrawer({
     chat.id,
     continuityActive,
     continuityAgentMeta.name,
+    customAgentSettingsOrder,
     directorActive,
     directorAgentMeta.name,
     echoChamberActive,
@@ -2044,10 +2079,13 @@ export function ChatSettingsDrawer({
     illustratorAgentMeta.name,
     isGame,
     isRoleplayMode,
+    getRoleplayAgentSettingsOrder,
     knowledgeRetrievalActive,
     knowledgeRetrievalAgentMeta.name,
     knowledgeRouterActive,
     knowledgeRouterAgentMeta.name,
+    ltmAgent,
+    ltmPackage,
     lorebookKeeperActive,
     lorebookKeeperAgentMeta.name,
     mapsAgent,
@@ -2268,20 +2306,6 @@ export function ChatSettingsDrawer({
       return null;
     });
   }, [spriteLayoutSubjects]);
-
-  const charAvatarCrop = useCallback((c: { data: unknown }) => {
-    try {
-      const parsed = typeof c.data === "string" ? JSON.parse(c.data) : c.data;
-      return (
-        ((parsed as { extensions?: { avatarCrop?: AvatarCrop | null } } | null)?.extensions?.avatarCrop as
-          | AvatarCrop
-          | null
-          | undefined) ?? null
-      );
-    } catch {
-      return null;
-    }
-  }, []);
 
   // ── First message confirm state ──
   const [firstMesConfirm, setFirstMesConfirm] = useState<{
@@ -3880,7 +3904,7 @@ export function ChatSettingsDrawer({
         icon={renderRoleplayAgentMenuIcon("custom-agents")}
         title={localizeUi("ui.panels.agentspanel.customAgents")}
         description={localizeUi("ui.chat.chatsettingsdrawer.configureCustomAgentsCurrentlyAttachedToThisChat")}
-        order={CUSTOM_AGENT_SETTINGS_ORDER}
+        order={customAgentSettingsOrder}
       >
         <div className="space-y-1.5">
           {activeCustomAgents.map((agent) => {
@@ -4334,18 +4358,7 @@ export function ChatSettingsDrawer({
                         const p = personas.find((persona) => persona.id === chat.personaId);
                         return p ? (
                           <>
-                            {p.avatarPath ? (
-                              <img
-                                src={p.avatarPath}
-                                alt={p.name}
-                                loading="lazy"
-                                className="h-7 w-7 shrink-0 rounded-full object-cover"
-                              />
-                            ) : (
-                              <div className="mari-avatar-placeholder mari-avatar-placeholder--persona flex h-7 w-7 shrink-0 items-center justify-center rounded-full">
-                                <User size="0.75rem" />
-                              </div>
-                            )}
+                            <DrawerPersonaAvatar persona={p} size="md" />
                             <div className="min-w-0 flex-1">
                               <span className="block truncate text-xs">{p.name}</span>
                               {p.comment && (
@@ -4449,18 +4462,7 @@ export function ChatSettingsDrawer({
                             chat.personaId === p.id && "bg-[var(--primary)]/10",
                           )}
                         >
-                          {p.avatarPath ? (
-                            <img
-                              src={p.avatarPath}
-                              alt={p.name}
-                              loading="lazy"
-                              className="h-6 w-6 shrink-0 rounded-full object-cover"
-                            />
-                          ) : (
-                            <div className="mari-avatar-placeholder mari-avatar-placeholder--persona flex h-6 w-6 shrink-0 items-center justify-center rounded-full">
-                              <User size="0.625rem" />
-                            </div>
-                          )}
+                          <DrawerPersonaAvatar persona={p} />
                           <div className="min-w-0 flex-1">
                             <span className="block truncate text-xs">{p.name}</span>
                             {p.comment && (
@@ -4522,7 +4524,7 @@ export function ChatSettingsDrawer({
                                     alt={name}
                                     loading="lazy"
                                     className="h-full w-full object-cover"
-                                    style={getAvatarCropStyle(charAvatarCrop(c))}
+                                    style={getAvatarCropStyle(getCharacterInfo(c).avatarCrop)}
                                   />
                                 </span>
                               ) : (
@@ -4631,18 +4633,7 @@ export function ChatSettingsDrawer({
                       const p = personas.find((p) => p.id === chat.personaId);
                       return p ? (
                         <>
-                          {p.avatarPath ? (
-                            <img
-                              src={p.avatarPath}
-                              alt={p.name}
-                              loading="lazy"
-                              className="h-7 w-7 shrink-0 rounded-full object-cover"
-                            />
-                          ) : (
-                            <div className="mari-avatar-placeholder mari-avatar-placeholder--persona flex h-7 w-7 shrink-0 items-center justify-center rounded-full">
-                              <User size="0.75rem" />
-                            </div>
-                          )}
+                          <DrawerPersonaAvatar persona={p} size="md" />
                           <div className="min-w-0 flex-1">
                             <span className="block truncate text-xs">{p.name}</span>
                             {p.comment && (
@@ -4748,18 +4739,7 @@ export function ChatSettingsDrawer({
                           chat.personaId === p.id && "bg-[var(--primary)]/10",
                         )}
                       >
-                        {p.avatarPath ? (
-                          <img
-                            src={p.avatarPath}
-                            alt={p.name}
-                            loading="lazy"
-                            className="h-6 w-6 shrink-0 rounded-full object-cover"
-                          />
-                        ) : (
-                          <div className="mari-avatar-placeholder mari-avatar-placeholder--persona flex h-6 w-6 shrink-0 items-center justify-center rounded-full">
-                            <User size="0.625rem" />
-                          </div>
-                        )}
+                        <DrawerPersonaAvatar persona={p} />
                         <div className="min-w-0 flex-1">
                           <span className="block truncate text-xs">{p.name}</span>
                           {p.comment && (
@@ -4871,7 +4851,7 @@ export function ChatSettingsDrawer({
                                   alt={name}
                                   loading="lazy"
                                   className="h-full w-full object-cover"
-                                  style={getAvatarCropStyle(charAvatarCrop(c))}
+                                  style={getAvatarCropStyle(getCharacterInfo(c).avatarCrop)}
                                 />
                               </span>
                             ) : (
@@ -4976,7 +4956,7 @@ export function ChatSettingsDrawer({
                                 alt={name}
                                 loading="lazy"
                                 className="h-full w-full object-cover"
-                                style={getAvatarCropStyle(charAvatarCrop(c))}
+                                style={getAvatarCropStyle(getCharacterInfo(c).avatarCrop)}
                               />
                             </span>
                           ) : (
@@ -5806,7 +5786,7 @@ export function ChatSettingsDrawer({
                         "justify-between rounded-lg px-3 py-2.5 text-left",
                         conversationCommandsEnabled
                           ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
-                          : "bg-[var(--secondary)] hover:bg-[var(--accent)]",
+                          : cn(AGENT_SETTINGS_SURFACE_CLASS, "hover:bg-[var(--accent)]"),
                       )}
                       labelClassName="text-xs font-medium"
                     />
@@ -5835,7 +5815,7 @@ export function ChatSettingsDrawer({
                                 "h-full min-h-[4.125rem] items-center justify-between rounded-lg px-3 py-2.5 text-left",
                                 enabled
                                   ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
-                                  : "bg-[var(--secondary)] hover:bg-[var(--accent)]",
+                                  : cn(AGENT_SETTINGS_SURFACE_CLASS, "hover:bg-[var(--accent)]"),
                               )}
                               labelClassName="text-[0.6875rem] font-medium"
                             />
@@ -5847,8 +5827,10 @@ export function ChatSettingsDrawer({
                     {illustratorInstalled && (
                       <div
                         className={cn(
-                          "mari-chat-option-field space-y-3 rounded-lg px-3 py-2.5 transition-all",
-                          selfieFeatureEnabled && "mari-chat-option-field--active",
+                          "space-y-3 rounded-xl px-3 py-2.5 transition-all",
+                          selfieFeatureEnabled
+                            ? "border border-[var(--primary)]/30 bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
+                            : AGENT_SETTINGS_SURFACE_CLASS,
                         )}
                       >
                         <div className="flex items-start gap-2">
@@ -6020,6 +6002,63 @@ export function ChatSettingsDrawer({
                           className="block"
                         />
                       </div>
+                    ) : null}
+
+                    {ltmPackage ? (
+                      <AgentSettingsCard
+                        icon={<Brain size="0.75rem" className="mt-0.5 text-[var(--primary)]" />}
+                        title={localizeUi("ui.chat.chatsettingsdrawer.longTermMemory")}
+                        description={localizeUi("ui.chat.chatsettingsdrawer.enableLongTermMemoryForThisConversation")}
+                      >
+                        <SettingsSwitch
+                          label={localizeUi("ui.chat.chatsettingsdrawer.longTermMemory")}
+                          description={localizeUi("ui.chat.chatsettingsdrawer.enableLongTermMemoryForThisConversation")}
+                          checked={metadata.enableAgents === true && activeAgentIds.includes(ltmPackage.id)}
+                          onChange={(enabled) => {
+                            void setLtmEnabledForChat(enabled).catch((error) => {
+                              void showAlertDialog({
+                                title: localizeUi("ui.chat.chatsettingsdrawer.longTermMemory"),
+                                message:
+                                  error instanceof Error
+                                    ? error.message
+                                    : localizeUi("ui.chat.chatsettingsdrawer.failedToUpdateLongTermMemory"),
+                              });
+                            });
+                          }}
+                          labelPosition="start"
+                          className={cn(
+                            "justify-between rounded-lg px-3 py-2.5 text-left",
+                            metadata.enableAgents === true && activeAgentIds.includes(ltmPackage.id)
+                              ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
+                              : "bg-[var(--background)]/75 ring-1 ring-[var(--border)] hover:bg-[var(--accent)]",
+                          )}
+                          labelClassName="text-xs font-medium"
+                        />
+                        <CapabilityElement
+                          packageId={ltmPackage.id}
+                          view="settings"
+                          capabilityProps={{
+                            chatId: chat.id,
+                            enabledForChat: metadata.enableAgents === true && activeAgentIds.includes(ltmPackage.id),
+                            chatSettings: {
+                              longTermMemoryRecallStyle: metadata.longTermMemoryRecallStyle,
+                              longTermMemoryBudgetTokens: metadata.longTermMemoryBudgetTokens,
+                              longTermMemoryMaxChunks: metadata.longTermMemoryMaxChunks,
+                            },
+                            onEnabledForChatChange: setLtmEnabledForChat,
+                            onChatSettingsChange: async (patch: Record<string, unknown>) => {
+                              await updateMeta.mutateAsync({ id: chat.id, ...patch });
+                            },
+                            onOpenAgentSettings: () => {
+                              void requestClose().then((closed) => {
+                                if (closed) useUIStore.getState().openAgentDetail("long-term-memory");
+                              });
+                            },
+                            onDirtyChange: setEditorDirty,
+                          }}
+                          className="block overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--background)]/45"
+                        />
+                      </AgentSettingsCard>
                     ) : null}
 
                     {/* Schedule generation preferences — free-form authorial guidance */}
@@ -7281,7 +7320,9 @@ export function ChatSettingsDrawer({
                                 name: isPersona ? subject.persona.name : charName(subject.character),
                                 title: isPersona ? subject.persona.comment || "Persona" : charTitle(subject.character),
                                 avatarPath: isPersona ? subject.persona.avatarPath : subject.character.avatarPath,
-                                avatarCrop: isPersona ? null : charAvatarCrop(subject.character),
+                                avatarCrop: isPersona
+                                  ? normalizeAvatarCrop(subject.persona.avatarCrop)
+                                  : (getCharacterInfo(subject.character).avatarCrop ?? null),
                                 active: spriteCharacterIds.includes(subject.id),
                               };
                             })}
@@ -8133,16 +8174,7 @@ export function ChatSettingsDrawer({
                                               longTermMemoryBudgetTokens: metadata.longTermMemoryBudgetTokens,
                                               longTermMemoryMaxChunks: metadata.longTermMemoryMaxChunks,
                                             },
-                                            onEnabledForChatChange: async (enabled: boolean) => {
-                                              const current = readLatestActiveAgentIds();
-                                              await updateMeta.mutateAsync({
-                                                id: chat.id,
-                                                ...(enabled ? { enableAgents: true } : {}),
-                                                activeAgentIds: enabled
-                                                  ? Array.from(new Set([...current, ltmPackage.id]))
-                                                  : current.filter((id) => id !== ltmPackage.id),
-                                              });
-                                            },
+                                            onEnabledForChatChange: setLtmEnabledForChat,
                                             onChatSettingsChange: async (patch: Record<string, unknown>) => {
                                               await updateMeta.mutateAsync({ id: chat.id, ...patch });
                                             },
@@ -8217,6 +8249,19 @@ export function ChatSettingsDrawer({
                                         settings={getKnowledgeAgentSourceSettings(knowledgeAgentType)}
                                         onChange={(patch) =>
                                           updateKnowledgeAgentSourceSettings(knowledgeAgentType, patch)
+                                        }
+                                      />
+                                    )}
+                                    {active && agent.id !== "illustrator" && (
+                                      <AgentPromptTemplateSelect
+                                        options={getPromptOptionsForAgent(agent.id)}
+                                        selectedId={
+                                          agentPromptTemplateSelections[agent.id] ??
+                                          getDefaultPromptTemplateIdForAgent(agent.id)
+                                        }
+                                        overridden={typeof agentPromptTemplateSelections[agent.id] === "string"}
+                                        onChange={(promptTemplateId) =>
+                                          updateAgentPromptTemplateSelection(agent.id, promptTemplateId)
                                         }
                                       />
                                     )}
@@ -8334,7 +8379,11 @@ export function ChatSettingsDrawer({
                             ] as const
                           ).map((cat) => {
                             const catAgents = availableAgents.filter((a) => a.category === cat.key);
-                            const activeInCat = catAgents.filter((a) => activeAgentIds.includes(a.id));
+                            const activeInCat = catAgents
+                              .filter((a) => activeAgentIds.includes(a.id))
+                              .sort(
+                                (a, b) => getRoleplayAgentSettingsOrder(a.id) - getRoleplayAgentSettingsOrder(b.id),
+                              );
                             const inactiveInCat = catAgents.filter((a) => !activeAgentIds.includes(a.id));
                             if (catAgents.length === 0) return null;
                             return (
@@ -8357,12 +8406,16 @@ export function ChatSettingsDrawer({
                                         <div
                                           key={agent.id}
                                           id={
-                                            agent.id === "hierarchical-maps" || agent.id === STORYBOARD_AGENT_ID
+                                            agent.id === "hierarchical-maps" ||
+                                            agent.id === "long-term-memory" ||
+                                            agent.id === STORYBOARD_AGENT_ID
                                               ? getAgentSettingsMenuId(chat.id, agent.id)
                                               : undefined
                                           }
                                           tabIndex={
-                                            agent.id === "hierarchical-maps" || agent.id === STORYBOARD_AGENT_ID
+                                            agent.id === "hierarchical-maps" ||
+                                            agent.id === "long-term-memory" ||
+                                            agent.id === STORYBOARD_AGENT_ID
                                               ? -1
                                               : undefined
                                           }
@@ -8448,16 +8501,7 @@ export function ChatSettingsDrawer({
                                                   longTermMemoryBudgetTokens: metadata.longTermMemoryBudgetTokens,
                                                   longTermMemoryMaxChunks: metadata.longTermMemoryMaxChunks,
                                                 },
-                                                onEnabledForChatChange: async (enabled: boolean) => {
-                                                  const current = readLatestActiveAgentIds();
-                                                  await updateMeta.mutateAsync({
-                                                    id: chat.id,
-                                                    ...(enabled ? { enableAgents: true } : {}),
-                                                    activeAgentIds: enabled
-                                                      ? Array.from(new Set([...current, ltmPackage.id]))
-                                                      : current.filter((id) => id !== ltmPackage.id),
-                                                  });
-                                                },
+                                                onEnabledForChatChange: setLtmEnabledForChat,
                                                 onChatSettingsChange: async (patch: Record<string, unknown>) => {
                                                   await updateMeta.mutateAsync({ id: chat.id, ...patch });
                                                 },

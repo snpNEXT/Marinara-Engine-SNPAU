@@ -1,9 +1,12 @@
 // ──────────────────────────────────────────────
 // Routes: Browser (proxy to character sources)
 // ──────────────────────────────────────────────
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
-import { fetchBotBrowserJson } from "../services/bot-browser/fetch-json.js";
+import {
+  fetchBotBrowserJson,
+  type BotBrowserJsonFetchOptions,
+} from "../services/bot-browser/fetch-json.js";
 import { resolveValidatedImage, safeFetch } from "../utils/security.js";
 
 const CHUB_API_BASE = "https://api.chub.ai";
@@ -23,9 +26,14 @@ async function fetchAvatarImage(url: string, signal: AbortSignal) {
   return { buf, mimeType: image.mimeType };
 }
 
-export async function botBrowserRoutes(app: FastifyInstance) {
+export interface BotBrowserRoutesOptions extends FastifyPluginOptions {
+  fetchJson?: (url: string | URL, options: BotBrowserJsonFetchOptions) => Promise<unknown>;
+}
+
+export async function botBrowserRoutes(app: FastifyInstance, options: BotBrowserRoutesOptions = {}) {
   const settingsStorage = createAppSettingsStorage(app.db);
-  // ── Search characters on Chub ──
+  const fetchJson = options.fetchJson ?? fetchBotBrowserJson;
+  // -- Search characters on Chub --
   app.get<{
     Querystring: {
       q?: string;
@@ -69,47 +77,26 @@ export async function botBrowserRoutes(app: FastifyInstance) {
       search: q,
       first: "48",
       page,
-      nsfw: "true",
-      nsfl: "true",
+      namespace: "characters",
+      nsfw: req.query.nsfw ?? "true",
+      nsfl: req.query.nsfw ?? "true",
+      nsfw_only: "false",
+      chub: "true",
+      count: "true",
       include_forks: "true",
       venus: "true",
       min_tokens,
-      chub: "true",
     });
 
     // Sort: only set if not "default" (default = let Chub decide relevance)
-    if (sort && sort !== "default") {
-      params.set("sort", sort);
-    }
-
-    // Ascending sort direction
-    if (asc === "true") {
-      params.set("asc", "true");
-    }
-
-    // Time period filter
-    if (max_days_ago && max_days_ago !== "0") {
-      params.set("max_days_ago", max_days_ago);
-    }
-
-    // Special mode (e.g. "newcomer" for Recent Hits)
-    if (special_mode) {
-      params.set("special_mode", special_mode);
-    }
-
-    // Author/username filter
-    if (username) {
-      params.set("username", username);
-    }
-
-    // Token limits
+    if (sort && sort !== "default") params.set("sort", sort);
+    if (asc === "true") params.set("asc", "true");
+    if (max_days_ago && max_days_ago !== "0") params.set("max_days_ago", max_days_ago);
+    if (special_mode) params.set("special_mode", special_mode);
+    if (username) params.set("username", username);
     if (max_tokens) params.set("max_tokens", max_tokens);
-
-    // Tag filters
     if (tags) params.set("topics", tags);
     if (excludeTags) params.set("excludetopics", excludeTags);
-
-    // Feature filters
     if (require_images === "true") params.set("require_images", "true");
     if (require_lore === "true") params.set("require_lore", "true");
     if (require_expressions === "true") params.set("require_expressions", "true");
@@ -118,24 +105,21 @@ export async function botBrowserRoutes(app: FastifyInstance) {
     // Load API key if configured
     const apiKey = await settingsStorage.get("chub_api_key");
     const headers: Record<string, string> = { Accept: "application/json" };
-    if (apiKey?.trim()) {
-      headers["ch-api-key"] = apiKey;
-    }
+    if (apiKey?.trim()) headers["ch-api-key"] = apiKey;
 
-    const data = await fetchBotBrowserJson(`${CHUB_API_BASE}/search?${params}`, {
+    return fetchJson(`${CHUB_API_BASE}/search?${params}`, {
       allowedHosts: ["api.chub.ai"],
       method: "GET",
       headers,
     });
-    return data;
   });
 
-  // ── Get full character data from Chub ──
+  // -- Get full character data from Chub --
   app.get<{ Params: { "*": string } }>("/chub/character/*", async (req) => {
     const fullPath = (req.params as Record<string, string>)["*"];
     if (!fullPath) throw new Error("Missing character path");
     const nocache = Date.now();
-    const data = await fetchBotBrowserJson(
+    return fetchJson(
       `${CHUB_API_BASE}/api/characters/${encodeURI(fullPath)}?full=true&nocache=${nocache}`,
       {
         allowedHosts: ["api.chub.ai"],
@@ -143,7 +127,6 @@ export async function botBrowserRoutes(app: FastifyInstance) {
         headers: { Accept: "application/json", "Cache-Control": "no-cache" },
       },
     );
-    return data;
   });
 
   // ── Download character card PNG from Chub (for import) ──

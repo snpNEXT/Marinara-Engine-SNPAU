@@ -138,9 +138,18 @@ export async function noodlerPublicIdentityFor(
   publicAccount: NoodleAccount | null,
 ): Promise<PublicIdentity | null> {
   if (!publicAccount) return null;
+  const characters = createCharactersStorage(db);
+  const source =
+    publicAccount.kind === "character"
+      ? await characters.getById(publicAccount.entityId)
+      : publicAccount.kind === "persona"
+        ? await characters.getPersona(publicAccount.entityId).then((persona) =>
+            persona ? { data: { name: persona.name } } : null,
+          )
+        : null;
   return buildNoodlerPublicIdentity(
     publicAccount,
-    publicAccount.kind === "character" ? await createCharactersStorage(db).getById(publicAccount.entityId) : null,
+    source,
   );
 }
 
@@ -253,7 +262,13 @@ export function buildNoodlerPostMessages(input: {
 }
 
 function parseNoodlerPost(content: string) {
-  return noodleGeneratedNoodlerPostSchema.parse(parseGameJsonish(content));
+  const parsed = parseGameJsonish(content);
+  // Many LLMs (especially local models via Ollama/KoboldCPP) wrap the expected object
+  // in an array ([{"title":...}]) regardless of the prompt instructing "one JSON object".
+  // Unwrap the common single-item array response while preserving validation for other shapes.
+  return noodleGeneratedNoodlerPostSchema.parse(
+    Array.isArray(parsed) && parsed.length === 1 ? parsed[0] : parsed,
+  );
 }
 
 export async function generateNoodlerPost(

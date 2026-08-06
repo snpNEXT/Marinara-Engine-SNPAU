@@ -357,6 +357,16 @@ try {
     /gameAgentPool\.map\(\(agent\)[\s\S]{0,7000}agent\.id === "long-term-memory" && ltmPackage[\s\S]{0,2500}<CapabilityElement/u,
     "Game chat settings must render the Long-Term Memory package controls",
   );
+  assert.match(
+    chatSettingsSource,
+    /callsPackage \?\s[\s\S]{0,2200}ltmPackage \?\s[\s\S]{0,1800}setLtmEnabledForChat/u,
+    "Conversation chat settings must place Long-Term Memory below Calls with its activation control",
+  );
+  assert.match(
+    chatSettingsSource,
+    /const setLtmEnabledForChat = useCallback\([\s\S]{0,900}activeAgentIds: enabled[\s\S]{0,300}filter\(\(id\) => id !== ltmPackageId\)/u,
+    "Long-Term Memory activation must preserve other active agents while toggling its own ID",
+  );
   const serverlessTurnGameManifest = capabilityPackageManifestSchema.parse({
     ...legacyManifest,
     id: "serverless-turn-game",
@@ -945,6 +955,7 @@ try {
   const configuredDataDir = process.env.DATA_DIR;
   process.env.DATA_DIR = "./data";
   prepareCapabilityRuntimeEnvironment(dataDir);
+  process.env.FILE_STORAGE_DIR = join(dataDir, "storage");
   assert.equal(
     process.env.DATA_DIR,
     dataDir,

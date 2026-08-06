@@ -95,7 +95,6 @@ function parseCustomParameters(raw: unknown): Record<string, unknown> {
     return out;
   }
 }
-
 interface STPromptEntry {
   identifier: string;
   name: string;
@@ -111,11 +110,6 @@ interface STPromptEntry {
 }
 
 interface STPreset {
-  prompts?: STPromptEntry[];
-  prompt_order?: Array<{
-    character_id: number;
-    order: Array<{ identifier: string; enabled: boolean }>;
-  }>;
   temperature?: number;
   top_p?: number;
   top_k?: number;
@@ -125,14 +119,27 @@ interface STPreset {
   frequency_penalty?: number;
   presence_penalty?: number;
   reasoning_effort?: string;
+  verbosity?: string;
+  verbosity_level?: string;
+  verbosity_levels?: string;
+  assistant_prefill?: string;
+  custom_include_body?: unknown;
   squash_system_messages?: boolean;
   show_thoughts?: boolean;
+  custom_stopping_strings?: unknown;
+  stop?: unknown;
+  prompts?: STPromptEntry[];
+  prompt_order?: Array<{
+    character_id: number;
+    order: Array<{ identifier: string; enabled: boolean }>;
+  }>;
   [key: string]: unknown;
 }
 
 /**
  * Import a SillyTavern prompt preset JSON.
- * Parses the prompt array, variable toggle groups, and generation parameters.
+ * Parses the prompt array and variable toggle groups. Generation parameters
+ * are connection/chat-owned settings and are intentionally ignored.
  */
 export async function importSTPreset(
   raw: Record<string, unknown>,
@@ -166,7 +173,9 @@ export async function importSTPreset(
         verbosity: toVerbosity(preset.verbosity ?? preset.verbosity_level ?? preset.verbosity_levels),
         serviceTier: null,
         assistantPrefill: typeof preset.assistant_prefill === "string" ? preset.assistant_prefill : "",
+        customThinkingTags: [],
         customParameters: parseCustomParameters(preset.custom_include_body),
+        managedCustomParameters: {},
         squashSystemMessages: preset.squash_system_messages ?? true,
         disableMessageMerge: false,
         showThoughts: preset.show_thoughts ?? true,

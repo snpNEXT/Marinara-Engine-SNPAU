@@ -8,6 +8,8 @@ import { api } from "../lib/api-client";
 import { useUIStore } from "../stores/ui.store";
 import type {
   NoodleAccount,
+  NoodleAmbientProfileRerollInput,
+  NoodleAmbientProfileRerollOutcome,
   NoodleAccountFollowUpdateInput,
   NoodleAccountKind,
   NoodleAccountProfileUpdateInput,
@@ -30,6 +32,7 @@ import type {
   NoodleSettings,
   NoodleSettingsUpdateInput,
   NoodleStageProfileInput,
+  NoodlerSourceSnapshot,
   NoodlerGenerationRequest,
   NoodleStageProfileDraftRequest,
   NoodlerManagedPost,
@@ -43,7 +46,11 @@ import type {
   NoodlerReserveStatus,
   NoodlerRemoveInteractionInput,
 } from "@marinara-engine/shared";
-import { mergeNoodlePollVoteInteractions } from "@marinara-engine/shared";
+import {
+  countNoodlePostsSince,
+  countNoodlerPostsSince,
+  mergeNoodlePollVoteInteractions,
+} from "@marinara-engine/shared";
 import type { ImagePromptOverride, ImagePromptReviewItem } from "../components/ui/ImagePromptReviewModal";
 
 export type NoodleRefreshResult = {
@@ -82,6 +89,28 @@ export function useNoodle(enabled = true) {
     refetchIntervalInBackground: false,
     structuralSharing: (current, next) =>
       preservePollVotes(current as NoodleBootstrap | undefined, next as NoodleBootstrap),
+  });
+}
+
+export function useRerollAmbientNoodleProfiles() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: NoodleAmbientProfileRerollInput) =>
+      api.post<{
+        accounts: NoodleAccount[];
+        outcomes: NoodleAmbientProfileRerollOutcome[];
+      }>("/noodle/ambient-profiles/reroll", input),
+    onSuccess: ({ accounts }) => {
+      qc.setQueryData<NoodleBootstrap | undefined>(noodleKeys.bootstrap(), (current) => {
+        if (!current) return current;
+        const updatedById = new Map(accounts.map((account) => [account.id, account]));
+        return {
+          ...current,
+          accounts: current.accounts.map((account) => updatedById.get(account.id) ?? account),
+        };
+      });
+      return qc.invalidateQueries({ queryKey: noodleKeys.bootstrap() });
+    },
   });
 }
 
@@ -185,14 +214,49 @@ export function useBulkCreateNoodlerStageProfiles() {
 export function useUpdateNoodlerStageProfile() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ accountId, ...input }: { accountId: string } & NoodleStageProfileInput) =>
-      api.put<NoodlerStageProfile>(`/noodle/noodler/accounts/${encodeURIComponent(accountId)}/stage-profile`, input),
+    mutationFn: ({
+      accountId,
+      sourceSnapshot,
+      ...input
+    }: {
+      accountId: string;
+      acceptSourceChanges?: boolean;
+      sourceSnapshot?: NoodlerSourceSnapshot;
+    } & NoodleStageProfileInput) =>
+      api.put<NoodlerStageProfile>(`/noodle/noodler/accounts/${encodeURIComponent(accountId)}/stage-profile`, {
+        ...input,
+        ...(sourceSnapshot ? { sourceSnapshot } : {}),
+      }),
     onSuccess: () =>
       Promise.all([
         qc.invalidateQueries({ queryKey: noodleKeys.noodlerAccounts() }),
         qc.invalidateQueries({ queryKey: noodleKeys.noodlerViewers() }),
       ]),
   });
+}
+
+function useNoodlerSourceAction(action: "dismiss" | "adopt-identity") {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (accountId: string) =>
+      api.post<NoodlerManagedStageProfile>(
+        `/noodle/noodler/accounts/${encodeURIComponent(accountId)}/source/${action}`,
+        {},
+      ),
+    onSuccess: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: noodleKeys.noodlerAccounts() }),
+        qc.invalidateQueries({ queryKey: noodleKeys.noodlerViewers() }),
+      ]),
+  });
+}
+
+export function useDismissNoodlerSourceChanges() {
+  return useNoodlerSourceAction("dismiss");
+}
+
+export function useAdoptNoodlerSourceIdentity() {
+  return useNoodlerSourceAction("adopt-identity");
 }
 
 export function useDeleteNoodlerStageProfile() {
@@ -218,9 +282,13 @@ export function useGenerateNoodlerStageProfileDraft() {
       // ponytail: fixed 60s ceiling, no per-provider tuning — raise if real drafts routinely take longer
       const timer = setTimeout(() => controller.abort(), 60_000);
       return api
-        .post<NoodleStageProfileInput>("/noodle/noodler/stage-profile-draft", input, {
-          signal: controller.signal,
-        })
+        .post<NoodleStageProfileInput & { sourceSnapshot?: NoodlerSourceSnapshot }>(
+          "/noodle/noodler/stage-profile-draft",
+          input,
+          {
+            signal: controller.signal,
+          },
+        )
         .finally(() => clearTimeout(timer));
     },
   });
@@ -345,6 +413,27 @@ export function useNoodlerViewer(personaId: string | null, enabled = true) {
   });
 }
 
+/**
+ * Unseen-post count for the public Noodle entry point. Reads the bootstrap query both Noodle
+ * surfaces already hold, so the badge is the same number whether it is rendered from Noodle or
+ * from NoodleR.
+ */
+export function useNoodleUnseenCount(personaAccount: NoodleAccount | null, enabled = true) {
+  const { data } = useNoodle(enabled);
+  return countNoodlePostsSince(
+    data?.posts ?? [],
+    data?.interactions ?? [],
+    personaAccount?.id ?? null,
+    personaAccount?.settings.social.noodleFeedSeenAt,
+  );
+}
+
+/** Unseen-post count for the NoodleR entry point; reuses the viewer-scope query already cached. */
+export function useNoodlerUnseenCount(personaId: string | null, enabled = true) {
+  const { data } = useNoodlerViewer(personaId, enabled);
+  return countNoodlerPostsSince(data, data?.viewer.settings.social.noodlerFeedSeenAt);
+}
+
 export function useToggleNoodlerSubscription() {
   const qc = useQueryClient();
   return useMutation({
@@ -378,7 +467,15 @@ export function useToggleNoodlerSubscription() {
 export function useToggleNoodlerFollow() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ creatorAccountId, personaId, followed }: { creatorAccountId: string; personaId: string; followed: boolean }) =>
+    mutationFn: ({
+      creatorAccountId,
+      personaId,
+      followed,
+    }: {
+      creatorAccountId: string;
+      personaId: string;
+      followed: boolean;
+    }) =>
       api.patch<NoodlerViewerScope>(`/noodle/noodler/accounts/${encodeURIComponent(creatorAccountId)}/follow`, {
         personaId,
         followed,

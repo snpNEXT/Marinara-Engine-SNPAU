@@ -1,17 +1,12 @@
 // ──────────────────────────────────────────────
 // Chat: Message — mode-aware rendering
 // ──────────────────────────────────────────────
-import {
-  cn,
-  copyToClipboard,
-  getAvatarCropStyle,
-  isLegacyAvatarCrop,
-  parseAvatarCropJson,
-  type AvatarCropValue,
-} from "../../lib/utils";
+import { cn, copyToClipboard, getAvatarCropStyle, isLegacyAvatarCrop } from "../../lib/utils";
+import { normalizeAvatarCrop, type AvatarCrop } from "@marinara-engine/shared";
 import { applyInlineMarkdown, renderMarkdownBlocks, applyInlineMarkdownHTML } from "../../lib/markdown";
 import { normalizeCardAssetImageSyntax, resolveCardAssetUrl, resolveSelfCardAssets, type ChatGalleryIndex } from "../../lib/card-asset-links";
 import { useChatGalleryFilenameIndex } from "../../hooks/use-characters";
+import { useReducedAmbientEffects } from "../../hooks/use-reduced-ambient-effects";
 import { PendingTypingDots } from "./PendingTypingDots";
 import { isDiceRollResult } from "../dice/AnimatedDiceRoll";
 import { DiceMessageContent } from "./ConversationMessageShared";
@@ -62,6 +57,8 @@ import { useTTSConfig } from "../../hooks/use-tts";
 import { buildTTSVoiceRequests, normalizeTTSCharacterName, withTTSVoiceRequestCacheKeys } from "../../lib/tts-dialogue";
 import { DIALOGUE_QUOTE_PATTERN_SOURCE, HTML_SAFE_DIALOGUE_QUOTE_PATTERN_SOURCE } from "../../lib/dialogue-quotes";
 import { resolveMessageRewriteVersions } from "../../lib/message-rewrite-versions";
+import { convertChatHtmlNewlines } from "../../lib/chat-html-newlines";
+import { resolveMessageReasoningDisplay } from "../../lib/message-reasoning";
 import DOMPurify from "dompurify";
 import type { CharacterMap, ExpressionAvatarResolver, MessageSelectionToggle, PersonaInfo } from "./chat-area.types";
 import {
@@ -209,7 +206,7 @@ type AIVisibilityCharacter = {
   id: string;
   name: string;
   avatarUrl: string | null;
-  avatarCrop: AvatarCropValue | null | undefined;
+  avatarCrop: AvatarCrop | null | undefined;
 };
 
 type ToggleHiddenFromAI = (messageId: string, hiddenFromAll: boolean, hiddenFromAICharacterIds?: string[]) => void;
@@ -549,13 +546,15 @@ const EditTextarea = memo(function EditTextarea({
   initialContent,
   fontSize,
   quoteFormat,
+  saving,
   onSave,
   onCancel,
 }: {
   initialContent: string;
   fontSize: string | number | undefined;
   quoteFormat: QuoteFormat;
-  onSave: (content: string) => void;
+  saving: boolean;
+  onSave: (content: string) => void | Promise<void>;
   onCancel: () => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
@@ -581,7 +580,7 @@ const EditTextarea = memo(function EditTextarea({
   }, [autoResize]);
 
   const handleSave = useCallback(() => {
-    if (ref.current) onSave(formatTextQuotes(ref.current.value, quoteFormat));
+    if (ref.current) void onSave(formatTextQuotes(ref.current.value, quoteFormat));
   }, [onSave, quoteFormat]);
 
   return (
@@ -589,24 +588,28 @@ const EditTextarea = memo(function EditTextarea({
       <textarea
         ref={ref}
         defaultValue={formatTextQuotes(initialContent, quoteFormat)}
+        readOnly={saving}
+        aria-busy={saving}
         rows={1}
         onInput={(event) => {
           applyTextareaQuoteFormat(event.currentTarget, quoteFormat, event.nativeEvent as InputEvent);
           autoResize();
         }}
         onKeyDown={(e) => {
+          if (saving) return;
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSave();
           if (e.key === "Escape") onCancel();
         }}
         className="w-full resize-none overflow-y-auto overscroll-contain rounded-lg bg-black/30 px-3 py-2 text-white outline-none ring-1 ring-white/20 focus:ring-blue-400/50"
         style={{ fontSize, lineHeight: 1.5, maxHeight: "min(60dvh, 32rem)" }}
       />
-      <div className="flex items-center gap-1.5 justify-end">
+      <div className="relative z-10 flex items-center justify-end gap-1.5">
         <button
           type="button"
           onClick={onCancel}
+          disabled={saving}
           aria-label={localizeUi("ui.chat.edittextarea.cancelEdit")}
-          className="rounded-md p-1 text-white/40 hover:bg-white/10 hover:text-white/70"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-white/40 hover:bg-white/10 hover:text-white/70 disabled:pointer-events-none disabled:opacity-50"
           title={localizeUi("ui.chat.edittextarea.cancelEsc")}
         >
           <X size="0.8125rem" />
@@ -614,8 +617,9 @@ const EditTextarea = memo(function EditTextarea({
         <button
           type="button"
           onClick={handleSave}
+          disabled={saving}
           aria-label={localizeUi("ui.chat.edittextarea.saveEdit")}
-          className="rounded-md p-1 text-emerald-400/70 hover:bg-emerald-400/10 hover:text-emerald-400"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-emerald-400/70 hover:bg-emerald-400/10 hover:text-emerald-400 disabled:pointer-events-none disabled:opacity-50"
           title={localizeUi("ui.chat.edittextarea.saveCmdEnter")}
         >
           <Check size="0.8125rem" />
@@ -633,7 +637,7 @@ interface ChatMessageProps {
   streamingContent?: ReactNode;
   onDelete?: (messageId: string) => void;
   onRegenerate?: (messageId: string) => void;
-  onEdit?: (messageId: string, content: string) => void;
+  onEdit?: (messageId: string, content: string) => void | Promise<void>;
   onSetActiveSwipe?: (messageId: string, index: number) => void;
   onToggleConversationStart?: (messageId: string, current: boolean) => void;
   onToggleHiddenFromAI?: ToggleHiddenFromAI;
@@ -1065,22 +1069,7 @@ function renderContent(
 
   const { html: strippedWithoutStyleBlocks, css: rawStyleBlocks } = extractChatStyleBlocks(stripped);
 
-  // Convert newlines to <br> with compact spacing for HTML content,
-  // but preserve newlines inside <svg> blocks — injecting <br> into SVG
-  // foreign content breaks the HTML parser's namespace handling.
-  // Also skip newlines that sit between HTML tags (source formatting only).
-  // First, protect newlines inside attribute values (e.g. multi-line style="")
-  // by temporarily replacing them with a placeholder.
-  const ATTR_NL_PLACEHOLDER = "\x00ATTRNL\x00";
-  const attrProtected = strippedWithoutStyleBlocks.replace(
-    /(<[^>]*?)("[^"]*"|'[^']*')([^>]*>)/g,
-    (_m, before: string, attr: string, after: string) => before + attr.replace(/\n/g, ATTR_NL_PLACEHOLDER) + after,
-  );
-  const withBreaks = attrProtected
-    .replace(/(<svg[\s\S]*?<\/svg>)|(>\s*)\n(\s*<)|\n/gi, (_m, svgBlock, pre, post) =>
-      svgBlock ? svgBlock : pre ? `${pre}${post}` : '<br style="display:block;margin:0.2em 0">',
-    )
-    .replace(new RegExp(ATTR_NL_PLACEHOLDER, "g"), "\n");
+  const withBreaks = convertChatHtmlNewlines(strippedWithoutStyleBlocks);
 
   // Convert markdown images to <img> before sanitization so DOMPurify validates them.
   // Keep tags minimal (no class, only loading/decoding attrs) — styling is via .mari-message-content img in CSS
@@ -1345,6 +1334,7 @@ export const ChatMessage = memo(function ChatMessage({
 
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [editSavePending, setEditSavePending] = useState(false);
   const [showThinking, setShowThinking] = useState(false);
   const [showGenerationReplay, setShowGenerationReplay] = useState(false);
   const [showActions, setShowActions] = useState(false);
@@ -1356,6 +1346,7 @@ export const ChatMessage = memo(function ChatMessage({
   const msgRef = useRef<HTMLDivElement>(null);
   const thinkingButtonRef = useRef<HTMLButtonElement>(null);
   const editSwipeIndexRef = useRef<number | null>(null);
+  const editSavePendingRef = useRef(false);
   const lastQuickTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
   const openImageLightbox = useCallback(
     (url: string, prompt?: unknown) => {
@@ -1527,7 +1518,7 @@ export const ChatMessage = memo(function ChatMessage({
     if (!onEdit || isStreaming) return;
     const sp = msgRef.current?.closest("[class*='overflow-y']") as HTMLElement | null;
     if (sp) scrollRestoreRef.current = { el: sp, top: sp.scrollTop };
-    editSwipeIndexRef.current = message.activeSwipeIndex ?? null;
+    editSwipeIndexRef.current = message.activeSwipeIndex;
     setEditing(true);
   }, [isStreaming, message.activeSwipeIndex, onEdit]);
 
@@ -1622,9 +1613,9 @@ export const ChatMessage = memo(function ChatMessage({
       )
     : [];
   const isHiddenFromAI = isHiddenFromAllAI || hiddenFromAICharacterIds.length > 0;
-  const thinking =
-    typeof extra.thinking === "string" && extra.thinking.trim().length > 0 ? (extra.thinking as string) : null;
-  const showStreamingThinkingAction = !!isStreaming && !!thinking && !isUser;
+  const { summary: thinking, summaryUnavailable: reasoningSummaryUnavailable, hasReasoning } =
+    resolveMessageReasoningDisplay(extra);
+  const showStreamingThinkingAction = !!isStreaming && hasReasoning && !isUser;
   const generationReplay = hasGenerationReplayDetails(extra.generationReplay) ? extra.generationReplay : null;
   const diceRollResult = isDiceRollResult(extra.diceRollResult) ? extra.diceRollResult : null;
   const canCreateNextSwipe = Boolean(onRegenerate && !isUser);
@@ -1780,29 +1771,42 @@ export const ChatMessage = memo(function ChatMessage({
   }, [message.id, onEdit, startEditing]);
 
   const handleSaveEdit = useCallback(
-    (content: string) => {
-      if (editSwipeIndexRef.current !== null && editSwipeIndexRef.current !== (message.activeSwipeIndex ?? null)) {
+    async (content: string) => {
+      if (editSavePendingRef.current) return;
+      if (!isUser && editSwipeIndexRef.current !== null && editSwipeIndexRef.current !== message.activeSwipeIndex) {
         editSwipeIndexRef.current = null;
         setEditing(false);
         return;
       }
       const formattedSource = formatTextQuotes(message.content, quoteFormat);
       if (content.trim().length > 0 && content !== formattedSource) {
-        onEdit?.(message.id, content);
+        editSavePendingRef.current = true;
+        setEditSavePending(true);
+        try {
+          await onEdit?.(message.id, content);
+        } catch {
+          toast.error(localizeUi("ui.chat.chatmessage.couldNotSaveThatEdit"));
+          return;
+        } finally {
+          editSavePendingRef.current = false;
+          setEditSavePending(false);
+        }
       }
       editSwipeIndexRef.current = null;
       setEditing(false);
     },
-    [message.activeSwipeIndex, message.content, message.id, onEdit, quoteFormat],
+    [isUser, localizeUi, message.activeSwipeIndex, message.content, message.id, onEdit, quoteFormat],
   );
 
   const handleCancelEdit = useCallback(() => {
+    if (editSavePendingRef.current) return;
     editSwipeIndexRef.current = null;
     setEditing(false);
   }, []);
 
   const handleSetActiveSwipe = useCallback(
     (index: number) => {
+      if (editSavePendingRef.current) return;
       if (index === message.activeSwipeIndex) return;
       editSwipeIndexRef.current = null;
       setEditing(false);
@@ -1813,12 +1817,13 @@ export const ChatMessage = memo(function ChatMessage({
 
   useEffect(() => {
     if (!editing) return;
-    if (editSwipeIndexRef.current === null) return;
-    if (editSwipeIndexRef.current !== (message.activeSwipeIndex ?? null)) {
+    if (editSavePending) return;
+    if (isUser || editSwipeIndexRef.current === null) return;
+    if (editSwipeIndexRef.current !== message.activeSwipeIndex) {
       editSwipeIndexRef.current = null;
       setEditing(false);
     }
-  }, [editing, message.activeSwipeIndex]);
+  }, [editSavePending, editing, isUser, message.activeSwipeIndex]);
 
   // Apply regex scripts to AI output (assistant/narrator roles)
   const { applyToAIOutput } = useApplyRegex();
@@ -1963,7 +1968,7 @@ export const ChatMessage = memo(function ChatMessage({
         : null;
   const displayAvatarUrl = expressionAvatarUrl ?? avatarUrl;
   const personaAvatarCrop = isUser
-    ? (parseAvatarCropJson(msgPersona?.avatarCrop) ?? personaInfo?.avatarCrop ?? null)
+    ? (normalizeAvatarCrop(msgPersona?.avatarCrop) ?? personaInfo?.avatarCrop ?? null)
     : null;
   const avatarCropStyle = expressionAvatarUrl
     ? {}
@@ -2010,7 +2015,8 @@ export const ChatMessage = memo(function ChatMessage({
     [chatCharacterIds, mergedGroupCharacterIds],
   );
   const mergedCycleKey = JSON.stringify(mergedCharacterIds);
-  const cycleMergedNarratorAvatars = !isRoleplay || roleplayNarratorAvatarCycling;
+  const reduceAmbientEffects = useReducedAmbientEffects();
+  const cycleMergedNarratorAvatars = (!isRoleplay || roleplayNarratorAvatarCycling) && !reduceAmbientEffects;
   const mergedAvatars = useMemo(() => {
     if (!isMergedGroup || !characterMap) return [];
     const fallbackPalette = [
@@ -2037,7 +2043,7 @@ export const ChatMessage = memo(function ChatMessage({
       .filter(Boolean) as {
         id: string;
         url: string;
-        crop?: AvatarCropValue | null;
+        crop?: AvatarCrop | null;
         nameColor: string;
       }[];
   }, [isMergedGroup, characterMap, mergedCharacterIds, expressionAvatarResolver, message]);
@@ -2167,14 +2173,14 @@ export const ChatMessage = memo(function ChatMessage({
   // Legacy {zoom, offsetX, offsetY} crops compose fine with object-cover
   // (they're a CSS transform) so they pass through unchanged.
   const rectangleSafeCropStyle = (
-    crop: AvatarCropValue | null | undefined,
+    crop: AvatarCrop | null | undefined,
     fallback: React.CSSProperties,
   ): React.CSSProperties => {
     if (!crop) return fallback;
     if (isLegacyAvatarCrop(crop)) return fallback;
     return {};
   };
-  const compactAvatarCrop: AvatarCropValue | null = isUser
+  const compactAvatarCrop: AvatarCrop | null = isUser
     ? (personaAvatarCrop ?? null)
     : expressionAvatarUrl
       ? null
@@ -2182,12 +2188,12 @@ export const ChatMessage = memo(function ChatMessage({
   const compactAvatarCropStyle: React.CSSProperties = useCompactRectangleAvatar
     ? rectangleSafeCropStyle(compactAvatarCrop, avatarCropStyle)
     : avatarCropStyle;
-  const compactMergedAvatarCropStyle = (avatar: { crop?: AvatarCropValue | null }): React.CSSProperties =>
+  const compactMergedAvatarCropStyle = (avatar: { crop?: AvatarCrop | null }): React.CSSProperties =>
     useCompactRectangleAvatar || !cycleMergedNarratorAvatars
       ? rectangleSafeCropStyle(avatar.crop, getAvatarCropStyle(avatar.crop))
       : getAvatarCropStyle(avatar.crop);
   const panelAvatarCropStyle: React.CSSProperties = rectangleSafeCropStyle(compactAvatarCrop, avatarCropStyle);
-  const panelMergedAvatarCropStyle = (avatar: { crop?: AvatarCropValue | null }): React.CSSProperties =>
+  const panelMergedAvatarCropStyle = (avatar: { crop?: AvatarCrop | null }): React.CSSProperties =>
     rectangleSafeCropStyle(avatar.crop, getAvatarCropStyle(avatar.crop));
   const compactAvatarSpacerClass = useCompactRectangleAvatar
     ? "w-[calc(2.75rem*var(--roleplay-avatar-scale))]"
@@ -2281,6 +2287,7 @@ export const ChatMessage = memo(function ChatMessage({
       initialContent={message.content}
       fontSize={chatFontSize}
       quoteFormat={quoteFormat}
+      saving={editSavePending}
       onSave={handleSaveEdit}
       onCancel={handleCancelEdit}
     />
@@ -2946,11 +2953,11 @@ export const ChatMessage = memo(function ChatMessage({
                   dark
                 />
               )}
-              {thinking && !isUser && (
+              {hasReasoning && !isUser && (
                 <ActionBtn
                   icon={<Brain size={MESSAGE_ACTION_ICON_SIZE} />}
                   onClick={() => setShowThinking(true)}
-                  title={t("chat.message.thoughts.view")}
+                  title={t(reasoningSummaryUnavailable ? "chat.message.thoughts.unavailable.view" : "chat.message.thoughts.view")}
                   thinkingAction
                   buttonRef={thinkingButtonRef}
                   dark
@@ -3034,9 +3041,10 @@ export const ChatMessage = memo(function ChatMessage({
         </div>
 
         {/* Thinking modal */}
-        {showThinking && thinking && (
+        {showThinking && hasReasoning && (
           <MessageThinkingModal
             thinking={thinking}
+            summaryUnavailable={reasoningSummaryUnavailable}
             onClose={() => setShowThinking(false)}
             restoreFocusRef={thinkingButtonRef}
           />
@@ -3207,6 +3215,7 @@ export const ChatMessage = memo(function ChatMessage({
                 initialContent={message.content}
                 fontSize={chatFontSize}
                 quoteFormat={quoteFormat}
+                saving={editSavePending}
                 onSave={handleSaveEdit}
                 onCancel={handleCancelEdit}
               />
@@ -3400,11 +3409,11 @@ export const ChatMessage = memo(function ChatMessage({
                 title={localizeUi("ui.chat.chatmessage.storedGuidance")}
               />
             )}
-            {thinking && !isUser && (
+            {hasReasoning && !isUser && (
               <ActionBtn
                 icon={<Brain size={MESSAGE_ACTION_ICON_SIZE} />}
                 onClick={() => setShowThinking(true)}
-                title={t("chat.message.thoughts.view")}
+                title={t(reasoningSummaryUnavailable ? "chat.message.thoughts.unavailable.view" : "chat.message.thoughts.view")}
                 thinkingAction
                 buttonRef={thinkingButtonRef}
               />
@@ -3492,9 +3501,10 @@ export const ChatMessage = memo(function ChatMessage({
       </div>
 
       {/* Thinking modal */}
-      {showThinking && thinking && (
+      {showThinking && hasReasoning && (
         <MessageThinkingModal
           thinking={thinking}
+          summaryUnavailable={reasoningSummaryUnavailable}
           onClose={() => setShowThinking(false)}
           restoreFocusRef={thinkingButtonRef}
         />

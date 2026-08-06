@@ -57,6 +57,8 @@ import { useGameStateStore } from "../../stores/game-state.store";
 import { useChatComposerFocused, useChatKeyboardOpen } from "../../hooks/use-visual-viewport-chat-bottom";
 import { useActiveLorebookEntries, useLorebooks } from "../../hooks/use-lorebooks";
 import { usePresetFull, usePresets } from "../../hooks/use-presets";
+import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
+import { CapabilityElement } from "../capabilities/CapabilityElement";
 import { ChatMessage } from "./ChatMessage";
 import { ChatInput } from "./ChatInput";
 import { CyoaChoices } from "./CyoaChoices";
@@ -299,6 +301,8 @@ function RoleplayLiveStreamText({ chatId, emptyLabel }: { chatId: string; emptyL
   const emptyRef = useRef<HTMLSpanElement>(null);
 
   useLayoutEffect(() => {
+    const textNode = document.createTextNode("");
+    textRef.current?.replaceChildren(textNode);
     let frame: number | null = null;
     const readBuffer = () => {
       const state = useChatStore.getState();
@@ -307,7 +311,10 @@ function RoleplayLiveStreamText({ chatId, emptyLabel }: { chatId: string; emptyL
     const apply = () => {
       frame = null;
       const next = readBuffer();
-      if (textRef.current && textRef.current.textContent !== next) textRef.current.textContent = next;
+      if (textNode.data !== next) {
+        if (next.startsWith(textNode.data)) textNode.appendData(next.slice(textNode.data.length));
+        else textNode.data = next;
+      }
       if (emptyRef.current) emptyRef.current.hidden = next.length > 0;
     };
     const schedule = () => {
@@ -1147,7 +1154,7 @@ type RoleplaySurfaceProps = {
   onLoadMore: () => void;
   onDelete: (messageId: string) => void;
   onRegenerate: (messageId: string) => void;
-  onEdit: (messageId: string, content: string) => void;
+  onEdit: (messageId: string, content: string) => void | Promise<void>;
   onSetActiveSwipe: (messageId: string, index: number) => void;
   onToggleConversationStart: (messageId: string, current: boolean) => void;
   onToggleHiddenFromAI: (messageId: string, hiddenFromAll: boolean, hiddenFromAICharacterIds?: string[]) => void;
@@ -1312,6 +1319,29 @@ export function ChatRoleplaySurface({
 }: RoleplaySurfaceProps) {
   const { t: localizeUi } = useUiTranslation();
   const { t } = useTranslation();
+  const { data: installedCapabilities = [] } = useInstalledCapabilityPackages();
+  const activeAgentIds = chatMeta.activeAgentIds;
+  const enabledConversationCapabilities = chatMeta.enableAgents === true
+    ? installedCapabilities.filter((item) => {
+        if (item.status !== "active" || !item.manifest.entrypoints.client) return false;
+        if (item.manifest.kind.includes("conversation-calls")) return false;
+        const contributedAgentIds = item.manifest.contributions?.agentDetail?.agentIds ?? [];
+        return activeAgentIds.includes(item.id) || contributedAgentIds.some((id) => activeAgentIds.includes(id));
+      })
+    : [];
+  const conversationToolbarPackages = enabledConversationCapabilities.filter((item) =>
+    item.manifest.contributions?.slots?.includes("conversation-toolbar"),
+  );
+  const conversationSurfacePackages = enabledConversationCapabilities.filter((item) =>
+    item.manifest.contributions?.slots?.includes("conversation-surface"),
+  );
+  const conversationCapabilityProps = {
+    chatId: activeChatId,
+    metadata: chatMeta,
+    characterMap,
+    chatCharIds,
+    personaInfo,
+  };
   useRenderTimer("rp-surface"); // [#3104 diagnostic]
   const isMobileToolbarViewport = useIsMobileToolbarViewport();
   const isStreamCommitted = useChatStore((s) => s.committedStreamChatIds.has(activeChatId));
@@ -1744,6 +1774,18 @@ export function ChatRoleplaySurface({
                   data-roleplay-top-controls="right"
                   className={cn("pointer-events-auto ml-auto flex shrink-0 items-center", CHAT_TOOLBAR_ICON_GAP_CLASS)}
                 >
+                  {conversationToolbarPackages.map((item) => (
+                    <CapabilityElement
+                      key={`${item.id}-toolbar`}
+                      packageId={item.id}
+                      view="toolbar"
+                      capabilityProps={{
+                        ...conversationCapabilityProps,
+                        toolbarButtonClass: getChatToolbarButtonClass(),
+                      }}
+                      className="contents"
+                    />
+                  ))}
                   <ChatBranchSelector
                     activeChatId={activeChatId}
                     activeChatName={chat?.name}
@@ -1856,6 +1898,18 @@ export function ChatRoleplaySurface({
                       data-roleplay-top-controls="right"
                       className={cn("ml-auto flex shrink-0 items-center", CHAT_TOOLBAR_ICON_GAP_CLASS)}
                     >
+                      {conversationToolbarPackages.map((item) => (
+                        <CapabilityElement
+                          key={`${item.id}-compact-toolbar`}
+                          packageId={item.id}
+                          view="toolbar"
+                          capabilityProps={{
+                            ...conversationCapabilityProps,
+                            toolbarButtonClass: getChatToolbarButtonClass({ compact: true }),
+                          }}
+                          className="contents"
+                        />
+                      ))}
                       <ChatToolbarMenu>
                         <ChatBranchSelector
                           activeChatId={activeChatId}
@@ -2304,6 +2358,15 @@ export function ChatRoleplaySurface({
         onSelectAllAboveSelection={onSelectAllAboveSelection}
         onSelectAllBelowSelection={onSelectAllBelowSelection}
       />
+      {conversationSurfacePackages.map((item) => (
+        <CapabilityElement
+          key={`${item.id}-conversation-surface`}
+          packageId={item.id}
+          view="surface"
+          capabilityProps={conversationCapabilityProps}
+          className="contents"
+        />
+      ))}
     </div>
   );
 }

@@ -20,7 +20,7 @@ import {
   X,
 } from "lucide-react";
 import { createPortal } from "react-dom";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import {
   NOODLER_POST_CONTENT_MAX_LENGTH,
@@ -40,8 +40,10 @@ import type {
   NoodlerManagedStageProfile,
   NoodlerManagedPost,
   NoodlerStageProfile,
+  NoodlerSourceSnapshot,
   Persona,
 } from "@marinara-engine/shared";
+import { countNoodlerPostsSince } from "@marinara-engine/shared";
 import {
   useCreateNoodlerPost,
   useCreateNoodlerInteraction,
@@ -60,7 +62,9 @@ import {
   useNoodlerEligibleAccounts,
   useNoodlerPosts,
   useNoodlerSubscribers,
+  useNoodleUnseenCount,
   useNoodlerViewer,
+  usePatchNoodleAccountSettings,
   useRemoveNoodlerInteraction,
   useToggleNoodlerFollow,
   useToggleNoodlerSubscription,
@@ -98,6 +102,7 @@ import { NoodlerOnboardingWizard } from "./NoodlerBulkCreatePanel";
 import {
   Avatar,
   getNoodleAccentStyle,
+  NewSinceLastVisitDivider,
   NoodleShell,
   ProfileInitial,
   NOODLE_PERSONA_SWITCHER_PAGE_SIZE,
@@ -399,6 +404,31 @@ export function NoodlerHome({ navigation, onNavigate }: NoodlerHomeProps) {
   const [feedTab, setFeedTab] = useState<"following" | "all">("following");
   const [onboardingMode, setOnboardingMode] = useState<"first-run" | null>(null);
   const viewerQuery = useNoodlerViewer(viewerPersonaId, enabled);
+  const patchAccountSettings = usePatchNoodleAccountSettings();
+  const noodleUnseenCount = useNoodleUnseenCount(shellPersonaAccount, enabled);
+  // The stored timestamp advances as soon as the feed is shown, which would erase the divider
+  // out from under the reader. Freeze the value the divider uses per persona at that moment,
+  // and keep advancing the stored one so the next visit measures from here.
+  const [frozenFeedSeenAt, setFrozenFeedSeenAt] = useState<Record<string, string | null>>({});
+  const feedShownForAccountRef = useRef<string | null>(null);
+  const markFeedShown = () => {
+    const scope = viewerQuery.data;
+    if (!scope || feedShownForAccountRef.current === scope.viewer.id) return;
+    feedShownForAccountRef.current = scope.viewer.id;
+    setFrozenFeedSeenAt((current) => ({
+      ...current,
+      [scope.viewer.id]: scope.viewer.settings.social.noodlerFeedSeenAt ?? null,
+    }));
+    patchAccountSettings.mutate(
+      { id: scope.viewer.id, subtree: "social", patch: { noodlerFeedSeenAt: new Date().toISOString() } },
+      {
+        // Best-effort ambient state: a failure means the counter stays up, which is
+        // recoverable on the next visit and not worth interrupting the user for.
+        onError: (error: unknown) => console.warn("[noodler] Could not record the feed visit", error),
+        onSuccess: () => void viewerQuery.refetch(),
+      },
+    );
+  };
   const toggleFollow = useToggleNoodlerFollow();
   const toggleSubscription = useToggleNoodlerSubscription();
   const unlockPost = useUnlockNoodlerPost();
@@ -444,6 +474,21 @@ export function NoodlerHome({ navigation, onNavigate }: NoodlerHomeProps) {
   const [draftConnectionId, setDraftConnectionId] = useState("");
   const [previousDraft, setPreviousDraft] = useState<NoodleStageProfileInput | null>(null);
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
+  const [acceptSourceChangesForProfileId, setAcceptSourceChangesForProfileId] = useState<string | null>(null);
+  const [draftSourceSnapshot, setDraftSourceSnapshot] = useState<NoodlerSourceSnapshot | null>(null);
+  const profileDraftGenerationIdRef = useRef(0);
+  const invalidateProfileDraftGeneration = () => {
+    profileDraftGenerationIdRef.current += 1;
+  };
+  const profileDraftRouteKey =
+    navigation.view === "profile"
+      ? `profile:${navigation.accountId}`
+      : navigation.view === "create-profile"
+        ? `create-profile:${navigation.noodleAccountId}`
+        : navigation.view;
+  useEffect(() => {
+    profileDraftGenerationIdRef.current += 1;
+  }, [profileDraftRouteKey]);
   // Back from a stage profile returns to wherever it was opened from (hub feed, sidebar,
   // profile list) instead of always dumping the user on the profile list. Hub is the fallback.
   const profileReturnView = useRef<"hub" | "profiles">("hub");
@@ -500,6 +545,7 @@ export function NoodlerHome({ navigation, onNavigate }: NoodlerHomeProps) {
   };
   const goToHub = async () => {
     if (!(await confirmDiscardProfileDraft())) return;
+    invalidateProfileDraftGeneration();
     setCreationStep(null);
     setProfileDraft(null);
     setEditingProfileId(null);
@@ -668,10 +714,12 @@ export function NoodlerHome({ navigation, onNavigate }: NoodlerHomeProps) {
   const sourcePickerLoading = eligibleAccountsQuery.isLoading || eligibleAccountsQuery.isFetching;
 
   const handleSourceSearch = (value: string) => {
+    invalidateProfileDraftGeneration();
     setSourceSearch(value);
     setDraftNoodleAccountId(null);
   };
   const handleSourceKind = (value: "all" | "character" | "persona") => {
+    invalidateProfileDraftGeneration();
     setSourceKind(value);
     setDraftNoodleAccountId(null);
   };
@@ -697,6 +745,7 @@ export function NoodlerHome({ navigation, onNavigate }: NoodlerHomeProps) {
   }, [arrivedFromGate, data, enabled, onboardingMode, onNavigate]);
 
   const beginCreate = () => {
+    invalidateProfileDraftGeneration();
     setEditingProfileId(null);
     setDraftNoodleAccountId(null);
     setProfileDraft(null);
@@ -711,6 +760,7 @@ export function NoodlerHome({ navigation, onNavigate }: NoodlerHomeProps) {
 
   const cancelCreateProfile = async () => {
     if (!(await confirmDiscardProfileDraft())) return;
+    invalidateProfileDraftGeneration();
     const noodleAccountId =
       navigation.mode === "noodler" && navigation.view === "create-profile"
         ? navigation.noodleAccountId
@@ -725,6 +775,8 @@ export function NoodlerHome({ navigation, onNavigate }: NoodlerHomeProps) {
   };
 
   const beginEdit = (profile: NoodlerStageProfile) => {
+    invalidateProfileDraftGeneration();
+    setAcceptSourceChangesForProfileId(null);
     setEditingProfileId(profile.id);
     setDraftNoodleAccountId(profile.noodleAccountId);
     setCreationDisclosure(profile.disclosureMode ?? "hinted");
@@ -743,10 +795,12 @@ export function NoodlerHome({ navigation, onNavigate }: NoodlerHomeProps) {
 
   const closeProfileEditor = async () => {
     if (!(await confirmDiscardProfileDraft())) return;
+    invalidateProfileDraftGeneration();
     setProfileDraft(null);
     setPreviousDraft(null);
     setEditingProfileId(null);
     setCreationStep(null);
+    setAcceptSourceChangesForProfileId(null);
   };
 
   const changeDisclosure = (value: NoodleIdentityDisclosure) => {
@@ -760,6 +814,7 @@ export function NoodlerHome({ navigation, onNavigate }: NoodlerHomeProps) {
       toast.error(localizeUi("ui.noodle.stageprofileform.noConnectionsConfiguredAddOneInSettingsConnections"));
       return;
     }
+    const generationId = ++profileDraftGenerationIdRef.current;
     generateProfileDraft.mutate(
       {
         ...(editingProfileId ? { noodlerAccountId: editingProfileId } : { noodleAccountId: draftNoodleAccountId! }),
@@ -770,12 +825,17 @@ export function NoodlerHome({ navigation, onNavigate }: NoodlerHomeProps) {
       },
       {
         onSuccess: (draft) => {
+          if (generationId !== profileDraftGenerationIdRef.current) return;
           if (profileDraft) setPreviousDraft(profileDraft);
+          if (editingProfileId) setAcceptSourceChangesForProfileId(editingProfileId);
+          setDraftSourceSnapshot(draft.sourceSnapshot ?? null);
           setProfileDraft(draft);
           setCreationStep("draft");
         },
-        onError: (error) =>
-          toast.error(errorMessage(error, localizeUi("ui.noodle.noodlerhome.couldNotGenerateAStageProfileDraft"))),
+        onError: (error) => {
+          if (generationId !== profileDraftGenerationIdRef.current) return;
+          toast.error(errorMessage(error, localizeUi("ui.noodle.noodlerhome.couldNotGenerateAStageProfileDraft")));
+        },
       },
     );
   };
@@ -787,10 +847,12 @@ export function NoodlerHome({ navigation, onNavigate }: NoodlerHomeProps) {
       handle: profileDraft.handle.replace(/^@+/u, ""),
     };
     const onSuccess = (profile: NoodlerStageProfile) => {
+      invalidateProfileDraftGeneration();
       setProfileDraft(null);
       setEditingProfileId(null);
       setDraftNoodleAccountId(null);
       setPreviousDraft(null);
+      setAcceptSourceChangesForProfileId(null);
       setCreationStep(null);
       setAutoPostSetupId(null);
       onNavigate({
@@ -812,6 +874,7 @@ export function NoodlerHome({ navigation, onNavigate }: NoodlerHomeProps) {
         const refreshed = await accountsQuery.refetch();
         const existing = refreshed.data?.find((profile) => profile.noodleAccountId === draftNoodleAccountId);
         if (existing) {
+          invalidateProfileDraftGeneration();
           setProfileDraft(null);
           setCreationStep(null);
           onNavigate({ mode: "noodler", view: "profile", accountId: existing.id });
@@ -822,7 +885,15 @@ export function NoodlerHome({ navigation, onNavigate }: NoodlerHomeProps) {
       toast.error(errorMessage(error, localizeUi("ui.noodle.noodlerhome.couldNotSaveTheStageProfile")));
     };
     if (editingProfileId) {
-      updateProfile.mutate({ accountId: editingProfileId, ...input }, { onSuccess, onError });
+      updateProfile.mutate(
+        {
+          accountId: editingProfileId,
+          ...input,
+          acceptSourceChanges: acceptSourceChangesForProfileId === editingProfileId,
+          sourceSnapshot: draftSourceSnapshot ?? undefined,
+        },
+        { onSuccess, onError },
+      );
     } else if (draftNoodleAccountId) {
       createProfile.mutate({ noodleAccountId: draftNoodleAccountId, stageProfile: input }, { onSuccess, onError });
     }
@@ -921,6 +992,13 @@ export function NoodlerHome({ navigation, onNavigate }: NoodlerHomeProps) {
           ? ("search" as const)
           : ("noodler" as const),
     homeActive: navigation.mode === "noodler" && navigation.view === "hub" && !discoveryOpen,
+    noodlerUnseenCount: countNoodlerPostsSince(
+      viewerQuery.data,
+      viewerQuery.data?.viewer.settings.social.noodlerFeedSeenAt,
+    ),
+    // The Noodle count matters most from here: this is where the user is while the public
+    // timeline is the one filling up unwatched.
+    noodleUnseenCount,
     accent: NOODLE_PINK,
     enableNoodler: enabled,
     personaAccount: shellPersonaAccount,
@@ -960,7 +1038,9 @@ export function NoodlerHome({ navigation, onNavigate }: NoodlerHomeProps) {
 
   // Reserve the same rail width as the feed view (see NoodleHome's "settings" rail) so
   // non-feed screens don't stretch the shell wider and look like a different layout.
-  const emptyRightRail = <aside className="hidden w-[22rem] shrink-0 px-4 py-3 @min-[1280px]:block" aria-hidden="true" />;
+  const emptyRightRail = (
+    <aside className="hidden w-[22rem] shrink-0 px-4 py-3 @min-[1280px]:block" aria-hidden="true" />
+  );
 
   // Shared review layer: Guide generation can be triggered from both the selected stage-profile
   // view and the hub, so the confirmation modal must render on every branch that owns that action.
@@ -1015,7 +1095,10 @@ export function NoodlerHome({ navigation, onNavigate }: NoodlerHomeProps) {
             selectedId={draftNoodleAccountId}
             onSearch={handleSourceSearch}
             onKindChange={handleSourceKind}
-            onSelect={setDraftNoodleAccountId}
+            onSelect={(accountId) => {
+              invalidateProfileDraftGeneration();
+              setDraftNoodleAccountId(accountId);
+            }}
             hasMore={Boolean(eligibleAccountsQuery.hasNextPage)}
             isLoadingMore={eligibleAccountsQuery.isFetchingNextPage}
             isLoading={eligibleAccountsQuery.isLoading}
@@ -1136,8 +1219,10 @@ export function NoodlerHome({ navigation, onNavigate }: NoodlerHomeProps) {
             previousDraft={previousDraft}
             onUndoDraft={() => {
               if (!previousDraft) return;
+              invalidateProfileDraftGeneration();
               setProfileDraft(previousDraft);
               setPreviousDraft(null);
+              setAcceptSourceChangesForProfileId(null);
             }}
             onChange={(patch) =>
               setProfileDraft((current) => ({
@@ -1434,6 +1519,8 @@ export function NoodlerHome({ navigation, onNavigate }: NoodlerHomeProps) {
         personasError={personasQuery.isError}
         onRetryPersonas={() => void personasQuery.refetch()}
         scope={viewerQuery.data}
+        newSinceAt={viewerQuery.data ? (frozenFeedSeenAt[viewerQuery.data.viewer.id] ?? null) : null}
+        onFeedShown={markFeedShown}
         isLoading={viewerQuery.isLoading}
         isError={viewerQuery.isError}
         onRetry={() => void viewerQuery.refetch()}
@@ -2197,7 +2284,7 @@ function WizardFooter({
   const { t: localizeUi } = useUiTranslation();
   const labels = ["Source", "Disclosure", "Profile"];
   return (
-    <div className="sticky bottom-0 z-[60] shrink-0 border-t border-[var(--noodle-divider)] bg-[var(--background)] px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:px-6">
+    <div className="sticky bottom-0 z-[60] shrink-0 border-t border-[var(--noodle-divider)] bg-[var(--background)] px-4 pb-3 pt-3 sm:px-6">
       {showProgress && (
         <div
           className="mb-3 flex items-center justify-center gap-1.5"
@@ -2806,12 +2893,21 @@ function ViewerHub({
   guidePending,
   onToggleSubscription,
   togglePending,
+  newSinceAt,
+  onFeedShown,
 }: {
   personas: Persona[];
   personasLoading: boolean;
   personasError: boolean;
   onRetryPersonas: () => void;
   scope: ReturnType<typeof useNoodlerViewer>["data"];
+  /**
+   * Frozen at the moment this persona's feed was first shown, so advancing the stored
+   * timestamp does not make the divider vanish under the reader while they are still on it.
+   */
+  newSinceAt: string | null;
+  /** Called once the feed is actually on screen — entering NoodleR is not the same as seeing it. */
+  onFeedShown: () => void;
   isLoading: boolean;
   isError: boolean;
   onRetry: () => void;
@@ -2846,6 +2942,14 @@ function ViewerHub({
   togglePending: boolean;
 }) {
   const { t: localizeUi } = useUiTranslation();
+  // The visit counts once the feed itself is on screen and loaded — not on app entry, and not
+  // while discovery search has replaced it. Declared above the early returns so hook order
+  // stays stable across the empty and error states below.
+  // A search-filtered list is not the feed either, so it does not count as having seen it.
+  const feedIsOnScreen = tab === "all" && Boolean(scope) && !isLoading && !isError && !discoveryOpen && !search.trim();
+  useEffect(() => {
+    if (feedIsOnScreen) onFeedShown();
+  }, [feedIsOnScreen, onFeedShown]);
   // "Create a persona" is a claim about the user's data, so it waits for the personas query to
   // actually succeed instead of speaking for a cold or failed load.
   if (personas.length === 0) {
@@ -2902,6 +3006,18 @@ function ViewerHub({
         creator.profile.handle.toLowerCase().includes(searchTerm) ||
         creator.profile.displayName.toLowerCase().includes(searchTerm)),
   );
+  // The feed is newest-first, so the divider goes after the *last* new post — the viewer's own
+  // posts sitting in that run are not news themselves but must not cut it short. Shown only
+  // when there is something on both sides: with no older posts it would sit at the bottom
+  // labelling nothing, and with no new ones it says nothing. A search-filtered list is not the
+  // feed, so no boundary marker there either.
+  const newSince = newSinceAt ? new Date(newSinceAt).getTime() : NaN;
+  const isNewToViewer = ({ post, creator }: (typeof feed)[number]) =>
+    !Number.isNaN(newSince) &&
+    creator.profile.noodleAccountId !== scope?.viewer.id &&
+    new Date(post.createdAt).getTime() > newSince;
+  const lastNewIndex = searchTerm ? -1 : feed.findLastIndex(isNewToViewer);
+  const dividerIndex = lastNewIndex >= 0 && lastNewIndex < feed.length - 1 ? lastNewIndex + 1 : -1;
   const renderFeedPost = ({ post, creator }: (typeof searchResults)[number]) =>
     post.locked ? (
       <LockedNoodlerPostCard
@@ -3176,7 +3292,14 @@ function ViewerHub({
                   : localizeUi("ui.noodle.viewerhub.noPostsYet")}
             </p>
           ) : (
-            <div>{feed.map(renderFeedPost)}</div>
+            <div>
+              {feed.map((item, index) => (
+                <Fragment key={item.post.id}>
+                  {index === dividerIndex && <NewSinceLastVisitDivider />}
+                  {renderFeedPost(item)}
+                </Fragment>
+              ))}
+            </div>
           )}
         </>
       ) : (

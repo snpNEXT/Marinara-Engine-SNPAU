@@ -43,6 +43,7 @@ import {
   type SpriteInfo,
 } from "../../hooks/use-characters";
 import { usePageActivity } from "../../hooks/use-page-activity";
+import { useReducedAmbientEffects } from "../../hooks/use-reduced-ambient-effects";
 import { useRenderTimer, useWhyRender } from "../../lib/perf-diagnostics";
 import { usePresenceClock } from "../../hooks/use-presence-clock";
 import { useKeepLatestChatMessageVisible } from "../../hooks/use-visual-viewport-chat-bottom";
@@ -64,6 +65,7 @@ import {
   BUILT_IN_AGENTS,
   PROFESSOR_MARI_ID,
   buildGuidedGenerationInstructionMessage,
+  normalizeAvatarCrop,
   normalizeManualTrackerAgentTypes,
   type AchievementEvent,
   type GeneratedSceneVideo,
@@ -75,7 +77,7 @@ import { resolveLiveConversationStatus } from "../../lib/conversation-presence-s
 import { useUIStore } from "../../stores/ui.store";
 import { useAgentStore, EMPTY_AGENT_TYPES } from "../../stores/agent.store";
 import { illustratorRetryTargetsForFailures } from "../../lib/agent-failures";
-import { cn, parseAvatarCropJson } from "../../lib/utils";
+import { cn } from "../../lib/utils";
 import { Modal } from "../ui/Modal";
 import { useEncounter } from "../../hooks/use-encounter";
 import { useScene } from "../../hooks/use-scene";
@@ -362,7 +364,7 @@ function toCharacterMapValue(char: CharacterRow): CharacterMapValue {
       nameColor: extensions.nameColor || undefined,
       dialogueColor: extensions.dialogueColor || undefined,
       boxColor: extensions.boxColor || undefined,
-      avatarCrop: extensions.avatarCrop || null,
+      avatarCrop: normalizeAvatarCrop(extensions.avatarCrop),
       conversationStatus: extensions.conversationStatus || undefined,
       conversationActivity: extensions.conversationActivity || undefined,
     };
@@ -519,6 +521,7 @@ export function ChatArea() {
   );
   const isTextStreaming = isStreaming && !isBackgroundIllustration;
   const isPageActive = usePageActivity();
+  const reduceAmbientEffects = useReducedAmbientEffects();
   const regenerateMessageId = useChatStore((s) => s.regenerateMessageId);
   const chatBackground = useUIStore((s) => s.chatBackground);
   const weatherEffects = useUIStore((s) => s.weatherEffects);
@@ -937,7 +940,7 @@ export function ChatArea() {
           scenario: snapshot.scenario ?? "",
           example: snapshot.example ?? "",
           avatarUrl: snapshot.avatarUrl ?? null,
-          avatarCrop: snapshot.avatarCrop ?? null,
+          avatarCrop: normalizeAvatarCrop(snapshot.avatarCrop),
           nameColor: snapshot.nameColor,
           dialogueColor: snapshot.dialogueColor,
           boxColor: snapshot.boxColor,
@@ -1020,14 +1023,14 @@ export function ChatArea() {
       if (c.id === PROFESSOR_MARI_ID) return [];
       try {
         const parsed = typeof c.data === "string" ? JSON.parse(c.data) : c.data;
-        const display = parseCharacterDisplayData(c);
+        const display = parseCharacterDisplayData({ data: parsed, comment: c.comment });
         return [
           {
             id: c.id,
             name: display.name,
             comment: display.comment,
             avatarUrl: c.avatarPath ?? undefined,
-            avatarCrop: parsed.extensions?.avatarCrop || null,
+            avatarCrop: display.avatarCrop ?? null,
             nameColor: parsed.extensions?.nameColor || undefined,
             dialogueColor: parsed.extensions?.dialogueColor || undefined,
             description: parsed.description ?? "",
@@ -1049,8 +1052,7 @@ export function ChatArea() {
     // falls back to the globally active account Persona.
     const persona = chatPersona ?? (chatMode === "conversation" ? activePersonaFallback : null);
     if (!persona) return undefined;
-    const avatarCrop =
-      typeof persona.avatarCrop === "string" ? parseAvatarCropJson(persona.avatarCrop) : (persona.avatarCrop ?? null);
+    const avatarCrop = normalizeAvatarCrop(persona.avatarCrop);
     return {
       id: persona.id,
       name: persona.name,
@@ -2140,6 +2142,13 @@ export function ChatArea() {
     [updateMessage],
   );
 
+  const handleRoleplayEdit = useCallback(
+    async (messageId: string, content: string) => {
+      await updateMessage.mutateAsync({ messageId, content });
+    },
+    [updateMessage],
+  );
+
   const handleToggleConversationStart = useCallback(
     (messageId: string, current: boolean) => {
       updateMessageExtra.mutate({ messageId, extra: { isConversationStart: !current } });
@@ -2873,7 +2882,7 @@ export function ChatArea() {
   // Empty state (no active chat)
   // ═══════════════════════════════════════════════
   if (!activeChatId) {
-    const showEmptyStateEffects = isPageActive;
+    const showEmptyStateEffects = isPageActive && !reduceAmbientEffects;
 
     return (
       <>
@@ -2928,7 +2937,7 @@ export function ChatArea() {
                   <h3
                     className={cn(
                       "mari-logo-gradient-text text-base font-bold sm:text-xl",
-                      isPageActive && "mari-logo-gradient-text--active",
+                      showEmptyStateEffects && "mari-logo-gradient-text--active",
                     )}
                   >
                     {localizeUi("app.documentTitle")}
@@ -3051,6 +3060,7 @@ export function ChatArea() {
                     {/* In-app documentation */}
                     <button
                       type="button"
+                      data-tour="home-documentation"
                       onClick={() => useUIStore.getState().openModal("docs-viewer")}
                       className="mari-chrome-control mari-chrome-control--small text-xs"
                       title={t("home.actions.documentationHelp")}
@@ -3404,7 +3414,7 @@ export function ChatArea() {
           onLoadMore={handleLoadMore}
           onDelete={handleDelete}
           onRegenerate={handleRegenerate}
-          onEdit={handleEdit}
+          onEdit={handleRoleplayEdit}
           onSetActiveSwipe={handleSetActiveSwipe}
           onToggleConversationStart={handleToggleConversationStart}
           onToggleHiddenFromAI={handleToggleHiddenFromAI}

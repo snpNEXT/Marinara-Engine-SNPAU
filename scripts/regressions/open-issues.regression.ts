@@ -9,7 +9,7 @@ import { chatModeSchema } from "../../packages/shared/src/schemas/chat.schema.js
 import playwrightConfig from "../../playwright.config.js";
 import { resolveDevSharedBuildScript } from "../dev-shared-build.mjs";
 import { validatePullRequestTriage } from "../validate-pr-triage.mjs";
-import { characterCardVersions, characters, chatPresets, chats, messages } from "../../packages/server/src/db/schema/index.js";
+import { characterCardVersions, characterGroups, characters, chatPresets, chats, messages } from "../../packages/server/src/db/schema/index.js";
 import { eq } from "../../packages/server/src/db/file-query.js";
 import { parseBuildMeta, resolveBuildBranch } from "../../packages/server/src/config/build-info.js";
 
@@ -31,6 +31,10 @@ import { characterDataSchema, updateCharacterSchema } from "../../packages/share
 import { buildLorebookDuplicateInput } from "../../packages/client/src/lib/lorebook-duplicate.js";
 import { appendLorebookActivationKeys } from "../../packages/client/src/lib/lorebook-keys.js";
 import { arePresetChoiceSelectionsComplete } from "../../packages/client/src/lib/preset-choice-selection.js";
+import {
+  MARINARA_UNIVERSAL_PRESET_ARTWORK,
+  resolvePresetArtwork,
+} from "../../packages/client/src/lib/preset-artwork.js";
 import {
   getSlashCompletions,
   matchSlashCommand,
@@ -131,7 +135,10 @@ import {
   searchStandardEmojiShortcodes,
 } from "../../packages/client/src/lib/emoji-shortcodes.js";
 import { persistGeneratedImageToEntityGalleries } from "../../packages/server/src/services/image/generated-image-entity-gallery.js";
-import { resolveIllustratorImageSize } from "../../packages/server/src/services/image/image-generation-settings.js";
+import {
+  parseImageGenerationUserSettings,
+  resolveIllustratorImageSize,
+} from "../../packages/server/src/services/image/image-generation-settings.js";
 import { generateIllustratorImageVariants } from "../../packages/server/src/services/image/illustrator-image-variants.js";
 import { fetchBotBrowserJson } from "../../packages/server/src/services/bot-browser/fetch-json.js";
 import { isAllowedResponseContentType, validateOutboundUrl } from "../../packages/server/src/utils/security.js";
@@ -580,6 +587,11 @@ assert.deepEqual(resolveIllustratorImageSize({ width: 960, height: 540 }, "portr
   width: 540,
   height: 960,
 });
+assert.deepEqual(parseImageGenerationUserSettings(null).noodle, { width: 1024, height: 1536 });
+assert.deepEqual(
+  parseImageGenerationUserSettings('{"imageNoodleWidth":1536,"imageNoodleHeight":1024}').noodle,
+  { width: 1536, height: 1024 },
+);
 
 const minimalProfessorMariPersona = buildPersonaCreateRow(
   { name: "Minimal helper persona" },
@@ -1509,6 +1521,141 @@ try {
     "character.update must preserve every omitted Character Card field through the real merge and persistence path",
   );
 
+  const characterFolderTimestamp = "2026-08-04T12:00:00.000Z";
+  await db.insert(characterGroups).values({
+    id: "character-folder-source",
+    name: "Source Folder",
+    description: "",
+    characterIds: JSON.stringify([characterId]),
+    createdAt: characterFolderTimestamp,
+    updatedAt: characterFolderTimestamp,
+  });
+  await db.insert(characterGroups).values({
+    id: "character-folder-target",
+    name: "Target Folder",
+    description: "",
+    characterIds: "[]",
+    createdAt: characterFolderTimestamp,
+    updatedAt: characterFolderTimestamp,
+  });
+
+  const folderListResult = await mariDb.executeAction({ action: "character.folder.list" });
+  assert.equal(folderListResult.ok, true, "Professor Mari must be able to list character folders");
+  assert.deepEqual(
+    (folderListResult.output as Array<{ id: string }>).map((folder) => folder.id),
+    ["character-folder-source", "character-folder-target"],
+  );
+
+  const folderMoveResult = await mariDb.executeAction({
+    action: "character.moveToFolder",
+    characterId,
+    folderName: "Target Folder",
+    reason: "Regression coverage for issue #4568",
+    apply: true,
+  });
+  assert.equal(folderMoveResult.ok, true, "Professor Mari must be able to move a character into a named folder");
+
+  const foldersAfterMove = await db.select().from(characterGroups);
+  const sourceFolder = foldersAfterMove.find((folder) => folder.id === "character-folder-source");
+  const targetFolder = foldersAfterMove.find((folder) => folder.id === "character-folder-target");
+  assert.deepEqual(JSON.parse(sourceFolder?.characterIds ?? "[]"), []);
+  assert.deepEqual(JSON.parse(targetFolder?.characterIds ?? "[]"), [characterId]);
+
+  const unchangedFolderTimestamp = "2026-08-04T12:30:00.000Z";
+  const unchangedMembership = ["neighbor-before", characterId, "neighbor-after"];
+  await db
+    .update(characterGroups)
+    .set({ characterIds: JSON.stringify(unchangedMembership), updatedAt: unchangedFolderTimestamp })
+    .where(eq(characterGroups.id, "character-folder-target"));
+  const noOpFolderMoveResult = await mariDb.executeAction({
+    action: "character.moveToFolder",
+    characterId,
+    folderId: "character-folder-target",
+    apply: true,
+  });
+  assert.equal(noOpFolderMoveResult.ok, true);
+  const unchangedFolder = (await db.select().from(characterGroups)).find(
+    (folder) => folder.id === "character-folder-target",
+  );
+  assert.deepEqual(JSON.parse(unchangedFolder?.characterIds ?? "[]"), unchangedMembership);
+  assert.equal(unchangedFolder?.updatedAt, unchangedFolderTimestamp);
+
+  for (const id of ["character-folder-duplicate-a", "character-folder-duplicate-b"]) {
+    await db.insert(characterGroups).values({
+      id,
+      name: "Duplicate Folder",
+      description: "",
+      characterIds: "[]",
+      createdAt: characterFolderTimestamp,
+      updatedAt: characterFolderTimestamp,
+    });
+  }
+  const ambiguousFolderMoveResult = await mariDb.executeAction({
+    action: "character.moveToFolder",
+    characterId,
+    folderName: "Duplicate Folder",
+    apply: true,
+  });
+  assert.equal(ambiguousFolderMoveResult.ok, false, "Duplicate folder names must require an explicit folder ID");
+  const duplicateFoldersAfterAmbiguousMove = (await db.select().from(characterGroups)).filter((folder) =>
+    folder.id.startsWith("character-folder-duplicate-"),
+  );
+  assert.deepEqual(
+    duplicateFoldersAfterAmbiguousMove.map((folder) => JSON.parse(folder.characterIds)),
+    [[], []],
+  );
+
+  const duplicateFolderIdMoveResult = await mariDb.executeAction({
+    action: "character.moveToFolder",
+    characterId,
+    folderId: "character-folder-duplicate-a",
+    apply: true,
+  });
+  assert.equal(duplicateFolderIdMoveResult.ok, true, "An explicit folder ID must disambiguate duplicate names");
+  const duplicateFoldersAfterIdMove = (await db.select().from(characterGroups)).filter((folder) =>
+    folder.id.startsWith("character-folder-duplicate-"),
+  );
+  const selectedDuplicateFolder = duplicateFoldersAfterIdMove.find((folder) => folder.id.endsWith("-a"));
+  const unselectedDuplicateFolder = duplicateFoldersAfterIdMove.find((folder) => folder.id.endsWith("-b"));
+  assert.deepEqual(JSON.parse(selectedDuplicateFolder?.characterIds ?? "[]"), [characterId]);
+  assert.deepEqual(JSON.parse(unselectedDuplicateFolder?.characterIds ?? "[]"), []);
+
+  const concurrentCharacterId = "character-folder-concurrent-character";
+  const concurrentCharacterCreateResult = await mariDb.executeAction({
+    action: "character.create",
+    characterId: concurrentCharacterId,
+    data: { name: "Concurrent Folder Character" },
+    apply: true,
+  });
+  assert.equal(concurrentCharacterCreateResult.ok, true);
+  await db.insert(characterGroups).values({
+    id: "character-folder-concurrent-target",
+    name: "Concurrent Target",
+    description: "",
+    characterIds: "[]",
+    createdAt: characterFolderTimestamp,
+    updatedAt: characterFolderTimestamp,
+  });
+  const concurrentFolderMoves = await Promise.all(
+    [characterId, concurrentCharacterId].map((movingCharacterId) =>
+      mariDb.executeAction({
+        action: "character.moveToFolder",
+        characterId: movingCharacterId,
+        folderId: "character-folder-concurrent-target",
+        apply: true,
+      }),
+    ),
+  );
+  assert.ok(concurrentFolderMoves.every((result) => result.ok), "Concurrent folder moves must both succeed");
+  const concurrentTargetFolder = (await db.select().from(characterGroups)).find(
+    (folder) => folder.id === "character-folder-concurrent-target",
+  );
+  assert.deepEqual(
+    JSON.parse(concurrentTargetFolder?.characterIds ?? "[]").sort(),
+    [characterId, concurrentCharacterId].sort(),
+    "Serialized folder moves must preserve both memberships",
+  );
+
   for (const approval of mariDb.getPendingApprovals()) {
     await mariDb.keepAppliedReview(approval.id);
   }
@@ -2127,6 +2274,13 @@ const termuxLauncher = readFileSync(new URL("../../start-termux.sh", import.meta
 assert.doesNotMatch(termuxLauncher, /run_pnpm install --force/u);
 assert.match(termuxLauncher, /run_pnpm store prune/u);
 assert.match(termuxLauncher, /TERMUX_REBUILD_REQUIRED/u);
+for (const buildEntry of [
+  "packages/shared/dist/constants/defaults.js",
+  "packages/server/dist/index.js",
+  "packages/client/dist/index.html",
+]) {
+  assert.ok(termuxLauncher.includes(`if [ ! -f "${buildEntry}" ]; then`), `Termux must rebuild when ${buildEntry} is missing`);
+}
 
 const sharedPackageJson = JSON.parse(
   readFileSync(new URL("../../packages/shared/package.json", import.meta.url), "utf8"),
@@ -2245,6 +2399,26 @@ assert.match(
 );
 assert.match(
   professorMariHomeSource,
+  /options\.shouldApply\?\.\(\) === false[\s\S]{0,160}setMessages/u,
+  "Professor Mari message loads must recheck an operation guard before applying a response",
+);
+assert.match(
+  professorMariHomeSource,
+  /loadMessages\(completedChatId, \{[\s\S]{0,160}workspaceRunIdRef\.current === runId[\s\S]{0,100}activeChatIdRef\.current === completedChatId/u,
+  "Professor Mari background refreshes must not overwrite state after a newer operation starts",
+);
+assert.match(
+  professorMariHomeSource,
+  /const refreshWorkspaceStatus = useCallback\(async \(shouldApply\?: \(\) => boolean\)[\s\S]{0,500}if \(shouldApply\?\.\(\) === false\) return status;[\s\S]{0,80}setWorkspaceStatus\(status\)/u,
+  "Professor Mari workspace status loads must recheck an operation guard before applying a response",
+);
+assert.match(
+  professorMariHomeSource,
+  /refreshWorkspaceStatus\([\s\S]{0,140}workspaceRunIdRef\.current === runId[\s\S]{0,100}activeChatIdRef\.current === completedChatId/u,
+  "Professor Mari post-run status refreshes must not overwrite state after a newer operation starts",
+);
+assert.match(
+  professorMariHomeSource,
   /message\.role === "user"[\s\S]{0,180}<TranscriptRow[\s\S]{0,100}border-y border-\[var\(--border\)\]\/60/u,
   "Professor Mari user messages must retain their theme-aware horizontal separators",
 );
@@ -2259,6 +2433,14 @@ const roleplaySurfaceSource = readFileSync(
 );
 const chatMessageSource = readFileSync(
   new URL("../../packages/client/src/components/chat/ChatMessage.tsx", import.meta.url),
+  "utf8",
+);
+const macroTextareaSource = readFileSync(
+  new URL("../../packages/client/src/components/ui/MacroTextarea.tsx", import.meta.url),
+  "utf8",
+);
+const roleplayHudSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/RoleplayHUD.tsx", import.meta.url),
   "utf8",
 );
 const narratorUiStoreSource = readFileSync(
@@ -2277,8 +2459,23 @@ assert.equal(
 );
 assert.match(
   chatMessageSource,
-  /const cycleMergedNarratorAvatars = !isRoleplay \|\| roleplayNarratorAvatarCycling;/u,
-  "Narrator avatar cycling must remain unchanged outside Roleplay and follow the Roleplay preference",
+  /const cycleMergedNarratorAvatars = \(!isRoleplay \|\| roleplayNarratorAvatarCycling\) && !reduceAmbientEffects;/u,
+  "Narrator avatar cycling must follow the Roleplay preference and stop with reduced ambient effects",
+);
+assert.match(
+  macroTextareaSource,
+  /const valueRef = useRef\(value\);[\s\S]{0,500}\}, \[open\]\);/u,
+  "Expanded macro editors must only initialize and focus when opened, not after every parent value update",
+);
+assert.match(
+  chatMessageSource,
+  /aria-label=\{localizeUi\("ui\.chat\.edittextarea\.saveEdit"\)\}[\s\S]{0,180}h-11 w-11/u,
+  "The Roleplay edit Save control must keep a full touch-sized hit target",
+);
+assert.equal(
+  roleplayHudSource.match(/!reduceAmbientEffects && "animate-\[inventory-cycle_0\.4s_ease-out\]"/gu)?.length,
+  2,
+  "Roleplay tracker and inventory widgets must suppress mount animations with reduced ambient effects",
 );
 assert.match(
   chatMessageSource,
@@ -2613,6 +2810,7 @@ const backupRoutesSource = readFileSync(
   new URL("../../packages/server/src/routes/backup.routes.ts", import.meta.url),
   "utf8",
 );
+const serverAppSource = readFileSync(new URL("../../packages/server/src/app.ts", import.meta.url), "utf8");
 const gameTypesSource = readFileSync(new URL("../../packages/shared/src/types/game.ts", import.meta.url), "utf8");
 const backupGuideSource = readFileSync(new URL("../../docs/data/backup-and-restore.md", import.meta.url), "utf8");
 const gameAssetBrowserSource = readFileSync(
@@ -2662,7 +2860,7 @@ const localNotificationsSource = readFileSync(
 const notificationSettingsSource = readFileSync(
   new URL("../../packages/client/src/components/panels/settings/SettingControls.tsx", import.meta.url),
   "utf8",
-);
+).replace(/\r\n/gu, "\n");
 const chatGallerySource = readFileSync(
   new URL("../../packages/client/src/components/chat/ChatGallery.tsx", import.meta.url),
   "utf8",
@@ -2799,7 +2997,7 @@ assert.match(
   gameRoutesSource,
   /if \(!selectedTemplate\?\.promptTemplate\.trim\(\)\) \{[\s\S]*The Storyboard Agent has no/u,
 );
-assert.match(presetsPanelSource, /\{!selectionMode && isSelected && \(/u);
+assert.match(presetsPanelSource, /\{isSelected && \(/u);
 assert.match(
   presetsPanelSource,
   /PanelSection title=\{localizeUi\("ui\.panels\.presetspanel\.prompts"\)\}/u,
@@ -2821,6 +3019,10 @@ assert.equal(
 assert.match(backupRoutesSource, /tolerateSourceChanges: true/u);
 assert.match(backupRoutesSource, /record\.usesDataDescriptor \? 0x0808 : 0x0800/u);
 assert.match(backupRoutesSource, /PROFILE_IMPORT_MEMORY_WARNING_BYTES/u);
+assert.match(backupRoutesSource, /PROFILE_IMPORT_ARCHIVE_LIMIT_BYTES = ZIP32_MAX_VALUE/u);
+assert.match(backupRoutesSource, /PROFILE_ARCHIVE_TOTAL_UNCOMPRESSED_LIMIT_BYTES = ZIP32_MAX_VALUE/u);
+assert.match(serverAppSource, /const clientIndex = resolve\(clientDist, "index\.html"\)/u);
+assert.match(serverAppSource, /if \(existsSync\(clientIndex\)\)/u);
 assert.match(
   backupRoutesSource,
   /if \(automaticBackupRunning\) return;\s*automaticBackupRunning = true;\s*try \{\s*const settings = await loadAutomaticBackupSettings\(\);/u,
@@ -2855,11 +3057,20 @@ assert.match(
   /className="grid min-w-0 grid-cols-2 gap-2"/u,
   "LinkAPI actions must share the available banner width instead of overflowing it",
 );
-assert.match(presetsPanelSource, /MARINARA_UNIVERSAL_PRESET_ARTWORK/u);
-assert.match(
-  presetsPanelSource,
-  /preset\.name === MARINARA_UNIVERSAL_PRESET_NAME && preset\.author === MARINARA_UNIVERSAL_PRESET_AUTHOR/u,
+assert.equal(
+  resolvePresetArtwork({ name: "Marinara's Universal Preset", author: "Marinara" }),
+  MARINARA_UNIVERSAL_PRESET_ARTWORK,
 );
+assert.equal(
+  resolvePresetArtwork({
+    name: "Marinara's Universal Preset",
+    author: "Marinara",
+    imagePath: "/api/prompts/images/file/custom.png",
+  }),
+  "/api/prompts/images/file/custom.png",
+);
+assert.match(presetsPanelSource, /data-preset-image-action/u);
+assert.match(presetsPanelSource, /data-preset-open-action/u);
 assert.equal(
   existsSync(join(REPOSITORY_ROOT, "packages/client/public/illustrations/marinara-universal-preset.webp")),
   true,

@@ -193,8 +193,8 @@ export async function generateNoodlerPostImage(input: {
     const previewSize = resolveImagePromptReviewSize({
       connection: input.imageConnection,
       prompt: finalPrompt,
-      width: imageSettings.illustration.width,
-      height: imageSettings.illustration.height,
+      width: imageSettings.noodle.width,
+      height: imageSettings.noodle.height,
       imageDefaults,
     });
     return {
@@ -218,8 +218,8 @@ export async function generateNoodlerPostImage(input: {
         prompt: finalPrompt,
         negativePrompt: finalNegativePrompt,
         model: imageModel,
-        width: imageSettings.illustration.width,
-        height: imageSettings.illustration.height,
+        width: imageSettings.noodle.width,
+        height: imageSettings.noodle.height,
         imageEndpointId: input.imageConnection.imageEndpointId || undefined,
         comfyWorkflow: input.imageConnection.comfyuiWorkflow || undefined,
         imageDefaults,

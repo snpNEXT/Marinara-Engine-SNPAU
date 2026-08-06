@@ -342,14 +342,14 @@ export function ConversationView({
   const turnGamePackages = installedCapabilities.filter(
     (item) => item.status === "active" && item.manifest.kind.includes("turn-game") && item.manifest.entrypoints.client,
   );
-  const conversationToolbarPackages = installedCapabilities.filter(
+  const conversationSlotToolbarPackages = installedCapabilities.filter(
     (item) =>
       item.status === "active" &&
       item.manifest.contributions?.slots?.includes("conversation-toolbar") &&
       (!item.manifest.contributions.chatModes || item.manifest.contributions.chatModes.includes("conversation")) &&
       item.manifest.entrypoints.client,
   );
-  const conversationSurfacePackages = installedCapabilities.filter(
+  const conversationSlotSurfacePackages = installedCapabilities.filter(
     (item) =>
       item.status === "active" &&
       item.manifest.contributions?.slots?.includes("conversation-surface") &&
@@ -461,6 +461,22 @@ export function ConversationView({
       item.status === "active" && item.manifest.kind.includes("conversation-calls") && item.manifest.entrypoints.client,
   );
   const callCapabilityProps = { chatId, metadata: chatMeta, characterMap, chatCharIds, personaInfo };
+  const activeAgentIds = chatMeta.activeAgentIds;
+  const enabledConversationCapabilities = chatMeta.enableAgents === true
+    ? installedCapabilities.filter((item) => {
+        if (item.status !== "active" || !item.manifest.entrypoints.client) return false;
+        if (item.manifest.kind.includes("conversation-calls")) return false;
+        const contributedAgentIds = item.manifest.contributions?.agentDetail?.agentIds ?? [];
+        return activeAgentIds.includes(item.id) || contributedAgentIds.some((id) => activeAgentIds.includes(id));
+      })
+    : [];
+  const conversationToolbarPackages = enabledConversationCapabilities
+    .filter((item) => item.manifest.contributions?.slots?.includes("conversation-toolbar"))
+    .filter((item) => !conversationSlotToolbarPackages.some((slot) => slot.id === item.id));
+  const conversationSurfacePackages = enabledConversationCapabilities
+    .filter((item) => item.manifest.contributions?.slots?.includes("conversation-surface"))
+    .filter((item) => !conversationSlotSurfacePackages.some((slot) => slot.id === item.id));
+  const conversationCapabilityProps = { chatId, metadata: chatMeta, characterMap, chatCharIds, personaInfo };
   const renderToolbarActions = (compact = false) => (
     <>
       <ChatBranchSelector
@@ -509,7 +525,7 @@ export function ConversationView({
       />
 
       <div className="ml-2 flex shrink-0 items-center gap-1.5">
-        {conversationToolbarPackages.map((capability) => (
+        {conversationSlotToolbarPackages.map((capability) => (
           <CapabilityElement
             key={`${capability.id}-toolbar`}
             packageId={capability.id}
@@ -530,6 +546,18 @@ export function ConversationView({
       </div>
 
       <div className="ml-2 flex min-w-0 flex-1 items-center justify-end gap-2">
+        {conversationToolbarPackages.map((item) => (
+          <CapabilityElement
+            key={`${item.id}-toolbar`}
+            packageId={item.id}
+            view="toolbar"
+            capabilityProps={{
+              ...conversationCapabilityProps,
+              toolbarButtonClass: getChatToolbarButtonClass(),
+            }}
+            className="contents"
+          />
+        ))}
         {callsPackage && (
           <CapabilityElement
             packageId={callsPackage.id}
@@ -1485,6 +1513,15 @@ export function ConversationView({
           className="contents"
         />
       )}
+      {conversationSlotSurfacePackages.map((item) => (
+        <CapabilityElement
+          key={`${item.id}-conversation-surface`}
+          packageId={item.id}
+          view="surface"
+          capabilityProps={conversationCapabilityProps}
+          className="contents"
+        />
+      ))}
       {/* Setup modals mounted once here (stable position) so they never double-render.
           Keyed by chatId so their internal selection state resets on a chat switch
           (matches ConversationInput below) — otherwise stale selected ids would

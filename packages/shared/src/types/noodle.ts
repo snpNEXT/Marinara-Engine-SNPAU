@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // Noodle Fake Social Media Types
 // ──────────────────────────────────────────────
-import type { LegacyPersonaAvatarCrop, PersonaAvatarCrop } from "./persona.js";
+import type { AvatarCrop } from "./avatar-crop.js";
 
 export type NoodleAccountKind = "persona" | "character" | "random_user";
 /**
@@ -18,10 +18,31 @@ export type NoodleTheme = "system" | "light" | "dark";
 export type NoodleCarryoverMode = "off" | "conversation" | "roleplay" | "game" | "all";
 export type NoodleCarryoverTarget = "conversation" | "roleplay" | "game";
 export type NoodleParticipantSelectionMode = "all" | "random_range" | "exact";
-export type NoodleAvatarCrop = PersonaAvatarCrop | LegacyPersonaAvatarCrop;
+export type NoodleAvatarCrop = AvatarCrop;
 export type NoodleReasoningEffort = "low" | "medium" | "high" | "minimal" | "xhigh" | "maximum" | null;
 export type NoodleIdentityDisclosure = "open" | "hinted" | "secret";
 export type NoodlerOnboardingState = "incomplete" | "zero" | "completed";
+
+export interface NoodlerSourceSnapshot {
+  publicDisplayName: string;
+  publicHandle: string;
+  name: string;
+  description: string;
+  personality: string;
+  scenario: string;
+  appearance: string;
+  backstory: string;
+}
+
+export type NoodlerSourceField = keyof NoodlerSourceSnapshot;
+
+export type NoodlerSourceStatus =
+  | { state: "current" }
+  | { state: "missing" }
+  | {
+      state: "changed";
+      changes: Array<{ field: NoodlerSourceField; previous: string; current: string }>;
+    };
 
 export interface NoodleAccountAccessSettings {
   hiddenFromAccountIds: string[];
@@ -32,18 +53,30 @@ export interface NoodleWalletSettings {
 }
 
 export interface NoodleAccountProfileSettings {
-  avatarCrop?: NoodleAvatarCrop | null;
+  avatarCrop?: AvatarCrop | null;
   bannerUrl?: string;
   location?: string;
   profileGenerated?: boolean;
   profileManuallyEdited?: boolean;
   noodlerWizardExecutionId?: string;
+  /** Server-owned source state used to detect changes after a Creator profile is drafted. */
+  noodlerSourceSnapshot?: NoodlerSourceSnapshot;
 }
 
 export interface NoodleAccountSocialSettings {
   followingAccountIds?: string[];
   followingAccountTimestamps?: Record<string, string>;
   notificationsReadAt?: string;
+  /**
+   * When this viewer persona last had the NoodleR feed shown to it, for the
+   * "new since your last visit" divider and entry-point counter. Per viewer persona rather
+   * than per user: NoodleR follows and locked-post access are persona-scoped, so an
+   * account-wide timestamp would let one persona silently clear another's.
+   */
+  noodlerFeedSeenAt?: string;
+  /** The same, for the public Noodle timeline. Separate field: one value would let a visit to
+   * either surface clear the other's counter. */
+  noodleFeedSeenAt?: string;
 }
 
 export interface NoodleAutoPostingSettings {
@@ -177,7 +210,7 @@ export interface NoodleAccount {
   displayName: string;
   bio: string;
   avatarUrl: string | null;
-  avatarCrop: NoodleAvatarCrop | null;
+  avatarCrop: AvatarCrop | null;
   invited: boolean;
   settings: NoodleAccountSettings;
   platform: NoodlePlatform;
@@ -193,7 +226,7 @@ export interface NoodlerStageProfile {
   displayName: string;
   bio: string;
   avatarUrl: string | null;
-  avatarCrop: NoodleAvatarCrop | null;
+  avatarCrop: AvatarCrop | null;
   disclosureMode: NoodleIdentityDisclosure | null;
   stagePersonality: string;
   publicIdentity: { displayName: string; handle: string } | null;
@@ -204,6 +237,7 @@ export interface NoodlerStageProfile {
 export interface NoodlerManagedStageProfile extends NoodlerStageProfile {
   access: NoodleAccountAccessSettings;
   autoPosting: NoodleAutoPostingSettings;
+  sourceStatus: NoodlerSourceStatus;
 }
 
 export interface NoodlerProfileSource {
@@ -223,7 +257,7 @@ export interface NoodleAuthorSnapshot {
   handle: string;
   displayName: string;
   avatarUrl: string | null;
-  avatarCrop: NoodleAvatarCrop | null;
+  avatarCrop: AvatarCrop | null;
 }
 
 export interface NoodlePost {
@@ -258,7 +292,7 @@ export interface NoodlerSubscriber {
   displayName: string;
   handle: string;
   avatarUrl: string | null;
-  avatarCrop: NoodleAvatarCrop | null;
+  avatarCrop: AvatarCrop | null;
   subscribedAt: string;
 }
 

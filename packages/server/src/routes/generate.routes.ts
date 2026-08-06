@@ -57,6 +57,7 @@ import type {
   LorebookEntryTimingState,
   ChatSummaryEntry,
   ChatMode,
+  ResolvedSpatialTravel,
   ThinkingTagPair,
 } from "@marinara-engine/shared";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
@@ -107,7 +108,10 @@ import {
 } from "../services/lorebook/game-lorebook-scope.js";
 import { lorebookEntryPassesContextFilters, type GameStateForScanning } from "../services/lorebook/keyword-scanner.js";
 import { injectAtDepth } from "../services/lorebook/prompt-injector.js";
-import { resolveChatSummaryConnection } from "../services/chat-summary/connection-resolution.js";
+import {
+  resolveChatSummaryConnection,
+  resolveChatSummaryTemperatureOptions,
+} from "../services/chat-summary/connection-resolution.js";
 import { resolveConnectionImageDefaults } from "../services/image/image-generation-defaults.js";
 import { generateIllustratorImageVariants } from "../services/image/illustrator-image-variants.js";
 import {
@@ -170,6 +174,7 @@ import {
 import {
   suppressesReferencePromptLine,
   mergeIllustratorNegativePrompt,
+  illustratorPromptTemplateOwnsComposition,
   resolveIllustratorCharacterReferences,
 } from "./generate/illustrator-references.js";
 import {
@@ -226,6 +231,7 @@ import {
   appendNonLeadingSystemMessagesToLastUser,
   appendSeparateAgentInjectionMessage,
   computeSummaryHideIds,
+  computeSummaryMessageRange,
   selectRollingSummaryMessages,
   injectIntoOutputFormatOrLastUser,
   getMessageHiddenFromAICharacterIds,
@@ -324,6 +330,8 @@ import { sendSseEvent, startSseKeepalive, startSseReply, trySendSseEvent } from 
 import {
   resolveAlreadyAppliedSpatialTurn,
   resolveSpatialGenerationOrigin,
+  shouldSaveHiddenGenerationAnchor,
+  shouldSuppressAssistantSpatialMutation,
   validateSpatialGenerationRequest,
 } from "./generate/spatial-transition-request.js";
 import { runTurnGameBotTurns } from "../services/turn-games/turn-game-bot-runner.service.js";
@@ -391,13 +399,13 @@ import {
   clampRoleplaySummaryMaxTokens,
   formatRoleplaySummaryChatLog,
   isAutomaticRoleplaySummaryEnabled,
-  parseChatSummaryText,
+  parseChatSummaryResult,
   resolveChatSummaryPrompt,
   withoutRetiredChatSummaryAgentIds,
 } from "../services/generation/roleplay-summary-runtime.js";
 import { getChatGenerationTimeoutMs, getMaxToolRounds } from "../config/runtime-config.js";
 import {
-  REVIEWABLE_WRITER_AGENT_TYPES,
+  isReviewableWriterAgentType,
   buildRuntimeAgentSectionEligibleTypes,
   clearUnusedRuntimeAgentSections,
   formatAgentInjections,
@@ -827,6 +835,7 @@ export async function generateRoutes(app: FastifyInstance) {
               commandId: input.pendingSpatialTransition.commandId,
               currentLocationId: applied.snapshot.currentLocationId,
               definitionRevision: applied.snapshot.definitionRevision,
+              ...(applied.travel ? { travel: applied.travel } : {}),
             },
           });
           sendSseEvent(reply, { type: "message_saved", data: recoveredMessage });
@@ -898,6 +907,7 @@ export async function generateRoutes(app: FastifyInstance) {
       commandId: string;
       currentLocationId: string | null;
       definitionRevision: number;
+      travel?: ResolvedSpatialTravel;
     } | null = null;
 
     // Save user message — skip for impersonate (no real user message to save)
@@ -937,6 +947,7 @@ export async function generateRoutes(app: FastifyInstance) {
             commandId: input.pendingSpatialTransition.commandId,
             currentLocationId: committed.snapshot.currentLocationId,
             definitionRevision: committed.snapshot.definitionRevision,
+            ...(committed.travel ? { travel: committed.travel } : {}),
           };
         } catch (error) {
           releaseActiveGeneration();
@@ -956,6 +967,10 @@ export async function generateRoutes(app: FastifyInstance) {
             role: "user",
             characterId: null,
             content: input.userMessage ?? "",
+            extra: {
+              ...(input.submissionId ? { submissionId: input.submissionId } : {}),
+              ...(input.attachments.length ? { attachments: input.attachments } : {}),
+            },
           })
           .catch(releaseActiveGenerationAndRethrow);
       }
@@ -964,10 +979,14 @@ export async function generateRoutes(app: FastifyInstance) {
         recordUserActivity(input.chatId);
       }
 
-      // Store attachments in message extra if present
-      if (input.attachments?.length && userMsg?.id) {
+      // Spatial owner-turn packages own message creation, so merge the
+      // Engine-owned correlation into their durable row before generation.
+      if (input.pendingSpatialTransition && userMsg?.id && (input.attachments.length > 0 || input.submissionId)) {
         await chats
-          .updateMessageExtra(userMsg.id, { attachments: input.attachments })
+          .updateMessageExtra(userMsg.id, {
+            ...(input.attachments.length ? { attachments: input.attachments } : {}),
+            ...(input.submissionId ? { submissionId: input.submissionId } : {}),
+          })
           .catch(releaseActiveGenerationAndRethrow);
       }
 
@@ -1311,13 +1330,14 @@ export async function generateRoutes(app: FastifyInstance) {
         fallbackMessageIds: resolveRegenerationGameStateFallbackMessageIds(scopedMessages, input.regenerateMessageId),
       };
       const hierarchicalMapsEnabledForChat = isHierarchicalMapsEnabledForChat(chatMeta);
+      const acceptedSpatialTravel = committedSpatialTransition?.travel ?? null;
       const ownerSpatialProjectionPromise = resolveOwnerSpatialProjection(
         input.chatId,
         input.regenerateMessageId
-          ? { beforeMessageId: input.regenerateMessageId }
+          ? { beforeMessageId: input.regenerateMessageId, acceptedTravel: acceptedSpatialTravel }
           : input.continueMessageId
-            ? { throughMessageId: input.continueMessageId }
-            : {},
+            ? { throughMessageId: input.continueMessageId, acceptedTravel: acceptedSpatialTravel }
+            : { acceptedTravel: acceptedSpatialTravel },
         chatMeta,
       );
       const rawSelectedGameStateSnapshotPromise = gameStateStore.getForGeneration(
@@ -1796,10 +1816,7 @@ export async function generateRoutes(app: FastifyInstance) {
           idleDuration: promptIdleDuration,
           timeZone: promptTimeZone,
         });
-        const conversationMacroFieldsByCharacterId = new Map<
-          string,
-          NonNullable<MacroContext["convoFields"]>
-        >();
+        const conversationMacroFieldsByCharacterId = new Map<string, NonNullable<MacroContext["convoFields"]>>();
         const historyMacroProfilesById = (await resolveCharacterMacroData(app.db, allCharacterIds)).profilesById;
         const resolveHistoryMessageMacros = <T extends { content: string; characterId?: string | null }>(
           messages: T[],
@@ -2804,6 +2821,9 @@ export async function generateRoutes(app: FastifyInstance) {
           chatConnectionId: connId ?? "",
           chatModel: conn.model,
           chatCustomParameters: connectionParams?.customParameters ?? {},
+          chatTemperature: temperature,
+          chatEnabledParameters: enabledParameters,
+          chatSuppressModelParameters: suppressModelParameters,
           chatMaxOutputTokens: chatConnectionMaxOutputTokens,
           chatMaxParallelJobs: chatConnectionMaxParallelJobs,
           chatEnableCaching: conn.enableCaching === "true",
@@ -2849,10 +2869,7 @@ export async function generateRoutes(app: FastifyInstance) {
               countUpcomingAssistantMessage: agent.phase === "post_processing" && createsAssistantMessage,
             })
           ) {
-            logger.debug(
-              "[agents] Skipping custom agent %s until its message cadence threshold",
-              agent.type,
-            );
+            logger.debug("[agents] Skipping custom agent %s until its message cadence threshold", agent.type);
             resolvedAgents.splice(index, 1);
           }
         }
@@ -3269,9 +3286,7 @@ export async function generateRoutes(app: FastifyInstance) {
         }
 
         const roleplayDmCommandsEnabled =
-          chatMode === "roleplay" &&
-          chatMeta.roleplayDmCommandsEnabled === true &&
-          !input.impersonate;
+          chatMode === "roleplay" && chatMeta.roleplayDmCommandsEnabled === true && !input.impersonate;
         if (roleplayDmCommandsEnabled) {
           const dmTargetHint =
             charInfo
@@ -4612,7 +4627,7 @@ export async function generateRoutes(app: FastifyInstance) {
             reviewedAgentInjections.length === 0 &&
             !input.regenerateMessageId;
           const reviewableWriterInjections = contextInjections.filter((entry) =>
-            REVIEWABLE_WRITER_AGENT_TYPES.has(entry.agentType),
+            isReviewableWriterAgentType(entry.agentType),
           );
           if (shouldReviewWriterAgentOutputs && reviewableWriterInjections.length > 0) {
             const agentNames = new Map(resolvedAgents.map((agent) => [agent.type, agent.name] as const));
@@ -5385,8 +5400,7 @@ export async function generateRoutes(app: FastifyInstance) {
           const responderMacroContext = targetCharId
             ? {
                 ...promptMacroContext,
-                convoFields:
-                  conversationMacroFieldsByCharacterId.get(targetCharId) ?? promptMacroContext.convoFields,
+                convoFields: conversationMacroFieldsByCharacterId.get(targetCharId) ?? promptMacroContext.convoFields,
               }
             : promptMacroContext;
           const macroScopedMessagesForGen = spatiallyScopedMessagesForGen.map((message) => ({
@@ -6141,6 +6155,7 @@ export async function generateRoutes(app: FastifyInstance) {
           let parsedCommandCharacterIds: (string | null)[] | null = null;
           let parsedRawCommandCount = 0;
           let assistantSpatialDirective: ReturnType<typeof extractAssistantSpatialDirective>["directive"] = null;
+          let assistantSpatialDirectiveDetected = false;
           let conversationCommandContent: string | null = null;
           if (tailMessages.assistantPrefillInjected && assistantPrefill && fullResponse.startsWith(assistantPrefill)) {
             const responseAfterPrefill = fullResponse.slice(assistantPrefill.length);
@@ -6450,7 +6465,11 @@ export async function generateRoutes(app: FastifyInstance) {
 
           if (hierarchicalMapsEnabledForChat && (requestChatMode === "roleplay" || requestChatMode === "game")) {
             const parsedSpatial = extractAssistantSpatialDirective(fullResponse);
-            assistantSpatialDirective = input.impersonate ? null : parsedSpatial.directive;
+            assistantSpatialDirectiveDetected = parsedSpatial.directive !== null;
+            // A queued owner movement is the sole spatial mutation for this turn.
+            // Still strip any package directive from the visible response, but do
+            // not let model output compete with the already accepted route.
+            assistantSpatialDirective = shouldSuppressAssistantSpatialMutation(input) ? null : parsedSpatial.directive;
             if (parsedSpatial.matched) {
               fullResponse = parsedSpatial.cleanContent;
               contentReplaced = true;
@@ -6461,9 +6480,11 @@ export async function generateRoutes(app: FastifyInstance) {
                 assistantSpatialDirective.type,
                 input.chatId,
               );
-            } else if (input.impersonate && parsedSpatial.directive) {
+            } else if (parsedSpatial.directive && shouldSuppressAssistantSpatialMutation(input)) {
               logger.debug(
-                "[generate/spatial] Stripped impersonated %s directive for chat %s",
+                input.impersonate
+                  ? "[generate/spatial] Stripped impersonated %s directive for chat %s"
+                  : "[generate/spatial] Stripped queued owner travel %s directive for chat %s",
                 parsedSpatial.directive.type,
                 input.chatId,
               );
@@ -6502,8 +6523,12 @@ export async function generateRoutes(app: FastifyInstance) {
               "[generate] Empty response after post-processing",
             );
             if (
-              !input.impersonate &&
-              (parsedCommands.length > 0 || parsedRawCommandCount > 0 || assistantSpatialDirective !== null)
+              shouldSaveHiddenGenerationAnchor({
+                impersonate: input.impersonate,
+                parsedCommandCount: parsedCommands.length,
+                parsedRawCommandCount,
+                spatialDirectiveDetected: assistantSpatialDirectiveDetected,
+              })
             ) {
               logger.info(
                 "[generate] Model emitted %d enabled command(s) (%d parsed) with no visible prose for chat %s; saving hidden command anchor",
@@ -6529,7 +6554,8 @@ export async function generateRoutes(app: FastifyInstance) {
               if (
                 anchoredMsg?.id &&
                 hierarchicalMapsEnabledForChat &&
-                (requestChatMode === "roleplay" || requestChatMode === "game")
+                (requestChatMode === "roleplay" || requestChatMode === "game") &&
+                !shouldSuppressAssistantSpatialMutation(input)
               ) {
                 const assistantSpatialSnapshot = await materializeAssistantSpatialState(
                   {
@@ -6633,6 +6659,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   commandId: input.pendingSpatialTransition.commandId,
                   currentLocationId: committed.snapshot.currentLocationId,
                   definitionRevision: committed.snapshot.definitionRevision,
+                  ...(committed.travel ? { travel: committed.travel } : {}),
                 },
               });
             } catch (error) {
@@ -6656,6 +6683,7 @@ export async function generateRoutes(app: FastifyInstance) {
                       commandId: input.pendingSpatialTransition.commandId,
                       currentLocationId: recovered.currentLocationId,
                       definitionRevision: recovered.definitionRevision,
+                      ...(recovered.travel ? { travel: recovered.travel } : {}),
                     },
                   });
                 } else {
@@ -6687,7 +6715,7 @@ export async function generateRoutes(app: FastifyInstance) {
           if (
             savedMsg?.id &&
             savedSwipeIndex !== null &&
-            !input.impersonate &&
+            !shouldSuppressAssistantSpatialMutation(input) &&
             hierarchicalMapsEnabledForChat &&
             (requestChatMode === "roleplay" || requestChatMode === "game")
           ) {
@@ -7322,6 +7350,7 @@ export async function generateRoutes(app: FastifyInstance) {
           }
           const summaryProvider = resolvedSummaryConnection.provider;
           const summaryModel = resolvedSummaryConnection.model;
+          const summaryTemperatureOptions = resolveChatSummaryTemperatureOptions(resolvedSummaryConnection);
 
           const chatLog = formatRoleplaySummaryChatLog(selectedMessages);
           const previousSummary = typeof chatMeta.summary === "string" ? chatMeta.summary.trim() : "";
@@ -7344,18 +7373,22 @@ export async function generateRoutes(app: FastifyInstance) {
             ],
             {
               model: summaryModel,
-              temperature: 0.5,
+              ...summaryTemperatureOptions,
               maxTokens: summaryMaxTokens,
               signal: abortController.signal,
             },
           );
           if (abortController.signal.aborted) return;
-          const newText = result.content ? parseChatSummaryText(result.content) : "";
+          const parsedSummary = result.content ? parseChatSummaryResult(result.content) : { summary: "", title: "" };
+          const newText = parsedSummary.summary;
 
           let createdEntry: ChatSummaryEntry | null = null;
           let summaryEntries: ChatSummaryEntry[] = [];
           const shouldReviewSummary = requireAgentWriteApproval && !!newText;
           const autoEntryMessageIds = selectedMessages.map((message: any) => message.id);
+          const autoRange = computeSummaryMessageRange(freshMessages, selectedMessages);
+          const autoRangeStartIndex = autoRange?.startIndex;
+          const autoRangeEndIndex = autoRange?.endIndex;
           // Compute the hide subset up front so it can be persisted on the entry
           // (deletion restores exactly this set) and reused for the actual hide.
           const autoHideIds =
@@ -7384,9 +7417,12 @@ export async function generateRoutes(app: FastifyInstance) {
                   kind: "rolling",
                   origin: "automated",
                   sourceMode: "agent",
+                  ...(parsedSummary.title ? { title: parsedSummary.title } : {}),
                   content: newText,
                   enabled: true,
                   messageCount: selectedMessages.length,
+                  rangeStartIndex: autoRangeStartIndex,
+                  rangeEndIndex: autoRangeEndIndex,
                   messageIds: autoEntryMessageIds,
                   ...(autoHideIds.length > 0 ? { hiddenMessageIds: autoHideIds } : {}),
                   promptTemplateId:
@@ -7420,6 +7456,9 @@ export async function generateRoutes(app: FastifyInstance) {
                   payload: {
                     messageIds: selectedMessages.map((message: any) => message.id),
                     messageCount: selectedMessages.length,
+                    summaryTitle: parsedSummary.title,
+                    rangeStartIndex: autoRangeStartIndex,
+                    rangeEndIndex: autoRangeEndIndex,
                     promptTemplateId:
                       typeof chatMeta.activeSummaryPromptTemplateId === "string"
                         ? chatMeta.activeSummaryPromptTemplateId
@@ -7895,7 +7934,11 @@ export async function generateRoutes(app: FastifyInstance) {
                 let effectiveSpatialProjection = ownerSpatialProjection;
                 if (hierarchicalMapsEnabledForChat && messageId) {
                   effectiveSpatialProjection = await resolveOwnerSpatialProjection(input.chatId, {}, chatMeta);
-                  if (trackerLocationGuidance && effectiveSpatialProjection?.ownerMode === "game") {
+                  if (
+                    trackerLocationGuidance &&
+                    effectiveSpatialProjection?.ownerMode === "game" &&
+                    !shouldSuppressAssistantSpatialMutation(input)
+                  ) {
                     const previousSpatialLocationId = effectiveSpatialProjection?.currentLocationId ?? null;
                     const previousSpatialRevision = effectiveSpatialProjection?.definitionRevision ?? 0;
                     const guidedSpatialSnapshot = await materializeAssistantSpatialState(
@@ -8802,8 +8845,7 @@ export async function generateRoutes(app: FastifyInstance) {
                       db: app.db,
                       chatId: input.chatId,
                       chatName: chat.name,
-                      chatMode:
-                        chatMode === "game" ? "game" : "roleplay",
+                      chatMode: chatMode === "game" ? "game" : "roleplay",
                       chatMetadata: freshMeta,
                       currentBackground: backgroundBeforeGeneration ?? currentBackground,
                       illustratorAgent: illustratorBackgroundAgent,
@@ -9039,7 +9081,9 @@ export async function generateRoutes(app: FastifyInstance) {
                         imageDefaults,
                         generatedStyle: style,
                         omitProfileStyleText: typeof agentContext.memory._illustratorImageStyleInstruction === "string",
-                        omitProfileSubjectTags: true,
+                        omitProfileSubjectTags: illustratorPromptTemplateOwnsComposition(
+                          imagePromptAgent?.promptTemplate ?? "",
+                        ),
                       });
                       fullPrompt = compiledPrompt.prompt;
                       const finalNegativePrompt = mergeIllustratorNegativePrompt(
@@ -9331,7 +9375,6 @@ export async function generateRoutes(app: FastifyInstance) {
                 // Non-critical — don't fail generation if a rewrite agent errors.
               }
             }
-
           }
 
           if (holdForTextRewrite && !textRewriteApplied && !abortController.signal.aborted) {
