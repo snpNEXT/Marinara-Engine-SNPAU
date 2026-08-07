@@ -6,11 +6,33 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Added
 
+- Guided package onboarding can open the active Roleplay chat's Summary popover and assigned prompt preset Sections editor directly.
 - Added explicit step-by-step and immediate World Maps travel modes, with one committed movement per accepted Roleplay or Game turn and recoverable queued routes (#4618).
 - Added a single setting that reduces ambient animations and effects throughout the interface, including automatic support for the operating system's reduced-motion preference (#4631).
 
 ### Fixed
 
+- Let Professor Mari read trusted Wikipedia links through her structured wiki tools on Android while keeping raw shell networking sandboxed (#4691).
+- Stopped Illustrator from appending its generic anti-text list to NovelAI negative prompts, preserving the prompt supplied by the agent (#4692).
+- Converted NovelAI style-reference fidelity to the provider's inverse secondary-strength scale before sending the request (#4693).
+- Bounded delayed Roleplay typewriter catch-up and disabled competing Echo Chamber smooth scrolling during the main stream, keeping parallel-agent output fluid (#4694).
+- Kept Character and Persona gallery controls inside mobile cards, added deletion to their expanded image views, and matched Chat gallery delete actions to the configured accent (#4695).
+- Removed app-wide color-transition storms and synchronous cursor recoloring from animated accent ticks, and deferred offscreen gallery rendering to keep long sessions responsive (#4696).
+- Scoped cross-chat awareness in individual group conversations to the character currently replying (#4688).
+- Reconciled just-sent Roleplay messages with their saved IDs before editing so the first edit after stopping generation persists (#4678).
+- Retried one transient Roleplay message-edit save failure so remote sessions persist the edit without requiring another manual Save action (#4678).
+- Kept Persona tags, stats, saved statuses, avatar crops, tracker colors, and conversation settings intact across loading, editing, duplicating, restoring, and switching Personas by returning one consistent Persona API shape (#4646).
+- Included the active Conversation cast's avatar references and appearance descriptions in guided group selfies (#4676).
+- Added native Arli.ai image generation with authenticated text-to-image and image-to-image requests (#4672).
+- Let Professor Mari read complete lorebook entry bodies through her structured app-data tools instead of receiving only truncated entry previews (#4673).
+- Removed conflicting color-environment and unused React Compiler/Babel warnings from test and lint runs, refreshed smoke coverage for the current release, schema, agent, and Noodle settings surfaces, and preserved a reader's exact mobile chat position when the keyboard opens (#4670).
+- Kept source Chat Summary entries as inactive history after combining summaries in Roleplay mode instead of deleting them, and revealed that history immediately after each combine.
+- Removed local Character and Persona avatar files when their cards are deleted individually or through Danger Zone, including avatars retained only by deleted card-version history (#4668).
+- Installed the pinned pnpm automatically when the Windows installer cannot use Corepack, an existing pnpm, or its temporary runner (#4662).
+- Exposed saved prompt choices for active Roleplay tracker agents in Chat Settings, matching the existing Game-mode selector (#4663).
+- Centered the avatar-upload camera and inset the AI-generation action so both controls remain fully visible over the mini preview in Character and Persona editors (#4665).
+- Simplified proactive Conversation intent hints so check-ins follow the selected moment without extra tone instructions.
+- Distributed mobile topbar icons evenly across the available screen width without changing the desktop layout (#4666).
 - Kept the caret at the chosen insertion point while typing in expanded Character and Preset editors instead of repeatedly focusing the field and jumping to the end (#4656).
 - Restored a full, unobstructed hit target for Roleplay message edit controls so Save no longer reacts only near one corner (#4658).
 - Kept one stable live text node while Roleplay responses stream, avoiding Firefox DOM replacement and accessibility-tree churn on every animation frame (#4659).

@@ -55,8 +55,13 @@ import {
 } from "../../packages/server/src/services/generation/fallback-notification.js";
 import { resolveStoredChatOptions } from "../../packages/server/src/services/generation/generation-parameters.js";
 import { resolveMainGenerationToolChoice } from "../../packages/server/src/services/generation/tool-resolution-runtime.js";
-import { generateImage, imageAdmissionKey } from "../../packages/server/src/services/image/image-generation.js";
+import {
+  generateImage,
+  imageAdmissionKey,
+  resolveNovelAiStyleReferenceSecondaryStrength,
+} from "../../packages/server/src/services/image/image-generation.js";
 import { resolveImageCaptioningRuntime } from "../../packages/server/src/services/generation/image-captioning-runtime.js";
+import { resolveImageConnectionFallback } from "../../packages/server/src/services/generation/media-connection-fallback.js";
 import {
   BACKGROUND_CONNECTION_IDLE_MS,
   ConnectionAttemptRejectedError,
@@ -115,6 +120,10 @@ const gatewaySseBody = [
   'data: {"choices":[{"message":{"content":"recovered final message"},"finish_reason":"stop"}]}',
   "data: [DONE]",
 ].join("\n");
+
+assert.equal(resolveNovelAiStyleReferenceSecondaryStrength(1), 0);
+assert.equal(resolveNovelAiStyleReferenceSecondaryStrength(0.75), 0.25);
+assert.equal(resolveNovelAiStyleReferenceSecondaryStrength(0), 1);
 const gatewayServer = createServer((_request, response) => {
   response.writeHead(200, { "content-type": "text/event-stream" });
   response.end(gatewaySseBody);
@@ -1102,13 +1111,91 @@ assert.equal(
 // must be recorded completed rather than leaving the primary's failure as the attempt's result.
 const onePixelPng =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+let arliRequest:
+  | { url: string; authorization: string | undefined; contentType: string | undefined; body: Record<string, unknown> }
+  | undefined;
+const arliImageServer = createServer(async (request, response) => {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  arliRequest = {
+    url: request.url ?? "",
+    authorization: request.headers.authorization,
+    contentType: request.headers["content-type"],
+    body: JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>,
+  };
+  response.writeHead(200, { "content-type": "application/json" });
+  response.end(JSON.stringify({ images: [onePixelPng] }));
+});
+await new Promise<void>((resolve) => arliImageServer.listen(0, "127.0.0.1", resolve));
+try {
+  const address = arliImageServer.address();
+  assert.ok(address && typeof address === "object");
+  const imageResult = await generateImage("arli", `http://127.0.0.1:${address.port}/v1`, "arli-secret", "arli", {
+    prompt: "a red laboratory",
+    negativePrompt: "blurry",
+    model: "Arli/FluxModel",
+    width: 768,
+    height: 512,
+    allowLocalUrls: true,
+  });
+  assert.equal(imageResult.base64, onePixelPng);
+  assert.equal(arliRequest?.url, "/v1/txt2img");
+  assert.equal(arliRequest?.authorization, "Bearer arli-secret");
+  assert.equal(arliRequest?.contentType, "application/json");
+  assert.equal(arliRequest?.body.sd_model_checkpoint, "Arli/FluxModel");
+  assert.equal(arliRequest?.body.prompt, "a red laboratory");
+  assert.equal(arliRequest?.body.negative_prompt, "blurry");
+  assert.equal(arliRequest?.body.width, 768);
+  assert.equal(arliRequest?.body.height, 512);
+
+  const imageEditResult = await generateImage(
+    "arli",
+    `http://127.0.0.1:${address.port}/v1`,
+    "arli-secret",
+    "arli",
+    {
+      prompt: "add blue light",
+      model: "Arli/FluxModel",
+      referenceImage: `data:image/png;base64,${onePixelPng}`,
+      allowLocalUrls: true,
+    },
+  );
+  assert.equal(imageEditResult.base64, onePixelPng);
+  assert.equal(arliRequest?.url, "/v1/img2img");
+  assert.deepEqual(arliRequest?.body.init_images, [onePixelPng]);
+} finally {
+  await new Promise<void>((resolve, reject) => arliImageServer.close((error) => (error ? reject(error) : resolve())));
+}
+
 const failingImageServer = createServer((_request, response) => {
   response.writeHead(500, { "content-type": "application/json" });
   response.end(JSON.stringify({ error: "primary image backend down" }));
 });
-const succeedingImageServer = createServer((_request, response) => {
+const resolvedProviderFallback = await resolveImageConnectionFallback(
+  {
+    getFallbackForImageGeneration: async () => ({
+      id: "novelai-fallback",
+      name: "NovelAI fallback",
+      provider: "novelai",
+      model: "nai-diffusion-4-5-full",
+      baseUrl: "https://image.novelai.net",
+      imageGenerationSource: "novelai",
+      imageService: "novelai",
+    }),
+  },
+  "primary-image-connection",
+);
+assert.equal(resolvedProviderFallback?.imageGenerationSource, "novelai");
+assert.equal(resolvedProviderFallback?.imageService, "novelai");
+assert.equal(resolvedProviderFallback?.model, "nai-diffusion-4-5-full");
+assert.equal(resolvedProviderFallback?.baseUrl, "https://image.novelai.net");
+let fallbackImageRequest: Record<string, unknown> | undefined;
+const succeedingImageServer = createServer(async (request, response) => {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  fallbackImageRequest = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
   response.writeHead(200, { "content-type": "application/json" });
-  response.end(JSON.stringify({ data: [{ b64_json: onePixelPng }] }));
+  response.end(JSON.stringify({ images: [onePixelPng] }));
 });
 await new Promise<void>((resolve) => failingImageServer.listen(0, "127.0.0.1", resolve));
 await new Promise<void>((resolve) => succeedingImageServer.listen(0, "127.0.0.1", resolve));
@@ -1142,17 +1229,25 @@ try {
       fallback: {
         connectionId: "image-fallback-connection",
         connectionName: "Image Fallback",
-        provider: "openai",
-        source: "openai",
+        provider: "arli",
+        source: "arli",
         baseUrl: `http://127.0.0.1:${succeedingAddress.port}/v1`,
         apiKey: "fallback-key",
-        serviceHint: "openai",
-        model: "fallback-image-model",
+        serviceHint: "arli",
+        model: "Arli/FallbackModel",
+        prompt: "a provider-specific fallback laboratory",
+        negativePrompt: "fallback blur",
       },
     },
   );
   assert.equal(imageResult.base64, onePixelPng, "the image fallback must supply the returned image");
   assert.equal(imageResult.effectiveConnection?.connectionId, "image-fallback-connection");
+  assert.equal(imageResult.effectiveConnection?.provider, "arli");
+  assert.equal(imageResult.effectivePrompt, "a provider-specific fallback laboratory");
+  assert.equal(imageResult.effectiveNegativePrompt, "fallback blur");
+  assert.equal(fallbackImageRequest?.prompt, "a provider-specific fallback laboratory");
+  assert.equal(fallbackImageRequest?.negative_prompt, "fallback blur");
+  assert.equal(fallbackImageRequest?.sd_model_checkpoint, "Arli/FallbackModel");
   assert.equal(imageBookings, 1, "the image attempt must be booked exactly once across the chain");
   assert.deepEqual(imageOutcomes, ["completed"], "a successful image fallback must be recorded completed");
 } finally {

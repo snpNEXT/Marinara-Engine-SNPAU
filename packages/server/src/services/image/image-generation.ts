@@ -139,6 +139,12 @@ export interface ImageGenRequest {
     imageEndpointId?: string;
     comfyWorkflow?: string;
     imageDefaults?: ImageGenerationDefaultsProfile | null;
+    imageGenerationSource?: string;
+    imageService?: string;
+    /** Prompt compiled for this fallback connection's provider and defaults. */
+    prompt?: string;
+    /** `null` explicitly removes the primary connection's negative prompt. */
+    negativePrompt?: string | null;
   };
 }
 
@@ -149,6 +155,9 @@ export interface ImageGenResult {
   mimeType: string;
   /** File extension without dot */
   ext: string;
+  /** The provider-specific prompt used when a fallback connection rendered the image. */
+  effectivePrompt?: string;
+  effectiveNegativePrompt?: string;
   /** Present when a configured fallback connection produced the image. */
   effectiveConnection?: {
     connectionId: string;
@@ -160,6 +169,7 @@ export interface ImageGenResult {
 
 const EXPLICIT_IMAGE_SOURCES = new Set([
   "openai",
+  "arli",
   "nanogpt",
   "openrouter",
   "pollinations",
@@ -267,6 +277,8 @@ export async function generateImage(
       switch (resolvedSource) {
         case "openai":
           return generateOpenAI(normalizedBaseUrl, apiKey, scopedRequest);
+        case "arli":
+          return generateArli(normalizedBaseUrl, apiKey, scopedRequest);
         case "nanogpt":
           return generateNanoGPT(normalizedBaseUrl, apiKey, scopedRequest);
         case "openrouter":
@@ -345,6 +357,9 @@ export async function generateImage(
       ...request,
       fallback: undefined,
       admissionMode: fallbackMode,
+      prompt: fallback.prompt ?? request.prompt,
+      negativePrompt:
+        fallback.negativePrompt === null ? undefined : (fallback.negativePrompt ?? request.negativePrompt),
       model: fallback.model,
       imageEndpointId: fallback.imageEndpointId,
       comfyWorkflow: fallback.comfyWorkflow,
@@ -360,6 +375,10 @@ export async function generateImage(
         provider: fallback.provider,
         model: fallback.model,
       },
+      effectivePrompt: result.effectivePrompt ?? fallback.prompt ?? request.prompt,
+      effectiveNegativePrompt:
+        result.effectiveNegativePrompt ??
+        (fallback.negativePrompt === null ? undefined : (fallback.negativePrompt ?? request.negativePrompt)),
     };
   } finally {
     await settle(outcome);
@@ -1693,6 +1712,91 @@ async function generateTogetherAI(baseUrl: string, apiKey: string, request: Imag
   return { base64: b64, mimeType: "image/png", ext: "png" };
 }
 
+export function buildArliImageUrl(baseUrl: string, endpoint: "txt2img" | "img2img"): string {
+  const trimmed = baseUrl.replace(/\/+$/, "");
+  try {
+    const parsed = new URL(trimmed);
+    const path = parsed.pathname.replace(/\/+$/, "");
+    if (/\/(?:txt2img|img2img)$/i.test(path)) {
+      parsed.pathname = path.replace(/\/(?:txt2img|img2img)$/i, `/${endpoint}`);
+    } else if (path === "" || path === "/") {
+      parsed.pathname = `/v1/${endpoint}`;
+    } else {
+      parsed.pathname = `${path}/${endpoint}`;
+    }
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return `${trimmed}/${endpoint}`;
+  }
+}
+
+export function buildArliImageRequest(request: ImageGenRequest): Record<string, unknown> {
+  const model = request.model?.trim();
+  if (!model) throw new Error("Arli.ai image generation requires a model");
+
+  const defaults = resolveAutomatic1111Defaults(request);
+  const body: Record<string, unknown> = {
+    sd_model_checkpoint: model,
+    prompt: mergePromptPrefix(defaults.promptPrefix, request.prompt),
+    negative_prompt: mergeNegativePrompt(defaults.negativePromptPrefix, request.negativePrompt),
+    width: request.width ?? 512,
+    height: request.height ?? 768,
+    steps: defaults.steps,
+    sampler_name: defaults.sampler || DEFAULT_AUTOMATIC1111_DEFAULTS.sampler,
+    cfg_scale: defaults.cfgScale,
+    seed: resolveSeed(request.imageDefaults),
+    batch_size: 1,
+    stream: false,
+  };
+  if (defaults.clipSkip) body.clip_skip = defaults.clipSkip;
+
+  const reference = request.referenceImage ?? request.referenceImages?.[0];
+  if (reference) {
+    body.init_images = [decodeReferenceImage(reference).base64];
+    body.denoising_strength = defaults.denoisingStrength;
+  }
+  return body;
+}
+
+async function generateArli(baseUrl: string, apiKey: string, request: ImageGenRequest): Promise<ImageGenResult> {
+  if (!apiKey.trim()) throw new Error("Arli.ai image generation requires an API key");
+  const body = buildArliImageRequest(request);
+  const useImg2Img = Array.isArray(body.init_images);
+  logDebugOverride(
+    request.debugMode === true,
+    "[debug/image/arli] final request payload:\n%s",
+    JSON.stringify({ ...body, ...(useImg2Img ? { init_images: "[1 reference image]" } : {}) }, null, 2),
+  );
+  const resp = await imageFetch(
+    buildArliImageUrl(baseUrl, useImg2Img ? "img2img" : "txt2img"),
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: imageRequestSignal(request),
+    },
+    { allowLocal: request.allowLocalUrls },
+  );
+
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "Unknown error");
+    throw new Error(`Arli.ai image generation failed (${resp.status}): ${sanitizeErrorText(errText)}`);
+  }
+
+  const data = (await resp.json()) as { images?: string[] };
+  const image = data.images?.[0];
+  if (!image) throw new Error("No image data in Arli.ai response");
+  if (image.trim().startsWith("data:")) return decodeImageDataUrl(image);
+  const base64 = normalizeBase64ImagePayload(image, "Arli.ai image response");
+  const mimeType = detectImageMimeType(base64) ?? "image/png";
+  return { base64, mimeType, ext: imageExtensionFromMimeType(mimeType) };
+}
+
 const NOVELAI_V4_PROMPT_HINT =
   "NovelAI V4/V4.5 prompts support roughly 512 T5 tokens and reject most Unicode prompt characters; try a shorter ASCII prompt without emoji or non-Latin text.";
 const NOVELAI_SIZE_MULTIPLE = 64;
@@ -1761,6 +1865,10 @@ export function resolveNovelAiRequestSize(
   const model = request.model || "nai-diffusion-4-5-full";
   const scenePrompt = isNovelAiV4Model(model) ? sanitizeNovelAiV4Prompt(request.prompt) : request.prompt;
   return resolveNovelAiSize(request, scenePrompt, defaults);
+}
+
+export function resolveNovelAiStyleReferenceSecondaryStrength(fidelity: number): number {
+  return 1 - Math.max(0, Math.min(1, fidelity));
 }
 
 function isNovelAiV4Model(model: string): boolean {
@@ -2075,7 +2183,9 @@ async function generateNovelAI(baseUrl: string, apiKey: string, request: ImageGe
       index < styleReferenceOffset ? defaults.styleReferenceStrength : 1,
     );
     parameters.director_reference_secondary_strength_values = directorReferenceImages.map((_, index) =>
-      index < styleReferenceOffset ? defaults.styleReferenceFidelity : 0,
+      index < styleReferenceOffset
+        ? resolveNovelAiStyleReferenceSecondaryStrength(defaults.styleReferenceFidelity)
+        : 0,
     );
   }
 

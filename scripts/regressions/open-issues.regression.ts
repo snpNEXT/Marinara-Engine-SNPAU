@@ -4,8 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
-import type { Chat, ChatMode, Message } from "../../packages/shared/src/types/chat.js";
+import type { Chat, ChatMode, ChatSummaryEntry, Message } from "../../packages/shared/src/types/chat.js";
 import { chatModeSchema } from "../../packages/shared/src/schemas/chat.schema.js";
+import {
+  combineChatSummaryEntryHistory,
+  compileChatSummaryEntries,
+  createChatSummaryEntry,
+} from "../../packages/shared/src/utils/chat-summary-entries.js";
 import playwrightConfig from "../../playwright.config.js";
 import { resolveDevSharedBuildScript } from "../dev-shared-build.mjs";
 import { validatePullRequestTriage } from "../validate-pr-triage.mjs";
@@ -179,6 +184,7 @@ import {
   buildComfyUiLoraWorkflowReplacements,
   COMFYUI_PLACEHOLDER_REFERENCE_BASE64,
   DEFAULT_NOVELAI_DEFAULTS,
+  imageSourceToDefaultsService,
   normalizeComfyUiLoraSettings,
 } from "../../packages/shared/src/constants/image-generation-defaults.js";
 import type { ImageGenerationDefaultsProfile } from "../../packages/shared/src/types/image-generation-defaults.js";
@@ -263,6 +269,7 @@ import {
   MariDbService,
   normalizeCharacterActionData,
 } from "../../packages/server/src/services/mari-db/mari-db.service.js";
+import { PROFESSOR_MARI_APP_DATA_ACTIONS } from "../../packages/server/src/services/professor-mari/workspace-agent.service.js";
 import {
   checkAutonomousMessaging,
   clearChatActivity,
@@ -1235,19 +1242,43 @@ try {
 
   const mariDb = new MariDbService(db);
   const professorMariLorebookId = "professor-mari-lorebook-create-regression";
+  const professorMariFullEntryContent = `The entry starts here. ${"Full lorebook body segment. ".repeat(20)}The entry ends here.`;
   const professorMariLorebookResult = await mariDb.executeAction({
     action: "lorebook.create",
     lorebookId: professorMariLorebookId,
     data: {
       name: "Professor Mari lorebook regression",
-      entries: [{ name: "Verified entry", content: "Saved with the lorebook.", keys: ["verified"] }],
+      entries: [{ name: "Verified entry", content: professorMariFullEntryContent, keys: ["verified"] }],
     },
     apply: true,
   });
   assert.equal(professorMariLorebookResult.ok, true, "Professor Mari must create lorebooks after visibility was added");
   const professorMariLorebook = await lorebookStorage.getById(professorMariLorebookId);
   assert.equal(professorMariLorebook?.hiddenFromLibrary, false);
-  assert.equal((await lorebookStorage.listEntries(professorMariLorebookId)).length, 1);
+  const professorMariEntries = await lorebookStorage.listEntries(professorMariLorebookId);
+  assert.equal(professorMariEntries.length, 1);
+  const professorMariEntryId = professorMariEntries[0]?.id;
+  assert.ok(professorMariEntryId);
+  assert.ok(PROFESSOR_MARI_APP_DATA_ACTIONS.includes("lorebook.getEntry"));
+  const professorMariEntryIndex = await mariDb.executeAction({
+    action: "lorebook.entries",
+    lorebookId: professorMariLorebookId,
+  });
+  assert.equal(
+    (professorMariEntryIndex.output as Array<{ content: string }>)[0]?.content.endsWith("…"),
+    true,
+    "the lorebook entry index should remain compact",
+  );
+  const professorMariFullEntry = await mariDb.executeAction({
+    action: "lorebook.getEntry",
+    entryId: professorMariEntryId,
+  });
+  assert.equal(professorMariFullEntry.ok, true);
+  assert.equal(
+    (professorMariFullEntry.output as { content?: string }).content,
+    professorMariFullEntryContent,
+    "Professor Mari's full-entry reader must preserve the complete lorebook body",
+  );
   await lorebookStorage.remove(professorMariLorebookId);
   assert.equal(await lorebookStorage.getById(professorMariLorebookId), null);
   assert.equal((await lorebookStorage.listEntries(professorMariLorebookId)).length, 0);
@@ -1948,6 +1979,9 @@ assert.deepEqual(buildZaiImageRequest({ model: "glm-image", prompt: "canal", wid
 assert.equal(parseZaiImageUrl({ data: [{ url: "https://cdn.example/zai.png" }] }), "https://cdn.example/zai.png");
 assert.equal(inferImageSource("", "https://api.z.ai/api/paas/v4"), "zai");
 assert.ok(IMAGE_GENERATION_SOURCES.some((source) => source.id === "zai"));
+assert.equal(inferImageSource("flux-model", "https://api.arliai.com/v1"), "arli");
+assert.ok(IMAGE_GENERATION_SOURCES.some((source) => source.id === "arli"));
+assert.equal(imageSourceToDefaultsService("arli"), "automatic1111");
 assert.deepEqual(
   ZAI_IMAGE_MODELS.map((model) => model.id),
   ["glm-image", "cogview-4-250304"],
@@ -2431,6 +2465,26 @@ const roleplaySurfaceSource = readFileSync(
   new URL("../../packages/client/src/components/chat/ChatRoleplaySurface.tsx", import.meta.url),
   "utf8",
 );
+const chatToolbarControlsSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/ChatToolbarControls.tsx", import.meta.url),
+  "utf8",
+);
+const chatFloatingUiEventsSource = readFileSync(
+  new URL("../../packages/client/src/lib/chat-floating-ui-events.ts", import.meta.url),
+  "utf8",
+);
+const appShellSource = readFileSync(
+  new URL("../../packages/client/src/components/layout/AppShell.tsx", import.meta.url),
+  "utf8",
+);
+const guidedPresetEditorSource = readFileSync(
+  new URL("../../packages/client/src/components/presets/PresetEditor.tsx", import.meta.url),
+  "utf8",
+);
+const presetPanelSource = readFileSync(
+  new URL("../../packages/client/src/components/panels/PresetsPanel.tsx", import.meta.url),
+  "utf8",
+);
 const chatMessageSource = readFileSync(
   new URL("../../packages/client/src/components/chat/ChatMessage.tsx", import.meta.url),
   "utf8",
@@ -2446,6 +2500,51 @@ const roleplayHudSource = readFileSync(
 const narratorUiStoreSource = readFileSync(
   new URL("../../packages/client/src/stores/ui.store.ts", import.meta.url),
   "utf8",
+);
+assert.match(
+  appShellSource,
+  /onOpenChatSummarySettings:[\s\S]{0,180}onOpenActivePromptPresetEditor:/u,
+  "Feature detail capability props must expose both guided onboarding navigation callbacks",
+);
+assert.match(
+  chatFloatingUiEventsSource,
+  /CHAT_SUMMARY_OPEN_REQUEST_EVENT[\s\S]{0,240}detail:\s*\{\s*chatId\s*\}/u,
+  "Summary requests must carry the target chat ID",
+);
+assert.match(
+  roleplaySurfaceSource,
+  /requestedChatId !== chatId/u,
+  "SummaryButton must filter requests by chat and only open visible instances",
+);
+assert.match(
+  roleplaySurfaceSource,
+  /rect\.width <= 0 \|\| rect\.height <= 0[\s\S]{0,180}setOpen\(true\)/u,
+  "SummaryButton must only open a measurable visible instance",
+);
+assert.match(
+  chatToolbarControlsSource,
+  /pendingSummaryChatIdRef\.current = chatId[\s\S]{0,80}setOpen\(true\)/u,
+  "Compact and mobile Summary requests must queue the target chat and open the overflow menu",
+);
+assert.match(
+  chatToolbarControlsSource,
+  /if \(!open \|\| !chatId\) return;[\s\S]{0,140}requestAnimationFrame\(\(\) => requestChatSummaryOpen\(chatId\)\)/u,
+  "Compact and mobile Summary requests must forward only after the overflow menu mounts",
+);
+assert.match(
+  narratorUiStoreSource,
+  /openPresetDetail: \(id, options\)[\s\S]{0,180}presetDetailInitialTab: options\?\.initialTab \?\? null/u,
+  "Preset navigation must retain an optional initial tab request",
+);
+assert.match(
+  guidedPresetEditorSource,
+  /presetDetailInitialTab[\s\S]{0,260}setActiveTab\(presetDetailInitialTab \?\? "overview"\)/u,
+  "PresetEditor must consume the requested initial tab and retain Overview by default",
+);
+assert.match(
+  presetPanelSource,
+  /openPresetDetail\(preset\.id\)/u,
+  "Ordinary preset-panel navigation must continue using the default Overview tab",
 );
 assert.match(
   roleplaySurfaceSource,
@@ -2905,6 +3004,25 @@ assert.match(
 assert.match(galleryHooksSource, /api\.delete\(`\/gallery\/scene-videos\/\$\{chatId\}\/\$\{videoId\}`\)/u);
 assert.match(chatGallerySource, /handleDeleteVideo\(video\)/u);
 assert.match(chatGallerySource, /ui\.chat\.chatgallery\.deleteSceneVideo/u);
+for (const editorSource of [characterEditorSource, personaEditorSource]) {
+  assert.match(editorSource, /grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3 md:grid-cols-4/u);
+  assert.match(editorSource, /onClick=\{\(\) => void handleDelete\(lightbox\)\}/u);
+  assert.match(editorSource, /loading="lazy"\s+decoding="async"/u);
+  assert.match(editorSource, /group-\[&:focus-within\]:opacity-100/u);
+}
+assert.match(characterEditorSource, /await remove\.mutateAsync\(image\.id\)/u);
+assert.match(characterEditorSource, /ui\.characters\.charactergallerytab\.failedToDeleteCharacterImage/u);
+assert.doesNotMatch(chatGallerySource, /bg-red-500/u);
+assert.match(chatGallerySource, /ui\.chat\.chatgallery\.deleteGalleryImage[\s\S]{0,180}mari-chrome-accent-surface/u);
+assert.match(
+  chatGallerySource,
+  /handleDeleteVideo\(video\)[\s\S]{0,240}ui\.chat\.chatgallery\.deleteSceneVideo[\s\S]{0,240}mari-chrome-accent-surface/u,
+);
+assert.match(
+  chatGallerySource,
+  /onClick=\{\(\) => handleDelete\(confirmDeleteId\)\}[\s\S]{0,180}mari-chrome-accent-surface/u,
+);
+assert.match(globalStyles, /\.mari-gallery-card \{\s*content-visibility: auto;\s*contain-intrinsic-size: auto 12rem;\s*\}/u);
 assert.match(characterEditorSource, /ui\.characters\.colorstab\.value1AvatarPreview/u);
 assert.match(characterEditorSource, /getAvatarCropStyle/u);
 assert.match(characterEditorSource, /downloadSpriteFile/u);
@@ -2945,7 +3063,17 @@ for (const [name, source] of [
   assert.match(source, /text-foreground\/45/u, `${name} search icon must match GIF search`);
   assert.match(source, /placeholder:text-foreground\/35/u, `${name} search placeholder must match GIF search`);
 }
-assert.match(visualViewportChatBottomSource, /detail\?\.keyboardOpen[\s\S]{0,500}scrollToBottom\("auto"\)/u);
+assert.match(visualViewportChatBottomSource, /const anchor = pendingAnchor \?\? captureAnchor\(\);/u);
+assert.match(
+  visualViewportChatBottomSource,
+  /if \(anchor\.pinnedToBottom\) \{\s*scrollToBottom\("auto"\);/u,
+  "Keyboard opening should keep a composer that was already pinned at the latest message pinned",
+);
+assert.match(
+  visualViewportChatBottomSource,
+  /scrollElement\.scrollTo\(\{ top: Math\.min\(anchor\.scrollTop, maxScrollTop\), behavior: "auto" \}\);/u,
+  "Keyboard opening should restore an intentionally scrolled transcript to its captured position",
+);
 assert.match(characterEditorSource, /if \(uploading \|\| !expression\) return;/u);
 assert.match(personaEditorSource, /if \(uploading \|\| !expression\) return;/u);
 assert.match(characterEditorSource, /className="flex flex-col gap-2 sm:flex-row"/u);
@@ -3095,7 +3223,12 @@ assert.match(
 );
 assert.match(
   conversationSelfieRuntimeSource,
-  /resolveIllustratorCharacterReferences\(\{[\s\S]{0,800}persona: null,[\s\S]{0,800}maxReferences: 6/u,
+  /resolveConversationSelfieRequestedNames\(\{[\s\S]{0,400}generationGuide: args\.generationGuide/u,
+  "Conversation group selfies must carry the guided request into reference selection",
+);
+assert.match(
+  conversationSelfieRuntimeSource,
+  /resolveIllustratorCharacterReferences\(\{[\s\S]{0,800}persona: null,[\s\S]{0,200}requestedNames,[\s\S]{0,300}maxReferences: 6/u,
   "Conversation group selfies must keep all depicted character references without attaching the photographer persona",
 );
 assert.match(
@@ -4408,14 +4541,117 @@ assert.match(
   "The summary UI must submit every selected entry to the combine endpoint",
 );
 assert.match(
+  chatRoutesSource,
+  /combineChatSummaryEntryHistory\(entries, requestedIds, combinedEntry, now\)/u,
+  "The Chat Summary combine route must retain source history through the tested helper",
+);
+const summaryCombineNow = "2026-08-06T09:00:00.000Z";
+const summaryCombineEntries: ChatSummaryEntry[] = [
+  createChatSummaryEntry({
+    id: "source-a",
+    content: "Source A",
+    title: "Source A",
+    enabled: true,
+    rangeStartIndex: 1,
+    rangeEndIndex: 2,
+    createdAt: "2026-08-01T09:00:00.000Z",
+    updatedAt: "2026-08-01T09:00:00.000Z",
+  }),
+  createChatSummaryEntry({
+    id: "source-b",
+    content: "Source B",
+    title: "Source B",
+    enabled: true,
+    rangeStartIndex: 3,
+    rangeEndIndex: 4,
+    createdAt: "2026-08-02T09:00:00.000Z",
+    updatedAt: "2026-08-02T09:00:00.000Z",
+  }),
+  createChatSummaryEntry({
+    id: "untouched",
+    content: "Untouched",
+    title: "Untouched",
+    enabled: true,
+    rangeStartIndex: 5,
+    rangeEndIndex: 6,
+    createdAt: "2026-08-03T09:00:00.000Z",
+    updatedAt: "2026-08-03T09:00:00.000Z",
+  }),
+];
+const combinedSummaryEntry = createChatSummaryEntry({
+  id: "combined",
+  content: "Combined A and B",
+  title: "Combined",
+  enabled: true,
+  rangeStartIndex: 1,
+  rangeEndIndex: 4,
+  createdAt: summaryCombineEntries[0]!.createdAt,
+  updatedAt: summaryCombineNow,
+});
+const retainedSummaryEntries = combineChatSummaryEntryHistory(
+  summaryCombineEntries,
+  new Set(["source-a", "source-b"]),
+  combinedSummaryEntry,
+  summaryCombineNow,
+);
+assert.deepEqual(
+  retainedSummaryEntries.map((entry) => entry.id),
+  ["combined", "source-a", "source-b", "untouched"],
+  "The combined entry must be inserted at the first selected chronological position",
+);
+for (const sourceId of ["source-a", "source-b"]) {
+  const retainedSource = retainedSummaryEntries.find((entry) => entry.id === sourceId);
+  assert.equal(retainedSource?.enabled, false, `${sourceId} must remain as inactive history`);
+  assert.equal(retainedSource?.updatedAt, summaryCombineNow, `${sourceId} must record when it was combined`);
+}
+assert.equal(retainedSummaryEntries.find((entry) => entry.id === "untouched")?.enabled, true);
+assert.equal(
+  compileChatSummaryEntries(retainedSummaryEntries),
+  "Combined A and B\n\nUntouched",
+  "Compiled Chat Summary output must exclude deactivated source entries",
+);
+const secondCombinedSummaryEntry = createChatSummaryEntry({
+  id: "combined-again",
+  content: "Combined summary of summaries",
+  title: "Combined again",
+  enabled: true,
+  rangeStartIndex: 1,
+  rangeEndIndex: 6,
+  createdAt: summaryCombineEntries[0]!.createdAt,
+  updatedAt: "2026-08-06T10:00:00.000Z",
+});
+const retainedSecondGenerationEntries = combineChatSummaryEntryHistory(
+  retainedSummaryEntries,
+  new Set(["combined", "untouched"]),
+  secondCombinedSummaryEntry,
+  secondCombinedSummaryEntry.updatedAt,
+);
+assert.deepEqual(
+  retainedSecondGenerationEntries.map((entry) => entry.id),
+  ["combined-again", "combined", "source-a", "source-b", "untouched"],
+  "A summary of summaries must retain both generations of source history",
+);
+for (const sourceId of ["combined", "source-a", "source-b", "untouched"]) {
+  assert.equal(
+    retainedSecondGenerationEntries.find((entry) => entry.id === sourceId)?.enabled,
+    false,
+    `${sourceId} must remain as inactive history after combining summaries again`,
+  );
+}
+assert.match(
+  summaryPopoverSource,
+  /onSuccess: \(data\) => \{\s*setSelectedEntryIds\(new Set\(\)\);\s*setShowInactiveSummaries\(true\)/u,
+  "The Chat Summary popover must reveal retained inactive sources after combining",
+);
+assert.match(
   summaryPopoverSource,
   /role="tablist"[\s\S]{0,900}summaryPromptView === "summary"[\s\S]{0,900}summaryPromptView === "combine"/u,
   "The Summary Prompt card must switch between Chat Summary and Combine prompt views",
 );
 assert.match(
   summaryPopoverSource,
-  /currentChatSummaryPrompt[\s\S]{0,900}\{activeSummaryPrompt\}[\s\S]{0,1500}<textarea/u,
-  "The active Chat Summary prompt must remain visible above its template editor",
+  /!templateEditorOpen[\s\S]{0,500}\{activeSummaryPrompt\}[\s\S]{0,500}templateEditorOpen/u,
+  "The active Chat Summary prompt must remain visible until its template editor opens",
 );
 assert.doesNotMatch(
   summaryPopoverSource,
@@ -4538,7 +4774,7 @@ assert.match(
 );
 assert.match(
   chatRoutesSource,
-  /requestedSummaryEntryIds[\s\S]{0,6500}nextEntries\.splice\(Math\.max\(0, firstIndex\), 0, combinedEntry\)/u,
+  /requestedSummaryEntryIds[\s\S]{0,6500}combineChatSummaryEntryHistory\(entries, requestedIds, combinedEntry, now\)/u,
   "Combined summaries must replace their selected entries at the first selected chronological position",
 );
 assert.match(
@@ -5301,7 +5537,7 @@ try {
       )?.length ?? 0;
     const focusInteractiveOverlayCount =
       source.match(
-        /pointer-events-none[^"\n]*\[@media\(pointer:fine\)\]:group-focus-within(?:\/member)?:\[&_button\]:pointer-events-auto/gu,
+        /pointer-events-none[^"\n]*\[@media\(pointer:fine\)\]:group-focus-within(?:\/member)?:(?:\[&_button\]:)?pointer-events-auto/gu,
       )?.length ?? 0;
     assert.equal(
       focusVisibleOverlayCount,
@@ -5327,7 +5563,7 @@ try {
   }
   assert.match(
     charactersPanelSource,
-    /max-md:pr-20 \[@media\(pointer:coarse\)\]:pr-24/u,
+    /pr-0 max-md:pr-32 \[@media\(pointer:coarse\)\]:pr-32/u,
     "Character rows must match their coarse-pointer padding to the desktop-width action toolbar",
   );
   assert.match(
