@@ -6,12 +6,54 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Added
 
+- Added Arli AI as a built-in text provider for chat connections, using OpenAI-compatible chat completions with models loaded from the Arli AI `/models` endpoint.
+- Added a custom 1–40 place target to the New Game wizard's AI world-map draft options (#4783).
+- Added a compact context-budget indicator to Professor Mari Workspace when message token usage is enabled (#4752).
+- Added per-chat image style overrides for custom image agents, alongside their existing connection overrides (#4718).
+- Added attributed `marinara.fetch` traffic totals and sustained-rate warnings for full-page extensions (#4720).
+- Added SwarmUI image generation, optional account-token authentication, model discovery, and ComfyUI workflow submission through SwarmUI's distributed generation queue (#4702).
+- Added an accent-colored divider above the current Roleplay new-start boundary (#4709).
 - Guided package onboarding can open the active Roleplay chat's Summary popover and assigned prompt preset Sections editor directly.
 - Added explicit step-by-step and immediate World Maps travel modes, with one committed movement per accepted Roleplay or Game turn and recoverable queued routes (#4618).
 - Added a single setting that reduces ambient animations and effects throughout the interface, including automatic support for the operating system's reduced-motion preference (#4631).
 
 ### Fixed
 
+- Kept NovelAI V4.5 style-plate file selection inside the Connection editor across Chromium platforms (#4777).
+- Deactivated and revealed lorebooks that lose their final owner, replaced Lorebook Keeper entry bodies without stacking duplicates, and added sandbox-safe structured file copy, move, and removal tools for Android/Termux (#4775).
+- Let readers scroll through Professor Mari history while her response is still streaming (#4774).
+- Replaced the browser-native single-chat deletion prompt in Professor Mari with Marinara's confirmation dialog (#4773).
+- Preserved Tracker panel controls at their configured width, kept the panel aligned beside the right sidebar, and made closing its detached window close the panel (#4772).
+- Displayed the actual error output beneath failed Professor Mari workspace tool events (#4770).
+- Quarantined an automatic-generation connection for six hours after three consecutive provider failures while keeping foreground chats available (#4769).
+- Moved smart group responder selection to the default Agent connection with Agent fallback and the connection's saved generation parameters instead of a fixed 512-token chat-connection call (#4765).
+- Shared Professor Mari's robust JSON repair waterfall with structured agents so repairable malformed or truncated output no longer wastes retries (#4753).
+- Revalidated replaceable user backgrounds so re-importing a different image under a deleted filename no longer displays stale browser-cached pixels (#4757).
+- Kept NovelAI V4.5 style-plate uploads inside the Connection editor by decoding oversized images directly to a bounded preview and avoiding redundant copies of their encoded data (#4748).
+- Replaced the Windows Chromium native Connection and Preset popups in new Conversation and Roleplay setup with readable themed selectors (#4750).
+- Kept explicitly disabled Boolean preset choices empty instead of injecting their first option into prompts (#4740).
+- Resolved current DeepSeek, MiMo, GLM, and Kimi output limits through NanoGPT, OpenRouter, and custom OAI-compatible connections, and stopped Professor Mari before executing tool calls from truncated output (#4741).
+- Sent explicit OpenRouter prompt-caching markers for every compatible model, including Gemini, instead of limiting the option to Claude (#4742).
+- Gave native Connection and Preset dropdown options readable theme colors in the new Conversation and Roleplay setup wizards on Chromium (#4743).
+- Prepared and bounded NovelAI V4.5 style-plate uploads before previewing them so large images no longer destabilize the Connection editor (#4744).
+- Let capability packages use the remote embedding source configured on their agent connection, retaining local MiniLM only as a fallback (#4745).
+- Reused matching avatars from the full Character library in both Game portrait-generation paths instead of repeatedly generating replacements (#4746).
+- Isolated the tracker panel's newest-message lookup from transcript pagination settings (#4724).
+- Preserved speaker names and timestamps in individual Conversation group history so characters can distinguish prior speakers (#4726).
+- Raised the default Termux Node.js heap limit for large profiles while preserving user-supplied limits (#4730).
+- Reconciled failed-generation prompts by submission ID so API errors do not show duplicate user messages (#4731).
+- Saved Echo Chamber resizing when pointer capture ends outside the resize handle, preserving its per-chat size across navigation and restarts (#4733).
+- Kept the selected Narrative Director push-story instruction in every individual group responder prompt, independent of queue and Secret Plot settings (#4734).
+- Allowed server extensions to finish storage writes registered through `onCleanup` during a polite stop.
+- Made edits to Conversation replies that contained character commands reach the model instead of the original wording (#4728).
+- Kept the full desktop Roleplay edit checkmark above overlapping message layers so its entire visible hit target remains clickable (#4700).
+- Made the Windows launcher and installer detect Node.js by running it directly instead of requiring `where.exe` (#4701).
+- Added the standard expanded editor and macro guide controls to Roleplay summary editors (#4710).
+- Matched Chats hover loading text and visible error details, including “Internal Server Error,” to the active accent/chroma text color (#4712).
+- Isolated the memoized Chat area from unrelated topbar state and stabilized message mutation callbacks, preventing unchanged Roleplay transcripts from rerendering when tabs open (#4713).
+- Applied the committed-message Markdown, action, and dialogue-color formatter to Roleplay output as it streams, while keeping updates coalesced to animation frames (#4714).
+- Show the localized validation error before restoring an invalid all-zero NoodleR fan activity weight.
+- Asked for confirmation before permanently deleting a prompt block from preset chat settings (#4698).
 - Let Professor Mari read trusted Wikipedia links through her structured wiki tools on Android while keeping raw shell networking sandboxed (#4691).
 - Stopped Illustrator from appending its generic anti-text list to NovelAI negative prompts, preserving the prompt supplied by the agent (#4692).
 - Converted NovelAI style-reference fidelity to the provider's inverse secondary-strength scale before sending the request (#4693).
@@ -35,7 +77,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Distributed mobile topbar icons evenly across the available screen width without changing the desktop layout (#4666).
 - Kept the caret at the chosen insertion point while typing in expanded Character and Preset editors instead of repeatedly focusing the field and jumping to the end (#4656).
 - Restored a full, unobstructed hit target for Roleplay message edit controls so Save no longer reacts only near one corner (#4658).
-- Kept one stable live text node while Roleplay responses stream, avoiding Firefox DOM replacement and accessibility-tree churn on every animation frame (#4659).
+- Coalesced Roleplay streaming presentation to animation frames to limit Firefox accessibility-tree churn (#4659).
 - Added an independent Noodle timeline image-size setting, defaulting to the GPT-Image-compatible 1024x1536 portrait canvas instead of reusing the Illustrator dimensions (#4660).
 - Made NoodleR stage-profile drafts tolerate single-item array responses, extra model fields, and decorated handles from local models while ignoring model-provided disclosure modes, discarding invalid values, and applying the requested valid mode (#4626).
 - Removed deprecated generation parameters from single and bulk prompt-preset exports and ignored them when importing older Marinara or SillyTavern preset files (#4650).
@@ -50,6 +92,13 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Moved full Docker images to Debian Trixie so ARM64 sidecars can load the required glibc and libstdc++ symbols (#4638).
 - Matched the **Add character to active chat** button to the neighboring Character row actions in folders and standalone rows on desktop and mobile.
 - Stopped the NoodleR reserve poll from scanning the prepared-post and Noodle post tables every minute when automatic posting is off and no reserve posts exist, and backed the automatic timeline-refresh poll off to 15 minutes while refreshes are disabled, cutting idle CPU wake-ups on phone and Termux installs (#4630).
+
+### Added
+
+- Added optional, quota-limited synthetic audience activity for public NoodleR posts, with separate likes, replies, reposts, and a manual refresh action.
+- Added a persisted local-day NoodleR fan activity plan with four deterministic platform runs and resumable activity application state.
+- Preserved creator-level fan audience inheritance when editing individual archetype weights, and surfaced source-action failures in NoodleR profile controls.
+- Added a configurable automatic audience-run count, kept manual audience runs available outside that daily budget, and prevented malformed generated activities from failing an entire run.
 
 ## [2.4.2]
 
@@ -110,6 +159,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Kept the first confirmed edit to a sent Roleplay message after stopping generation, including on mobile where a transient missing/default swipe index previously made the edit look stale (#4592).
 - Restored Chub NSFW search results, including cards whose current search payload exposes the canonical NSFW topic without a boolean flag; filtered result totals and pagination now follow Chub's reported count, and the page label has its missing space (#4593).
 - Kept a provider-refused prompt out of the composer when that user turn was already saved in chat history, while still restoring drafts for requests that genuinely failed before persistence (#4594).
+- Made Game Mode dice cards preserve declared dice notation and avoid presenting discarded dice or success pools as false addition equations (#4683).
 
 ## [2.4.0]
 

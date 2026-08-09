@@ -25,7 +25,10 @@ import {
 import { registerCapabilityService } from "./capability-service-registry.service.js";
 import { createCapabilityLanguageModelHost } from "./capability-language-model.service.js";
 import { createCapabilityImageGenerationHost } from "./capability-image-generation.service.js";
-import { createCapabilityEmbeddingHost } from "./capability-embedding.service.js";
+import {
+  createCapabilityEmbeddingHost,
+  createConfiguredCapabilityEmbeddingHost,
+} from "./capability-embedding.service.js";
 import { createCapabilityPersistenceHost } from "./capability-persistence.service.js";
 import { createCapabilityResourceHost } from "./capability-resources.service.js";
 import { registerCapabilityPrivilegedRoutes } from "./capability-route-registration.service.js";
@@ -50,15 +53,20 @@ type CapabilityActivationContext = {
   };
 };
 
-function createCapabilityRuntimeHost(
+async function createCapabilityRuntimeHost(
   app: FastifyInstance,
   packageId: string,
   permissions: readonly string[],
-): CapabilityRuntimeHost {
+): Promise<CapabilityRuntimeHost> {
+  const agents = app.db ? createAgentsStorage(app.db) : null;
+  const config = await agents?.getByType(packageId);
+  const embeddings = app.db
+    ? await createConfiguredCapabilityEmbeddingHost(app.db, config?.connectionId)
+    : createCapabilityEmbeddingHost();
   return Object.freeze({
-    embeddings: createCapabilityEmbeddingHost(),
+    embeddings,
     async getAgentConfig() {
-      const config = await createAgentsStorage(app.db).getByType(packageId);
+      const config = await agents?.getByType(packageId);
       return config
         ? { connectionId: config.connectionId, settings: parseAgentSettingsRecord(config.settings) }
         : null;
@@ -169,7 +177,7 @@ class CapabilityModuleRuntime {
         dataDir: DATA_DIR,
         package: installed,
         api: {
-          runtime: createCapabilityRuntimeHost(app, installed.id, installed.manifest.permissions),
+          runtime: await createCapabilityRuntimeHost(app, installed.id, installed.manifest.permissions),
           registerTurnGameEngine: (engine) => trackCleanup(registerTurnGameEngine(engine)),
           registerConversationCommand: (registration) =>
             trackCleanup(registerCapabilityConversationCommand(registration)),

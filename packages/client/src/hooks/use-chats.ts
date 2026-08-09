@@ -18,6 +18,7 @@ import { useGameStateStore } from "../stores/game-state.store";
 import { useEncounterStore } from "../stores/encounter.store";
 import { useUIStore } from "../stores/ui.store";
 import { clearBrowserRuntimeCaches } from "../lib/browser-runtime";
+import { shouldRefetchMessagesOnReconnect } from "../lib/message-page-cache";
 import { lorebookKeys } from "./use-lorebooks";
 import { achievementKeys, trackAchievementEvent } from "./use-achievements";
 import type {
@@ -290,15 +291,26 @@ export function useChatMessages(chatId: string | null, pageSize: number = 0, ena
         : oldestLoaded.createdAt;
     },
     enabled: !!chatId && enabled,
+    // #4703: a reconnect refetch re-drains every loaded page back-to-back, so
+    // a scrolled-back chat on a flaky mobile connection re-downloads its whole
+    // loaded history per network flap. Allow it only while the cache is
+    // shallow; deep caches still resync via the stale-gated refetchOnMount,
+    // the post-generation refresh, and explicit invalidations.
+    refetchOnReconnect: (query) => shouldRefetchMessagesOnReconnect(query.state.data?.pages.length ?? 0),
   });
 }
 
 /**
- * Last few messages of a chat, for read-only previews (sidebar hover peek).
+ * Newest messages of a chat as one flat window, for read-only consumers
+ * (sidebar hover peek, the Director secret-plot panel).
  *
  * Deliberately does NOT share `chatKeys.messages` — that key ignores page size, so writing
  * a short slice into it would leave ChatArea's paginated view starting from a truncated
- * cache the next time that chat is opened.
+ * cache the next time that chat is opened. The reverse direction is just as important
+ * (#4721): merely OBSERVING the shared key with a different pageSize overwrites the
+ * transcript query's option closures (queryFn limit, getNextPageParam), because React
+ * Query keeps one options set per key and the last observer wins. Read-only windows
+ * belong here, keyed by their limit.
  */
 export function useChatMessagePeek(chatId: string | null, limit = 4, enabled = false) {
   return useQuery({
@@ -1049,6 +1061,9 @@ export function useCreateMessage(chatId: string | null) {
     onSuccess: () => {
       if (chatId) {
         qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
+        // Peek windows (sidebar hover, secret-plot panel) cache the same rows
+        // under their own limit-keyed queries — keep them live too (#4721).
+        qc.invalidateQueries({ queryKey: chatKeys.messagePeek(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messageCount(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.list() });
         qc.invalidateQueries({ queryKey: lorebookKeys.active(chatId) });
@@ -1064,6 +1079,7 @@ export function useDeleteMessage(chatId: string | null) {
     onSuccess: () => {
       if (chatId) {
         qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
+        qc.invalidateQueries({ queryKey: chatKeys.messagePeek(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messageCount(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.list() });
         qc.invalidateQueries({ queryKey: lorebookKeys.active(chatId) });
@@ -1079,6 +1095,7 @@ export function useDeleteMessages(chatId: string | null) {
     onSuccess: () => {
       if (chatId) {
         qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
+        qc.invalidateQueries({ queryKey: chatKeys.messagePeek(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messageCount(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.list() });
         qc.invalidateQueries({ queryKey: lorebookKeys.active(chatId) });
@@ -1152,6 +1169,7 @@ export function useUpdateMessage(chatId: string | null) {
         const { streamingChatId, isStreaming } = useChatStore.getState();
         if (isStreaming && streamingChatId === chatId) return;
         qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
+        qc.invalidateQueries({ queryKey: chatKeys.messagePeek(chatId) });
         qc.invalidateQueries({ queryKey: lorebookKeys.active(chatId) });
       }
     },

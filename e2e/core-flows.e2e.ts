@@ -1636,6 +1636,79 @@ test("connection test-message errors inherit the configured editor accent", asyn
   }
 });
 
+test("NovelAI style plate upload keeps the connection editor mounted", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name.includes("mobile"), "Desktop connection editor behavior is covered here.");
+
+  let connectionId: string | null = null;
+  let testFailure: unknown;
+  let cleanupFailure: unknown;
+  const errors = collectUnexpectedErrors(page);
+
+  try {
+    const connectionResponse = await page.request.post("/api/connections", {
+      data: {
+        name: "NovelAI Style Plate Upload",
+        provider: "image_generation",
+        imageGenerationSource: "novelai",
+        imageService: "novelai",
+        model: "nai-diffusion-4-5-full",
+      },
+    });
+    expect(connectionResponse.ok()).toBeTruthy();
+    const connection = (await connectionResponse.json()) as { id: string };
+    connectionId = connection.id;
+
+    await page.goto("/");
+    await page.locator('[data-tour="panel-connections"]').click();
+    const rightPanel = page.locator('[data-component="RightPanelDesktop"]');
+    await rightPanel
+      .getByText("NovelAI Style Plate Upload", { exact: true })
+      .first()
+      .evaluate((element) => (element as HTMLElement).click());
+
+    const editor = page.locator(".mari-editor-shell");
+    await expect(editor).toBeVisible();
+    await editor.getByRole("button", { name: /NovelAI generation setup/iu }).click();
+    await editor.locator('input[type="file"][accept*="image/png"]').setInputFiles({
+      name: "style-plate.png",
+      mimeType: "image/png",
+      buffer: readFileSync(new URL("../packages/client/public/sprites/mari/Mari_wave.png", import.meta.url)),
+    });
+
+    await expect(editor).toBeVisible();
+    const preview = editor.getByRole("img", { name: "NovelAI style plate preview" });
+    await expect(preview).toBeVisible();
+    await expect(preview).toHaveAttribute("src", /^data:image\/jpeg;base64,/u);
+    await expect
+      .poll(async () => (await preview.getAttribute("src"))?.length ?? Number.POSITIVE_INFINITY)
+      .toBeLessThan(6 * 1024 * 1024);
+    expect(
+      await preview.evaluate((image) =>
+        Math.max((image as HTMLImageElement).naturalWidth, (image as HTMLImageElement).naturalHeight),
+      ),
+    ).toBeLessThanOrEqual(1536);
+    expect(errors).toEqual([]);
+  } catch (error) {
+    testFailure = error;
+  } finally {
+    if (connectionId) {
+      try {
+        const deletionResponse = await page.request.delete(`/api/connections/${connectionId}`);
+        if (!deletionResponse.ok()) throw new Error(`Connection cleanup failed with ${deletionResponse.status()}`);
+      } catch (cleanupError) {
+        if (testFailure !== undefined) {
+          console.warn("NovelAI style plate test cleanup failed", cleanupError);
+        } else {
+          cleanupFailure = cleanupError;
+        }
+      }
+    }
+  }
+
+  if (testFailure !== undefined) throw testFailure;
+  if (cleanupFailure !== undefined) throw cleanupFailure;
+});
+
 test("Connection image captioning defaults persist with a dedicated captioning connection", async ({
   page,
   request,
@@ -2275,8 +2348,32 @@ test("Character Chat actions reuse mode selection and seed the chosen setup wiza
 
     const roleplayWizard = page.locator('[data-component="ChatSetupWizard"]');
     await expect(roleplayWizard).toBeVisible();
+    await expect(roleplayWizard).toHaveClass(/mari-chat-setup-wizard/u);
+    const roleplayConnectionSelect = roleplayWizard.getByRole("combobox", { name: "Connection", exact: true });
+    await roleplayConnectionSelect.click();
+    const connectionListbox = roleplayWizard.getByRole("listbox", { name: "Connection", exact: true });
+    await expect(connectionListbox).toBeVisible();
+    const connectionListboxStyle = await connectionListbox.evaluate((listbox) => {
+      const style = getComputedStyle(listbox);
+      return { backgroundColor: style.backgroundColor, color: style.color };
+    });
+    expect(connectionListboxStyle.backgroundColor).not.toBe("rgb(255, 255, 255)");
+    expect(connectionListboxStyle.color).not.toBe(connectionListboxStyle.backgroundColor);
+    await connectionListbox.getByRole("option", { name: "None", exact: true }).click();
+    await expect(connectionListbox).toBeHidden();
     await roleplayWizard.getByRole("button", { name: "Next", exact: true }).click();
     await expect(roleplayWizard.getByRole("heading", { name: "Pick a Preset", exact: true })).toBeVisible();
+    const presetSelect = roleplayWizard.getByRole("combobox", { name: "Preset", exact: true });
+    await presetSelect.click();
+    const presetListbox = roleplayWizard.getByRole("listbox", { name: "Preset", exact: true });
+    await expect(presetListbox).toBeVisible();
+    expect(
+      await presetListbox.evaluate((listbox) => {
+        const style = getComputedStyle(listbox);
+        return { backgroundColor: style.backgroundColor, color: style.color };
+      }),
+    ).toEqual(connectionListboxStyle);
+    await presetListbox.getByRole("option", { name: "None", exact: true }).click();
     await roleplayWizard.getByRole("button", { name: "Next", exact: true }).click();
     const participantsHeading = roleplayWizard.getByRole("heading", {
       name: "Persona & Characters",
@@ -4199,10 +4296,13 @@ test("editing the preceding Roleplay message keeps one live stream row", async (
   const chat = (await chatResponse.json()) as { id: string };
 
   try {
-    const responseText = Array.from(
-      { length: 80 },
-      (_, index) => `Streaming line ${index + 1} remains owned by one presentation row.`,
-    ).join("\n");
+    const responseText = [
+      "**Streaming emphasis appears before completion.**",
+      ...Array.from(
+        { length: 80 },
+        (_, index) => `Streaming line ${index + 1} remains owned by one presentation row.`,
+      ),
+    ].join("\n");
     const savedMessage = {
       id: "__edit_during_stream_saved__",
       chatId: chat.id,
@@ -4258,6 +4358,7 @@ test("editing the preceding Roleplay message keeps one live stream row", async (
     const visibleAssistantRows = page.locator('[data-message-role="assistant"]');
     await expect(liveStream).toHaveCount(1);
     await expect(visibleAssistantRows).toHaveCount(1);
+    await expect(liveStream.locator("strong")).toContainText("Streaming emphasis appears before completion.");
     const userMessage = page.locator('[data-message-role="user"]').last();
     await userMessage.hover();
     await userMessage.getByTitle("Edit").click();
@@ -4472,8 +4573,8 @@ test("new Roleplay chats seed character Tracker custom-field defaults without re
   }
 });
 
-test("desktop Tracker stays in the Roleplay gutter without shifting the chat column", async ({ page }, testInfo) => {
-  test.skip(!testInfo.project.name.includes("desktop"), "Desktop Tracker gutter behavior is covered on desktop.");
+test("desktop Tracker preserves its controls without shifting the chat column", async ({ page }, testInfo) => {
+  test.skip(!testInfo.project.name.includes("desktop"), "Desktop Tracker overlap behavior is covered on desktop.");
 
   // Keep this device-local layout test isolated from the shared settings
   // record used by the parallel browser project.
@@ -4541,9 +4642,11 @@ test("desktop Tracker stays in the Roleplay gutter without shifting the chat col
     expect(Math.abs(chatColumnAfter!.x - chatColumnBefore!.x)).toBeLessThanOrEqual(1);
     expect(Math.abs(chatColumnAfter!.width - chatColumnBefore!.width)).toBeLessThanOrEqual(1);
 
-    const expectedWidth = Math.min(420, Math.floor(chatColumnAfter!.x - mainBox!.x - 8));
+    const expectedWidth = Math.min(420, Math.floor(mainBox!.width - 8));
     expect(Math.abs(trackerBox!.width - expectedWidth)).toBeLessThanOrEqual(1);
-    expect(trackerBox!.x + trackerBox!.width).toBeLessThanOrEqual(chatColumnAfter!.x - 7);
+    expect(trackerBox!.x).toBeGreaterThanOrEqual(mainBox!.x - 1);
+    expect(trackerBox!.x).toBeLessThanOrEqual(mainBox!.x + 1);
+    expect(trackerBox!.x + trackerBox!.width).toBeGreaterThan(chatColumnAfter!.x);
 
     const trackerContent = tracker.locator(".mari-tracker-panel-scroll");
     const expectedScale = Math.max(0.65, expectedWidth / 420);
@@ -5485,7 +5588,10 @@ test("preset pictures can be uploaded from the panel and replaced in the Overvie
   }
 });
 
-test("roleplay quick preset editor uses chat settings spacing and surfaces", async ({ page, request }, testInfo) => {
+test("roleplay quick preset editor uses chat settings spacing, surfaces, and safe deletion", async ({
+  page,
+  request,
+}, testInfo) => {
   test.skip(!testInfo.project.name.includes("desktop"), "Desktop Chat Settings compact-editor regression.");
 
   const suffix = Date.now().toString(36);
@@ -5503,6 +5609,7 @@ test("roleplay quick preset editor uses chat settings spacing and surfaces", asy
     },
   });
   expect(sectionResponse.ok()).toBeTruthy();
+  const section = (await sectionResponse.json()) as { id: string };
   const groupResponse = await request.post(`/api/prompts/${preset.id}/groups`, {
     data: { name: "Quick Group" },
   });
@@ -5521,6 +5628,13 @@ test("roleplay quick preset editor uses chat settings spacing and surfaces", asy
   await page.addInitScript((chatId) => {
     localStorage.setItem("marinara-active-chat-id", chatId);
   }, chat.id);
+  const deletePath = `/api/prompts/${preset.id}/sections/${section.id}`;
+  const deleteRequests: string[] = [];
+  page.on("request", (outgoingRequest) => {
+    if (outgoingRequest.method() === "DELETE" && new URL(outgoingRequest.url()).pathname === deletePath) {
+      deleteRequests.push(deletePath);
+    }
+  });
 
   try {
     await page.goto("/");
@@ -5573,6 +5687,30 @@ test("roleplay quick preset editor uses chat settings spacing and surfaces", asy
         }),
       )
       .toBe(true);
+
+    // Issue #4698 — canceling must leave the prompt block untouched, while
+    // confirming must issue exactly one delete for the selected block.
+    const deleteButton = sectionCard.getByTitle("Delete");
+    const deleteDialog = page.getByRole("dialog", { name: "Delete Prompt Block" });
+    await deleteButton.click();
+    await expect(deleteDialog).toContainText(
+      "Are you sure you want to delete Quick Section? This cannot be undone.",
+    );
+    await deleteDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(deleteDialog).toBeHidden();
+    expect(deleteRequests).toEqual([]);
+    await expect(sectionCard).toHaveCount(1);
+    const sectionsAfterCancel = await request.get(`/api/prompts/${preset.id}/sections`);
+    expect(await sectionsAfterCancel.json()).toContainEqual(expect.objectContaining({ id: section.id }));
+
+    const deleteResponsePromise = page.waitForResponse(
+      (response) => response.request().method() === "DELETE" && new URL(response.url()).pathname === deletePath,
+    );
+    await deleteButton.click();
+    await deleteDialog.getByRole("button", { name: "Delete", exact: true }).click();
+    expect((await deleteResponsePromise).ok()).toBeTruthy();
+    expect(deleteRequests).toEqual([deletePath]);
+    await expect(sectionCard).toHaveCount(0);
 
     await drawer.getByRole("button", { name: "Close chat settings", exact: true }).click();
     await expect(drawer).toHaveCount(0);
@@ -10516,6 +10654,86 @@ test("Professor Mari chat fills the mobile home viewport and keeps its composer 
     .toBe(true);
 });
 
+test("Professor Mari shows the latest context budget when token usage is enabled", async ({ page }) => {
+  const chatResponse = await page.request.get("/api/chats/internal/professor-mari");
+  expect(chatResponse.ok()).toBeTruthy();
+  const chat = (await chatResponse.json()) as { id: string };
+  const messageResponse = await page.request.post(`/api/chats/${chat.id}/messages`, {
+    data: {
+      role: "assistant",
+      characterId: "__professor_mari__",
+      content: "Context budget regression response.",
+    },
+  });
+  expect(messageResponse.ok()).toBeTruthy();
+  const message = (await messageResponse.json()) as { id: string };
+  const extraResponse = await page.request.patch(`/api/chats/${chat.id}/messages/${message.id}/extra`, {
+    data: {
+      generationInfo: {
+        provider: "custom",
+        model: "budget-model",
+        temperature: null,
+        tokensPrompt: 12_000,
+        tokensCompletion: 345,
+        durationMs: null,
+        finishReason: "stop",
+      },
+    },
+  });
+  expect(extraResponse.ok()).toBeTruthy();
+
+  try {
+    await page.route("**/api/professor-mari/workspace/status*", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          enabled: true,
+          piAvailable: false,
+          workspace: "/tmp/marinara",
+          dataDir: "/tmp/marinara/data",
+          tools: [],
+          shellSandbox: { available: true, backend: "macos-seatbelt" },
+          dbAccess: "server-managed",
+          connection: {
+            id: "budget-connection",
+            name: "Budget connection",
+            provider: "custom",
+            model: "budget-model",
+            maxContext: 128_000,
+          },
+          skills: [],
+          skillDiagnostics: [],
+          active: false,
+          pendingApprovals: [],
+          history: [],
+          error: null,
+        }),
+      });
+    });
+
+    await page.goto("/");
+    await page.evaluate(async () => {
+      const { useUIStore } = (await import("/src/stores/ui.store.ts")) as {
+        useUIStore: { getState: () => { setShowTokenUsage: (value: boolean) => void } };
+      };
+      useUIStore.getState().setShowTokenUsage(true);
+    });
+    await page
+      .locator('[data-component="HomeProfessorMariChat.MariPanel"]')
+      .getByRole("button", { name: "Ask Professor Mari" })
+      .click();
+
+    const window = page.locator('[data-component="HomeProfessorMariChat.Window"]');
+    const budget = window.locator('[data-component="HomeProfessorMariChat.ContextBudget"]');
+    await expect(budget).toContainText("Context");
+    await expect(budget).toContainText("12.3k / 128k tokens");
+    await expect(budget.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "12345");
+    await expect(budget.getByRole("progressbar")).toHaveAttribute("aria-valuemax", "128000");
+  } finally {
+    await bestEffortDelete(page.request, `/api/chats/${chat.id}/messages/${message.id}`);
+  }
+});
+
 test("Professor Mari history opens a loaded chat at its newest message", async ({ page }) => {
   const createdChatIds: string[] = [];
 
@@ -13794,6 +14012,57 @@ test("mobile Game keeps CYOA usable above four HUD widgets", async ({ page, requ
     expect(errors).toEqual([]);
   } finally {
     await request.delete(`/api/chats/${chat.id}`);
+  }
+});
+
+test("Re-imported backgrounds with the same filename bypass stale browser cache", async ({ page }, testInfo) => {
+  const suffix = testInfo.project.name.includes("mobile") ? "mobile" : "desktop";
+  const filename = `background-cache-revalidation-${suffix}.gif`;
+  const original = Buffer.from(TRANSPARENT_GIF_BASE64, "base64");
+  const replacement = Buffer.concat([original, Buffer.from([0x00])]);
+  let uploadedFilename: string | null = null;
+
+  try {
+    const firstUpload = await page.request.post("/api/backgrounds/upload", {
+      multipart: { file: { name: filename, mimeType: "image/gif", buffer: original } },
+    });
+    expect(firstUpload.ok()).toBeTruthy();
+    const first = (await firstUpload.json()) as { filename: string; url: string };
+    uploadedFilename = first.filename;
+    expect(first.filename).toBe(filename);
+
+    await page.goto("/");
+    const readInBrowser = (url: string) =>
+      page.evaluate(async (backgroundUrl) => {
+        const response = await fetch(backgroundUrl);
+        return {
+          bytes: Array.from(new Uint8Array(await response.arrayBuffer())),
+          cacheControl: response.headers.get("cache-control"),
+        };
+      }, url);
+    const before = await readInBrowser(first.url);
+    expect(before.cacheControl).toBe("no-cache, must-revalidate");
+
+    const deleted = await page.request.delete(`/api/backgrounds/${encodeURIComponent(first.filename)}`);
+    expect(deleted.ok()).toBeTruthy();
+    uploadedFilename = null;
+    const secondUpload = await page.request.post("/api/backgrounds/upload", {
+      multipart: { file: { name: filename, mimeType: "image/gif", buffer: replacement } },
+    });
+    expect(secondUpload.ok()).toBeTruthy();
+    const second = (await secondUpload.json()) as { filename: string; url: string };
+    uploadedFilename = second.filename;
+    expect(second.filename).toBe(filename);
+    expect(second.url).toBe(first.url);
+
+    const after = await readInBrowser(second.url);
+    expect(after.cacheControl).toBe("no-cache, must-revalidate");
+    expect(after.bytes).toEqual(Array.from(replacement));
+    expect(after.bytes).not.toEqual(before.bytes);
+  } finally {
+    if (uploadedFilename) {
+      await bestEffortDelete(page.request, `/api/backgrounds/${encodeURIComponent(uploadedFilename)}`);
+    }
   }
 });
 

@@ -78,7 +78,15 @@ import { useAgentStore } from "../../stores/agent.store";
 import { useSidecarStore } from "../../stores/sidecar.store";
 import { useUIStore } from "../../stores/ui.store";
 import { showLocalMessageNotification, showNativeMessageNotification } from "../../lib/local-notifications";
-import { scrollProfessorMariTranscriptToBottom } from "../../lib/professor-mari-transcript-scroll";
+import {
+  isProfessorMariTranscriptNearBottom,
+  scrollProfessorMariTranscriptToBottom,
+} from "../../lib/professor-mari-transcript-scroll";
+import {
+  formatCompactTokenCount,
+  resolveProfessorMariContextBudget,
+  type ProfessorMariContextBudget,
+} from "../../lib/professor-mari-context-budget";
 import { applyInlineMarkdown, renderMarkdownBlocks } from "../../lib/markdown";
 import { rafThrottle } from "../../lib/raf-throttle";
 import { prepareImageAttachment } from "../../lib/chat-attachment-images";
@@ -1378,23 +1386,30 @@ function WorkspaceToolEvent({ tool }: { tool: WorkspaceToolCall }) {
         </span>
       }
     >
-      <div
-        className={cn(
-          "inline-flex max-w-full items-center gap-1.5 rounded-lg border px-2 py-1 text-[0.7rem] leading-5 shadow-sm",
-          toolToneClasses(presentation.tone),
-          isError && "border-[var(--destructive)]/35 bg-[var(--destructive)]/10",
-        )}
-        title={presentation.detail ?? presentation.title}
-      >
-        <span className="shrink-0 rounded-full bg-[var(--background)]/70 px-1.5 py-0.5 text-[0.56rem] font-semibold uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
-          {presentation.eyebrow}
-        </span>
-        <span className="min-w-0 truncate font-semibold text-[var(--foreground)]">{presentation.title}</span>
-        {presentation.detail && (
-          <span className="min-w-0 truncate text-[var(--muted-foreground)]">· {presentation.detail}</span>
-        )}
-        {isError && (
-          <span className="shrink-0 text-[0.65rem] font-semibold text-[var(--destructive)]">{localizeUi("ui.chat.workspacetoolevent.needsAttention")}</span>
+      <div className="min-w-0 space-y-1.5">
+        <div
+          className={cn(
+            "inline-flex max-w-full items-center gap-1.5 rounded-lg border px-2 py-1 text-[0.7rem] leading-5 shadow-sm",
+            toolToneClasses(presentation.tone),
+            isError && "border-[var(--destructive)]/35 bg-[var(--destructive)]/10",
+          )}
+          title={presentation.detail ?? presentation.title}
+        >
+          <span className="shrink-0 rounded-full bg-[var(--background)]/70 px-1.5 py-0.5 text-[0.56rem] font-semibold uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
+            {presentation.eyebrow}
+          </span>
+          <span className="min-w-0 truncate font-semibold text-[var(--foreground)]">{presentation.title}</span>
+          {presentation.detail && (
+            <span className="min-w-0 truncate text-[var(--muted-foreground)]">· {presentation.detail}</span>
+          )}
+          {isError && (
+            <span className="shrink-0 text-[0.65rem] font-semibold text-[var(--destructive)]">{localizeUi("ui.chat.workspacetoolevent.needsAttention")}</span>
+          )}
+        </div>
+        {isError && tool.output?.trim() && (
+          <pre className="max-h-36 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-[var(--destructive)]/30 bg-[var(--destructive)]/8 px-2.5 py-2 text-[0.6875rem] leading-relaxed text-[var(--destructive)]">
+            {tool.output.trim()}
+          </pre>
         )}
       </div>
     </TranscriptRow>
@@ -1688,6 +1703,41 @@ function LoadingHistoryState() {
           <div className="h-2 w-3/4 rounded-full bg-[var(--muted)]/30 animate-pulse" />
         </div>
       </TranscriptRow>
+    </div>
+  );
+}
+
+function ProfessorMariContextBudgetIndicator({ budget }: { budget: ProfessorMariContextBudget }) {
+  const { t: localizeUi } = useUiTranslation();
+  const used = formatCompactTokenCount(budget.usedTokens);
+  const maximum = formatCompactTokenCount(budget.maxTokens);
+  const ariaLabel = localizeUi("ui.chat.homeprofessormarichat.contextBudgetAria", { used, maximum });
+  const progressStyle = { "--mari-context-budget": `${budget.percentage}%` } as CSSProperties;
+
+  return (
+    <div
+      data-component="HomeProfessorMariChat.ContextBudget"
+      className="mb-2 space-y-1 px-0.5 text-[0.6875rem] text-[var(--muted-foreground)]"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <span>{localizeUi("ui.chat.homeprofessormarichat.contextBudget")}</span>
+        <span className="tabular-nums text-[var(--foreground)]/70">
+          {localizeUi("ui.chat.homeprofessormarichat.contextBudgetValue", { used, maximum })}
+        </span>
+      </div>
+      <div
+        role="progressbar"
+        aria-label={ariaLabel}
+        aria-valuemin={0}
+        aria-valuemax={budget.maxTokens}
+        aria-valuenow={Math.min(budget.usedTokens, budget.maxTokens)}
+        className="h-1 overflow-hidden rounded-full bg-[var(--muted)]/55"
+      >
+        <div
+          className="h-full w-[var(--mari-context-budget)] rounded-full bg-[var(--primary)] transition-[width] duration-200"
+          style={progressStyle}
+        />
+      </div>
     </div>
   );
 }
@@ -2299,6 +2349,7 @@ export function HomeProfessorMariChat({
   const messageLoadAbortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const transcriptScrollFrameRef = useRef<number | null>(null);
+  const transcriptFollowOutputRef = useRef(true);
   const floatingSurfaceRef = useRef<HTMLDivElement>(null);
   const floatingButtonRef = useRef<HTMLDivElement>(null);
   const floatingDragRef = useRef<FloatingDragState | null>(null);
@@ -2351,6 +2402,7 @@ export function HomeProfessorMariChat({
       }
       scrollRef.current = node;
       if (!node || loadingHistory || !chatId || loadedMessagesChatId !== chatId) return;
+      transcriptFollowOutputRef.current = true;
       transcriptScrollFrameRef.current = window.requestAnimationFrame(() => {
         transcriptScrollFrameRef.current = null;
         if (scrollRef.current === node) scrollProfessorMariTranscriptToBottom(node);
@@ -2383,6 +2435,7 @@ export function HomeProfessorMariChat({
   const recordMariPlanAnswer = useAgentStore((state) => state.recordMariPlanAnswer);
   const clearMariPlan = useAgentStore((state) => state.clearMariPlan);
   const professorMariSuggestionsEnabled = useUIStore((state) => state.professorMariSuggestionsEnabled);
+  const showTokenUsage = useUIStore((state) => state.showTokenUsage);
 
   const languageConnections = useMemo<ProfessorMariConnectionOption[]>(
     () => filterLanguageGenerationConnections((connectionsRaw ?? []) as APIConnection[]),
@@ -2408,6 +2461,10 @@ export function HomeProfessorMariChat({
   const effectiveConnection =
     selectedConnection ?? connectionOptions.find((connection) => connection.isDefault) ?? connectionOptions[0] ?? null;
   const effectiveConnectionId = effectiveConnection?.id ?? null;
+  const contextBudget = useMemo(
+    () => resolveProfessorMariContextBudget(messages, workspaceStatus?.connection?.maxContext),
+    [messages, workspaceStatus?.connection?.maxContext],
+  );
   const isBusy = sending || hasActiveGeneration || workspaceActive;
   useEffect(() => {
     messageMutationBusyRef.current = isBusy;
@@ -2552,7 +2609,11 @@ export function HomeProfessorMariChat({
   }, [effectiveConnectionId]);
 
   const invalidateWorkspaceData = useCallback(async () => {
-    await qc.invalidateQueries({ refetchType: "all" });
+    // Invalidation marks every query stale either way; the default 'active'
+    // refetch pulls only what is mounted now, and everything else refreshes on
+    // its next mount. refetchType:'all' here made every cached chat re-drain
+    // its full message page history on each Mari workspace change (#4703).
+    await qc.invalidateQueries();
   }, [qc]);
 
   useEffect(() => {
@@ -2709,9 +2770,14 @@ export function HomeProfessorMariChat({
 
   useEffect(() => {
     const node = scrollRef.current;
-    if (!node) return;
+    if (!node || !transcriptFollowOutputRef.current) return;
     scrollProfessorMariTranscriptToBottom(node);
   }, [messages, workspaceTimeline, workspaceActivity, visiblePendingChangeReviewKey, workspaceStatus?.error]);
+
+  const handleTranscriptScroll = useCallback(() => {
+    const node = scrollRef.current;
+    if (node) transcriptFollowOutputRef.current = isProfessorMariTranscriptNearBottom(node);
+  }, []);
 
   const displayMessages = useMemo(() => [createWelcomeMessage(chatId), ...messages], [chatId, messages]);
 
@@ -3247,7 +3313,15 @@ export function HomeProfessorMariChat({
     async (id: string) => {
       const item = chatHistory.find((chat) => chat.id === id);
       if (!item) return;
-      if (!window.confirm(localizeUi("ui.chat.homeprofessormarichat.deleteValue1", { value1: item.name ||localizeUi("ui.chat.homeprofessormarichat.thisProfessorMariChat") }))) return;
+      const confirmed = await showConfirmDialog({
+        title: localizeUi("ui.chat.homeprofessormarichat.deleteValue1", {
+          value1: item.name || localizeUi("ui.chat.homeprofessormarichat.thisProfessorMariChat"),
+        }),
+        message: localizeUi("ui.chat.homeprofessormarichat.deleteSelectedChatsConfirmation", { count: 1 }),
+        confirmLabel: localizeUi("lorebook.editor.batch.delete"),
+        tone: "destructive",
+      });
+      if (!confirmed) return;
       try {
         await api.delete(`/chats/internal/professor-mari/chats/${id}`);
         if (id === chatId) {
@@ -3412,6 +3486,7 @@ export function HomeProfessorMariChat({
             chatId: chat.id,
             message: text,
             connectionId: effectiveConnectionId,
+            debugMode: useUIStore.getState().debugMode,
             attachments,
             existingUserMessageId,
           },
@@ -3750,6 +3825,7 @@ export function HomeProfessorMariChat({
     <>
       <div
         ref={setTranscriptScrollNode}
+        onScroll={handleTranscriptScroll}
         data-component="HomeProfessorMariChat.Transcript"
         className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-3 pb-4 text-left"
       >
@@ -3789,6 +3865,7 @@ export function HomeProfessorMariChat({
           void handleSubmit();
         }}
       >
+        {showTokenUsage && contextBudget && <ProfessorMariContextBudgetIndicator budget={contextBudget} />}
         <input
           ref={attachmentInputRef}
           type="file"
@@ -4392,6 +4469,7 @@ export function HomeProfessorMariChat({
 
                       <div
                         ref={setTranscriptScrollNode}
+                        onScroll={handleTranscriptScroll}
                         data-component="HomeProfessorMariChat.Transcript"
                         className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-3 pb-4 text-left"
                       >
@@ -4435,6 +4513,9 @@ export function HomeProfessorMariChat({
                           void handleSubmit();
                         }}
                       >
+                        {showTokenUsage && contextBudget && (
+                          <ProfessorMariContextBudgetIndicator budget={contextBudget} />
+                        )}
                         <input
                           ref={attachmentInputRef}
                           type="file"

@@ -14,9 +14,19 @@ import {
 import playwrightConfig from "../../playwright.config.js";
 import { resolveDevSharedBuildScript } from "../dev-shared-build.mjs";
 import { validatePullRequestTriage } from "../validate-pr-triage.mjs";
-import { characterCardVersions, characterGroups, characters, chatPresets, chats, messages } from "../../packages/server/src/db/schema/index.js";
+import {
+  characterCardVersions,
+  characterGroups,
+  characters,
+  chatPresets,
+  chats,
+  lorebookCharacterLinks,
+  lorebooks,
+  messages,
+} from "../../packages/server/src/db/schema/index.js";
 import { eq } from "../../packages/server/src/db/file-query.js";
 import { parseBuildMeta, resolveBuildBranch } from "../../packages/server/src/config/build-info.js";
+import { createSerializedMutationQueue } from "../../packages/client/src/lib/serialized-mutation-queue.js";
 
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 import {
@@ -65,7 +75,18 @@ import {
   resolveTrackerPanelDesktopWidth,
 } from "../../packages/client/src/lib/tracker-panel-layout.js";
 import { getApiErrorMessage } from "../../packages/client/src/lib/api-client.js";
-import { scrollProfessorMariTranscriptToBottom } from "../../packages/client/src/lib/professor-mari-transcript-scroll.js";
+import {
+  getPersonalExtensionTraffic,
+  recordPersonalExtensionRequest,
+} from "../../packages/client/src/lib/personal-extension-traffic.js";
+import {
+  isProfessorMariTranscriptNearBottom,
+  scrollProfessorMariTranscriptToBottom,
+} from "../../packages/client/src/lib/professor-mari-transcript-scroll.js";
+import {
+  formatCompactTokenCount,
+  resolveProfessorMariContextBudget,
+} from "../../packages/client/src/lib/professor-mari-context-budget.js";
 import { parseCustomParametersDraft } from "../../packages/client/src/lib/generation-custom-parameters.js";
 import { parseGenerationParameterDraft } from "../../packages/client/src/lib/generation-parameter-draft.js";
 import {
@@ -169,8 +190,10 @@ import {
   formatLorebookWriteApprovalText,
   parseLorebookWriteApprovalText,
 } from "../../packages/server/src/routes/generate/agent-write-approval.js";
+import { mergeLorebookKeeperUpdateContent } from "../../packages/server/src/routes/generate/lorebook-keeper-utils.js";
 import { runImageGenerationRequest } from "../../packages/server/src/services/image/image-generation-queue.js";
 import {
+  buildSwarmUiGenerationBody,
   buildOpenRouterImagesRequest,
   detectNovelAiSubjectCount,
   openRouterImagesUrl,
@@ -178,11 +201,13 @@ import {
   resolveNovelAiDefaults,
   resolveNovelAiRequestSize,
   resolveNovelAiSize,
+  parseSwarmUiImageReference,
   usesOpenRouterImagesApi,
 } from "../../packages/server/src/services/image/image-generation.js";
 import {
   buildComfyUiLoraWorkflowReplacements,
   COMFYUI_PLACEHOLDER_REFERENCE_BASE64,
+  DEFAULT_COMFYUI_DEFAULTS,
   DEFAULT_NOVELAI_DEFAULTS,
   imageSourceToDefaultsService,
   normalizeComfyUiLoraSettings,
@@ -334,10 +359,7 @@ assert.equal(resolveSpriteTransition("full-body", "none"), "crossfade");
 assert.equal(resolveSpriteTransition("full-body", "shake"), "shake");
 assert.equal(resolveSpriteTransition("expressions", "none"), "none");
 assert.deepEqual(
-  resolveSpriteExpressionState([
-    { extra: { spriteExpressions: { "character-a": "happy" } } },
-    { extra: {} },
-  ]),
+  resolveSpriteExpressionState([{ extra: { spriteExpressions: { "character-a": "happy" } } }, { extra: {} }]),
   { "character-a": "happy" },
 );
 assert.deepEqual(
@@ -466,7 +488,10 @@ assert.deepEqual(validBuildMeta, { commit: "abcdef123456", branch: "staging" });
 assert.equal(parseBuildMeta('{"commit":"abcdef123456","branch":42}'), null);
 assert.equal(parseBuildMeta(undefined), null);
 assert.equal(resolveBuildBranch(undefined, validBuildMeta?.branch, "main"), "staging");
-assert.equal(resolveBuildBranch(undefined, parseBuildMeta(undefined)?.branch, "refs/heads/feature/test"), "feature/test");
+assert.equal(
+  resolveBuildBranch(undefined, parseBuildMeta(undefined)?.branch, "refs/heads/feature/test"),
+  "feature/test",
+);
 const lorebookEnglishLocale = JSON.parse(
   readFileSync(join(REPOSITORY_ROOT, "packages/client/src/localization/locales/en.json"), "utf8"),
 ) as Record<string, unknown>;
@@ -492,7 +517,10 @@ assert.match(
   /캐릭터 정의 전, 캐릭터 정의 후/u,
 );
 const updatesRouteSource = readFileSync(join(REPOSITORY_ROOT, "packages/server/src/routes/updates.routes.ts"), "utf8");
-assert.match(updatesRouteSource, /gitInstall \? await getCurrentBranch\(root\)\.catch\(\(\) => null\) : getBuildBranch\(\)/u);
+assert.match(
+  updatesRouteSource,
+  /gitInstall \? await getCurrentBranch\(root\)\.catch\(\(\) => null\) : getBuildBranch\(\)/u,
+);
 assert.match(updatesRouteSource, /const currentChannel = await getUpdateChannelForCheckout\(root, currentBranch\)/u);
 for (const dockerfile of ["Dockerfile", "Dockerfile.lite"]) {
   const dockerSource = readFileSync(join(REPOSITORY_ROOT, dockerfile), "utf8");
@@ -595,10 +623,10 @@ assert.deepEqual(resolveIllustratorImageSize({ width: 960, height: 540 }, "portr
   height: 960,
 });
 assert.deepEqual(parseImageGenerationUserSettings(null).noodle, { width: 1024, height: 1536 });
-assert.deepEqual(
-  parseImageGenerationUserSettings('{"imageNoodleWidth":1536,"imageNoodleHeight":1024}').noodle,
-  { width: 1536, height: 1024 },
-);
+assert.deepEqual(parseImageGenerationUserSettings('{"imageNoodleWidth":1536,"imageNoodleHeight":1024}').noodle, {
+  width: 1536,
+  height: 1024,
+});
 
 const minimalProfessorMariPersona = buildPersonaCreateRow(
   { name: "Minimal helper persona" },
@@ -847,6 +875,77 @@ try {
     (await lorebookStorage.listPage({ limit: 100, offset: 0, search: "Susie's private memories" })).items.length,
     0,
     "Hidden embedded lorebooks must not appear in general library searches",
+  );
+
+  const removedOwner = await characterStorage.create(characterDataSchema.parse({ name: "Removed owner" }));
+  const removedOwnerLorebook = await lorebookStorage.create(
+    createLorebookSchema.parse({
+      name: "Formerly private notes",
+      characterIds: [removedOwner.id],
+      hiddenFromLibrary: true,
+    }),
+  );
+  await characterStorage.remove(removedOwner.id);
+  assert.equal(
+    (
+      await db
+        .select()
+        .from(lorebookCharacterLinks)
+        .where(eq(lorebookCharacterLinks.lorebookId, removedOwnerLorebook.id))
+    ).length,
+    0,
+    "Deleting a Character must remove its lorebook ownership link",
+  );
+  const retainedOrphan = (await db.select().from(lorebooks).where(eq(lorebooks.id, removedOwnerLorebook.id)))[0];
+  assert.ok(retainedOrphan, "An orphaned lorebook must remain available for recovery and management");
+  assert.equal(retainedOrphan.enabled, "false");
+  assert.equal(retainedOrphan.hiddenFromLibrary, "false");
+
+  const legacyOwner = await characterStorage.create(characterDataSchema.parse({ name: "Legacy owner" }));
+  const legacyLorebook = await lorebookStorage.create(
+    createLorebookSchema.parse({ name: "Legacy notes", characterIds: [legacyOwner.id], hiddenFromLibrary: true }),
+  );
+  await db
+    .delete(lorebookCharacterLinks)
+    .where(eq(lorebookCharacterLinks.lorebookId, legacyLorebook.id));
+  await characterStorage.remove(legacyOwner.id);
+  const retainedLegacyOrphan = (await db.select().from(lorebooks).where(eq(lorebooks.id, legacyLorebook.id)))[0];
+  assert.equal(retainedLegacyOrphan.characterId, null, "Deleting a Character must clear legacy direct ownership");
+  assert.equal(retainedLegacyOrphan.enabled, "false", "Legacy orphaned lorebooks must be deactivated");
+  assert.equal(retainedLegacyOrphan.hiddenFromLibrary, "false", "Legacy orphaned lorebooks must be manageable");
+
+  const unlinkedOwner = await characterStorage.create(characterDataSchema.parse({ name: "Unlinked owner" }));
+  const unlinkedLorebook = await lorebookStorage.create(
+    createLorebookSchema.parse({ name: "Unlinked notes", characterIds: [unlinkedOwner.id], hiddenFromLibrary: true }),
+  );
+  const unlinked = await lorebookStorage.update(unlinkedLorebook.id, { characterIds: [] });
+  assert.equal(unlinked?.enabled, false, "Unlinking the final owner must deactivate the lorebook");
+  assert.equal(unlinked?.hiddenFromLibrary, false, "An unlinked lorebook must return to the manageable library");
+
+  const concurrentCharacterOwner = await characterStorage.create(
+    characterDataSchema.parse({ name: "Concurrent owner" }),
+  );
+  const concurrentPersonaOwner = await characterStorage.createPersona("Concurrent persona", "Regression fixture");
+  const concurrentlyUnlinkedLorebook = await lorebookStorage.create(
+    createLorebookSchema.parse({
+      name: "Concurrently unlinked notes",
+      characterIds: [concurrentCharacterOwner.id],
+      personaIds: [concurrentPersonaOwner.id],
+      hiddenFromLibrary: true,
+    }),
+  );
+  await Promise.all([
+    lorebookStorage.update(concurrentlyUnlinkedLorebook.id, { characterIds: [] }),
+    lorebookStorage.update(concurrentlyUnlinkedLorebook.id, { personaIds: [] }),
+  ]);
+  const concurrentlyUnlinked = await lorebookStorage.getById(concurrentlyUnlinkedLorebook.id);
+  assert.deepEqual(concurrentlyUnlinked?.characterIds, [], "Concurrent unlinking must not restore a Character owner");
+  assert.deepEqual(concurrentlyUnlinked?.personaIds, [], "Concurrent unlinking must not restore a Persona owner");
+  assert.equal(concurrentlyUnlinked?.enabled, false, "Concurrent final-owner unlinking must deactivate the lorebook");
+  assert.equal(
+    concurrentlyUnlinked?.hiddenFromLibrary,
+    false,
+    "Concurrent final-owner unlinking must leave the lorebook manageable",
   );
 
   const referencedContext = await buildReferencedCharacterContext({
@@ -1552,6 +1651,160 @@ try {
     "character.update must preserve every omitted Character Card field through the real merge and persistence path",
   );
 
+  // #4767: a heavy single-item read must bound its own size — eliding whole
+  // oversized fields (identity preserved) with a structured signal, and staying
+  // re-readable field by field — instead of getting sliced mid-JSON at the
+  // workspace output cap with no way to recover the lost content.
+  const heavyCharacterId = "heavy-card-4767";
+  const heavyGreeting = "G".repeat(40_000);
+  const heavyCreate = await mariDb.executeAction({
+    action: "character.create",
+    id: heavyCharacterId,
+    data: {
+      name: "Heavy Card",
+      description: "A compact identity that must survive the bounding.",
+      alternateGreetings: [heavyGreeting],
+    },
+  });
+  assert.equal(heavyCreate.ok, true, "#4767 heavy-card fixture must be created");
+
+  const heavyRead = await mariDb.executeAction({ action: "character.get", id: heavyCharacterId });
+  assert.equal(heavyRead.ok, true);
+  const heavyData = (heavyRead.output as { data: Record<string, unknown> }).data;
+  assert.equal(heavyData.name, "Heavy Card", "#4767 bounding must preserve the character name");
+  assert.equal(
+    heavyData.description,
+    "A compact identity that must survive the bounding.",
+    "#4767 bounding must preserve the description",
+  );
+  assert.equal(heavyRead.truncation?.truncated, true, "#4767 a heavy read must report structured truncation");
+  // The oversized greetings array is elided as a unit (one placeholder, not one
+  // per element), naming the array path for drill-down.
+  const greetingElision = (heavyRead.truncation?.fields ?? []).find(
+    (entry) => entry.path === "data.alternate_greetings",
+  );
+  assert.ok(greetingElision, "#4767 must elide the oversized greetings array and name its field path");
+  assert.ok(
+    greetingElision.fullLength >= 40_000,
+    "#4767 truncation metadata must report the elided value's true (serialized) length",
+  );
+  assert.ok(
+    !JSON.stringify(heavyData.alternate_greetings).includes("GGGGGGGGGG"),
+    "#4767 the oversized greetings must be elided in the overview, not inlined",
+  );
+  assert.ok(
+    JSON.stringify(heavyRead.output, null, 2).length < 30_000,
+    "#4767 the bounded overview must fit well under the 32k workspace output cap",
+  );
+
+  // The complete value must reassemble across field= windows — nothing is lost.
+  // Element-level drill-down still resolves even though elision was array-level.
+  const firstWindow = await mariDb.executeAction({
+    action: "character.get",
+    id: heavyCharacterId,
+    field: "data.alternate_greetings[0]",
+    offset: 0,
+    limit: 20_000,
+  });
+  const secondWindow = await mariDb.executeAction({
+    action: "character.get",
+    id: heavyCharacterId,
+    field: "data.alternate_greetings[0]",
+    offset: 20_000,
+    limit: 20_000,
+  });
+  assert.equal(firstWindow.truncation?.field?.total, 40_000, "#4767 a field read must report the true total length");
+  assert.equal(
+    String(firstWindow.output) + String(secondWindow.output),
+    heavyGreeting,
+    "#4767 field= windows must reassemble the complete original value with nothing lost",
+  );
+
+  // The guaranteed bound: a card whose bulk is MANY short strings (a huge tags
+  // array) must NOT inflate past the cap by turning each short value into a
+  // longer placeholder — the whole array is elided as one unit. This is the
+  // regression for the review's major finding.
+  const manyTagsId = "many-tags-4767";
+  const manyTagsCreate = await mariDb.executeAction({
+    action: "character.create",
+    id: manyTagsId,
+    data: {
+      name: "Tag Storm",
+      description: "Short identity.",
+      tags: Array.from({ length: 4000 }, (_, i) => `tag-${i}`),
+    },
+  });
+  assert.equal(manyTagsCreate.ok, true, "#4767 tag-storm fixture must be created");
+  const tagsRead = await mariDb.executeAction({ action: "character.get", id: manyTagsId });
+  assert.equal(tagsRead.ok, true);
+  assert.equal((tagsRead.output as { data: Record<string, unknown> }).data.name, "Tag Storm", "#4767 name survives a tag storm");
+  assert.ok(
+    JSON.stringify(tagsRead.output, null, 2).length < 30_000,
+    "#4767 a many-short-strings card must be bounded, never inflated past the cap",
+  );
+
+  // Description-dominated card: description is elided (last-resort) but the name
+  // still survives and the description remains recoverable via field=.
+  const descHeavyId = "desc-heavy-4767";
+  const heavyDescription = "D".repeat(40_000);
+  const descHeavyCreate = await mariDb.executeAction({
+    action: "character.create",
+    id: descHeavyId,
+    data: { name: "Wordy", description: heavyDescription },
+  });
+  assert.equal(descHeavyCreate.ok, true, "#4767 description-heavy fixture must be created");
+  const descRead = await mariDb.executeAction({ action: "character.get", id: descHeavyId });
+  assert.equal(descRead.ok, true);
+  assert.equal((descRead.output as { data: Record<string, unknown> }).data.name, "Wordy", "#4767 name survives even when description is the bulk");
+  assert.ok(
+    (descRead.truncation?.fields ?? []).some((f) => f.path === "data.description"),
+    "#4767 a description-dominated card elides the description (recoverable), not the identity",
+  );
+  const descWindow = await mariDb.executeAction({
+    action: "character.get",
+    id: descHeavyId,
+    field: "data.description",
+    offset: 0,
+    limit: 20_000,
+  });
+  assert.equal(descWindow.truncation?.field?.total, 40_000, "#4767 the elided description must be fully recoverable via field=");
+
+  // A field= path that does not resolve returns the overview WITH a not-found signal.
+  const missingField = await mariDb.executeAction({
+    action: "character.get",
+    id: heavyCharacterId,
+    field: "data.no_such_field",
+  });
+  assert.equal(missingField.truncation?.unresolvedField, "data.no_such_field", "#4767 an unresolved field= must be flagged, not silently swallowed");
+
+  // Same path on a SMALL row that needs no elision: still flags the miss, and
+  // reports no elided fields (so the note must not promise a field list).
+  const smallMissingField = await mariDb.executeAction({
+    action: "character.get",
+    id: characterId,
+    field: "data.no_such_field",
+  });
+  assert.equal(smallMissingField.truncation?.unresolvedField, "data.no_such_field", "#4767 a small-row unresolved field= must still be flagged");
+  assert.equal(
+    (smallMissingField.truncation?.fields ?? []).length,
+    0,
+    "#4767 a small-row unresolved field= reports no elided fields",
+  );
+
+  // A path reaching an inherited/prototype key must resolve to nothing, not the
+  // Object constructor (which would crash the field window). Own-property only.
+  const prototypeField = await mariDb.executeAction({
+    action: "character.get",
+    id: heavyCharacterId,
+    field: "constructor",
+  });
+  assert.equal(prototypeField.ok, true, "#4767 a prototype-key field= must not crash the read");
+  assert.equal(prototypeField.truncation?.unresolvedField, "constructor", "#4767 an inherited key must resolve as unresolved, not the constructor");
+
+  // A small read is untouched: no truncation metadata, behavior identical to before.
+  const smallRead = await mariDb.executeAction({ action: "character.get", id: characterId });
+  assert.equal(smallRead.truncation, undefined, "#4767 a small read must not be bounded or flagged");
+
   const characterFolderTimestamp = "2026-08-04T12:00:00.000Z";
   await db.insert(characterGroups).values({
     id: "character-folder-source",
@@ -1677,7 +1930,10 @@ try {
       }),
     ),
   );
-  assert.ok(concurrentFolderMoves.every((result) => result.ok), "Concurrent folder moves must both succeed");
+  assert.ok(
+    concurrentFolderMoves.every((result) => result.ok),
+    "Concurrent folder moves must both succeed",
+  );
   const concurrentTargetFolder = (await db.select().from(characterGroups)).find(
     (folder) => folder.id === "character-folder-concurrent-target",
   );
@@ -1706,7 +1962,11 @@ assert.equal(
   googleModelsPageUrl,
   "https://gemini-proxy.example.test/v1beta/models?pageSize=1000&pageToken=next%20page%2Ftoken",
 );
-assert.equal(new URL(googleModelsPageUrl).searchParams.has("key"), false, "Gemini API keys must stay out of model URLs");
+assert.equal(
+  new URL(googleModelsPageUrl).searchParams.has("key"),
+  false,
+  "Gemini API keys must stay out of model URLs",
+);
 
 const professorMariAboutMeCommands = parseCharacterCommands(
   '[update_character: name="Luna", about_me="fate dealer. tea hoarder. 🔮"]\n' +
@@ -1805,6 +2065,25 @@ assert.deepEqual(generatedLorebookEntry.secondaryKeys, ["rain"]);
     "An inline delimiter mention must not switch legacy approval text into explicit mode",
   );
 }
+
+assert.equal(
+  mergeLorebookKeeperUpdateContent({
+    existingContent: "Old timeline that must be replaced.",
+    replacementContent: "Corrected timeline.",
+    newFacts: [],
+  }),
+  "Corrected timeline.",
+  "Lorebook Keeper updates must replace an existing body instead of stacking another copy",
+);
+assert.equal(
+  mergeLorebookKeeperUpdateContent({
+    existingContent: "Stable scene state.",
+    replacementContent: "",
+    newFacts: ["A new clue appeared."],
+  }),
+  "Stable scene state.\n\n- A new clue appeared.",
+  "Fact-only Lorebook Keeper updates must preserve the current body",
+);
 
 const completeProfessorMariPersona = buildPersonaCreateRow(
   {
@@ -1965,10 +2244,7 @@ assert.deepEqual(
   [{ id: "chroma", name: "Chroma" }],
 );
 assert.equal(buildZaiImageUrl("https://api.z.ai/api/paas/v4"), "https://api.z.ai/api/paas/v4/images/generations");
-assert.throws(
-  () => buildZaiImageUrl("https://api.z.ai/api/coding/paas/v4"),
-  /general API URL/u,
-);
+assert.throws(() => buildZaiImageUrl("https://api.z.ai/api/coding/paas/v4"), /general API URL/u);
 assert.equal(resolveZaiImageSize("glm-image", 1600, 900), "1728x960");
 assert.equal(resolveZaiImageSize("cogview-4-250304", 900, 1600), "768x1344");
 assert.deepEqual(buildZaiImageRequest({ model: "glm-image", prompt: "canal", width: 1600, height: 900 }), {
@@ -1982,6 +2258,41 @@ assert.ok(IMAGE_GENERATION_SOURCES.some((source) => source.id === "zai"));
 assert.equal(inferImageSource("flux-model", "https://api.arliai.com/v1"), "arli");
 assert.ok(IMAGE_GENERATION_SOURCES.some((source) => source.id === "arli"));
 assert.equal(imageSourceToDefaultsService("arli"), "automatic1111");
+assert.equal(inferImageSource("", "http://127.0.0.1:7801"), "swarmui");
+assert.ok(IMAGE_GENERATION_SOURCES.some((source) => source.id === "swarmui"));
+assert.equal(imageSourceToDefaultsService("swarmui"), "comfyui");
+const swarmUiBody = buildSwarmUiGenerationBody(
+  {
+    prompt: "a blue fox",
+    negativePrompt: "blurry",
+    width: 832,
+    height: 1216,
+    model: "  sdxl/model.safetensors  ",
+    comfyWorkflow: JSON.stringify({
+      "1": {
+        class_type: "CLIPTextEncode",
+        inputs: { text: "%prompt%", seed: "%seed%", model: "%model%" },
+      },
+    }),
+    imageDefaults: {
+      version: 1,
+      service: "comfyui",
+      seed: 42,
+      comfyui: { ...DEFAULT_COMFYUI_DEFAULTS, loras: [] },
+    },
+  },
+  "session-123",
+);
+assert.equal(swarmUiBody.session_id, "session-123");
+assert.equal(swarmUiBody.model, "sdxl/model.safetensors");
+assert.deepEqual(JSON.parse(String(swarmUiBody.comfyworkflowraw)), {
+  "1": {
+    class_type: "CLIPTextEncode",
+    inputs: { text: "a blue fox", seed: 42, model: "sdxl/model.safetensors" },
+  },
+});
+assert.equal(parseSwarmUiImageReference({ images: ["View/local/raw/output.png"] }), "View/local/raw/output.png");
+assert.throws(() => parseSwarmUiImageReference({ error: "queue unavailable" }), /queue unavailable/u);
 assert.deepEqual(
   ZAI_IMAGE_MODELS.map((model) => model.id),
   ["glm-image", "cogview-4-250304"],
@@ -2308,13 +2619,46 @@ const termuxLauncher = readFileSync(new URL("../../start-termux.sh", import.meta
 assert.doesNotMatch(termuxLauncher, /run_pnpm install --force/u);
 assert.match(termuxLauncher, /run_pnpm store prune/u);
 assert.match(termuxLauncher, /TERMUX_REBUILD_REQUIRED/u);
+assert.match(termuxLauncher, /--max-old-space-size=2048/u);
+assert.match(
+  termuxLauncher,
+  /has_explicit_node_heap_limit\(\)[\s\S]*NODE_OPTIONS_VALUE[\s\S]*const heapOption = \/\^--max[\s\S]*if ! has_explicit_node_heap_limit; then[\s\S]*NODE_OPTIONS="\$\{NODE_OPTIONS:\+\$\{NODE_OPTIONS\} \}--max-old-space-size=2048"/u,
+  "Termux must parse complete heap-option tokens before applying its safe default",
+);
 for (const buildEntry of [
   "packages/shared/dist/constants/defaults.js",
   "packages/server/dist/index.js",
   "packages/client/dist/index.html",
 ]) {
-  assert.ok(termuxLauncher.includes(`if [ ! -f "${buildEntry}" ]; then`), `Termux must rebuild when ${buildEntry} is missing`);
+  assert.ok(
+    termuxLauncher.includes(`if [ ! -f "${buildEntry}" ]; then`),
+    `Termux must rebuild when ${buildEntry} is missing`,
+  );
 }
+
+const trafficExtensionId = "open-issues-extension-traffic";
+const trafficNow = 180_000;
+for (const requestedAt of [59_000, 119_000, 179_000]) {
+  for (let request = 0; request < 61; request += 1) {
+    recordPersonalExtensionRequest(trafficExtensionId, 2, requestedAt + request);
+  }
+}
+assert.deepEqual(getPersonalExtensionTraffic(trafficExtensionId, trafficNow), {
+  requests: 183,
+  bytes: 366,
+  requestsLastMinute: 61,
+  sustainedHighRate: true,
+});
+const personalExtensionInjectorSource = readFileSync(
+  new URL("../../packages/client/src/components/layout/PersonalExtensionInjector.tsx", import.meta.url),
+  "utf8",
+);
+assert.match(personalExtensionInjectorSource, /fetch: \(input, init\) => fetchForPersonalExtension/u);
+const personalExtensionSettingsSource = readFileSync(
+  new URL("../../packages/client/src/components/panels/settings/PersonalExtensionsSettings.tsx", import.meta.url),
+  "utf8",
+);
+assert.match(personalExtensionSettingsSource, /settings\.personalExtensions\.traffic\.summary/u);
 
 const sharedPackageJson = JSON.parse(
   readFileSync(new URL("../../packages/shared/package.json", import.meta.url), "utf8"),
@@ -2387,6 +2731,21 @@ const conversationGenerationSource = readFileSync(
   new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
   "utf8",
 );
+assert.match(
+  conversationGenerationSource,
+  /const selectorConnection = \(await connections\.getDefaultForAgents\(\)\) \?\? conn/u,
+  "Smart group responder selection must prefer the default Agent connection and fall back to the chat connection",
+);
+assert.match(
+  conversationGenerationSource,
+  /resolveStoredMaxTokens\(selectorConnection\.defaultParameters, DEFAULT_AGENT_MAX_TOKENS\)/u,
+  "Smart group responder selection must respect the Agent connection token default instead of a 512-token cap",
+);
+assert.match(
+  conversationGenerationSource,
+  /resolveStoredChatOptions\([\s\S]{0,180}selectorConnection\.defaultParameters/u,
+  "Smart group responder selection must inherit the Agent connection generation parameters",
+);
 const foregroundAutonomousSource = readFileSync(
   new URL("../../packages/client/src/hooks/use-autonomous-messaging.ts", import.meta.url),
   "utf8",
@@ -2411,15 +2770,58 @@ const professorMariHomeSource = readFileSync(
   new URL("../../packages/client/src/components/chat/HomeProfessorMariChat.tsx", import.meta.url),
   "utf8",
 );
+const professorMariContextBudget = resolveProfessorMariContextBudget(
+  [
+    {
+      role: "assistant",
+      extra: { generationInfo: { tokensPrompt: 12_000, tokensCompletion: 345 } },
+    },
+  ] as Message[],
+  128_000,
+);
+assert.deepEqual(professorMariContextBudget, {
+  usedTokens: 12_345,
+  maxTokens: 128_000,
+  percentage: (12_345 / 128_000) * 100,
+});
+assert.equal(formatCompactTokenCount(professorMariContextBudget!.usedTokens), "12.3k");
+assert.equal(
+  resolveProfessorMariContextBudget(
+    [
+      { role: "assistant", extra: { generationInfo: { usage: { promptTokens: 8_000, completionTokens: 192 } } } },
+    ] as Message[],
+    32_000,
+  )?.usedTokens,
+  8_192,
+  "legacy Professor Mari usage metadata should keep the context indicator available",
+);
+assert.equal(resolveProfessorMariContextBudget([], 128_000), null);
 assert.match(professorMariHomeSource, /chatHistorySelectionMode/u);
 assert.match(professorMariHomeSource, /toggleProfessorChatSelection/u);
 assert.match(professorMariHomeSource, /handleBulkDeleteProfessorChats/u);
-const professorMariTranscript = { scrollHeight: 720, scrollTop: 0 };
+assert.match(
+  professorMariHomeSource,
+  /handleDeleteProfessorChat[\s\S]{0,500}showConfirmDialog/u,
+  "Deleting one Professor Mari chat must use the app confirmation dialog",
+);
+assert.match(
+  professorMariHomeSource,
+  /isError && tool\.output\?\.trim\(\)[\s\S]{0,200}<pre/u,
+  "Failed workspace tools must reveal their provider output in the transcript",
+);
+const professorMariTranscript = { clientHeight: 240, scrollHeight: 720, scrollTop: 0 };
 scrollProfessorMariTranscriptToBottom(professorMariTranscript);
 assert.equal(
   professorMariTranscript.scrollTop,
   professorMariTranscript.scrollHeight,
   "Professor Mari transcript scrolling must align a mounted pane with its newest message",
+);
+assert.equal(isProfessorMariTranscriptNearBottom(professorMariTranscript), true);
+professorMariTranscript.scrollTop = 200;
+assert.equal(
+  isProfessorMariTranscriptNearBottom(professorMariTranscript),
+  false,
+  "Professor Mari streaming must stop following output after the reader scrolls away from the bottom",
 );
 assert.match(
   professorMariHomeSource,
@@ -2488,6 +2890,25 @@ const presetPanelSource = readFileSync(
 const chatMessageSource = readFileSync(
   new URL("../../packages/client/src/components/chat/ChatMessage.tsx", import.meta.url),
   "utf8",
+);
+const assignedSweepChatAreaSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/ChatArea.tsx", import.meta.url),
+  "utf8",
+);
+const appRecoverySource = readFileSync(new URL("../../packages/client/src/App.tsx", import.meta.url), "utf8");
+const chatRowPeekSource = readFileSync(
+  new URL("../../packages/client/src/components/layout/ChatRowPeek.tsx", import.meta.url),
+  "utf8",
+);
+assert.match(assignedSweepChatAreaSource, /export const ChatArea = memo\(function ChatArea/u);
+assert.doesNotMatch(assignedSweepChatAreaSource, /updateMessage(?:Extra)?\.mutate/u);
+assert.match(chatMessageSource, /mari-chrome-accent-progress mari-accent-animated mb-1\.5 h-0\.5/u);
+assert.match(chatMessageSource, /pointer-events-auto relative z-30 flex h-11 w-11/u);
+assert.match(chatRowPeekSource, /mari-chrome-accent-text-muted mari-accent-animated text-\[0\.6875rem\]/u);
+assert.match(assignedSweepChatAreaSource, /mari-chrome-accent-text-muted mari-accent-animated max-w-sm text-xs/u);
+assert.match(
+  appRecoverySource,
+  /<pre className="mari-chrome-accent-text-muted mari-accent-animated[^"]*">\s*\{errorMessage\}/u,
 );
 const macroTextareaSource = readFileSync(
   new URL("../../packages/client/src/components/ui/MacroTextarea.tsx", import.meta.url),
@@ -3022,7 +3443,10 @@ assert.match(
   chatGallerySource,
   /onClick=\{\(\) => handleDelete\(confirmDeleteId\)\}[\s\S]{0,180}mari-chrome-accent-surface/u,
 );
-assert.match(globalStyles, /\.mari-gallery-card \{\s*content-visibility: auto;\s*contain-intrinsic-size: auto 12rem;\s*\}/u);
+assert.match(
+  globalStyles,
+  /\.mari-gallery-card \{\s*content-visibility: auto;\s*contain-intrinsic-size: auto 12rem;\s*\}/u,
+);
 assert.match(characterEditorSource, /ui\.characters\.colorstab\.value1AvatarPreview/u);
 assert.match(characterEditorSource, /getAvatarCropStyle/u);
 assert.match(characterEditorSource, /downloadSpriteFile/u);
@@ -3107,6 +3531,21 @@ assert.match(gameSurfaceSource, /h-\[min\(42rem,calc\(100dvh-6rem\)\)\]/u);
 assert.match(gameSetupWizardSource, /ui\.game\.gamesetupwizard\.adjustGameAssetsForThisGame/u);
 assert.match(gameSetupWizardSource, /selectFoldersByDefault/u);
 assert.match(gameSetupWizardSource, /enableAgents: enableAgents \|\| undefined/u);
+assert.match(
+  gameSetupWizardSource,
+  /id="game-setup-spatial-map-target-count"[\s\S]{0,180}min=\{1\}[\s\S]{0,120}max=\{SPATIAL_CUSTOM_TARGET_LOCATION_LIMIT\}/u,
+  "New Game AI map setup must expose the bounded custom place target from World Maps",
+);
+assert.match(
+  gameSetupWizardSource,
+  /targetLocationCount:\s*spatialMapTargetLocationCount/u,
+  "New Game setup must preserve the selected custom place target in its post-setup map plan",
+);
+assert.match(
+  gameSurfaceSource,
+  /targetLocationCount:\s*plan\.targetLocationCount/u,
+  "Game setup must send the custom place target to World Maps draft generation",
+);
 assert.match(gameTypesSource, /enableAgents\?: boolean;/u);
 assert.match(gameRoutesSource, /enableAgents: z\.boolean\(\)\.optional\(\)/u);
 assert.match(gameRoutesSource, /enableAgents: setupConfig\.enableAgents === true/u);
@@ -4537,6 +4976,11 @@ const summaryPopoverSource = readFileSync(
 );
 assert.match(
   summaryPopoverSource,
+  /function SummaryEntryEditor[\s\S]*?<MacroTextarea[\s\S]*?textareaRef=\{textareaRef\}/u,
+  "Summary entry editing should expose the shared expanded editor and macro guide",
+);
+assert.match(
+  summaryPopoverSource,
   /summaryEntryIds:\s*selectedEntries\.map\(\(entry\) => entry\.id\)/u,
   "The summary UI must submit every selected entry to the combine endpoint",
 );
@@ -4803,6 +5247,8 @@ assert.match(
 );
 
 const windowsLauncherSource = readFileSync(join(REPOSITORY_ROOT, "start.bat"), "utf8");
+assert.match(windowsLauncherSource, /node --version >nul 2>&1/u);
+assert.doesNotMatch(windowsLauncherSource, /where node >nul 2>&1/u);
 for (const workspace of ["shared", "server", "client"]) {
   assert.match(windowsLauncherSource, new RegExp(`--filter @marinara-engine/${workspace} run clean`, "u"));
 }
@@ -5009,8 +5455,8 @@ assert.equal(
     side: "left",
     gap: 8,
   }),
-  128,
-  "The Tracker should shrink to the narrower left chat gutter",
+  420,
+  "The Tracker may overlap the chat instead of crushing its controls into a narrow gutter",
 );
 assert.equal(
   resolveTrackerPanelDesktopWidth({
@@ -5022,8 +5468,8 @@ assert.equal(
     side: "right",
     gap: 8,
   }),
-  128,
-  "The Tracker should use the matching right chat gutter",
+  340,
+  "The right-side Tracker should preserve its selected width when the main viewport can hold it",
 );
 assert.equal(resolveTrackerPanelContentScale(340, 340), 1);
 assert.equal(resolveTrackerPanelContentScale(340, 255), 0.75);
@@ -5031,6 +5477,11 @@ assert.equal(
   resolveTrackerPanelContentScale(420, 128),
   0.65,
   "Severely constrained Tracker contents should reflow before their text becomes unreadably small",
+);
+assert.match(
+  appShellSource,
+  /handleTrackerPanelWindowClosed[\s\S]{0,500}trackerPanelWindowTargetRef\.current\?\.popup !== closedTarget\.popup[\s\S]{0,300}setTrackerPanelOpen\(false, activeChatId\)/u,
+  "Closing a detached Tracker window must close the Tracker instead of silently docking it",
 );
 const backgroundSeedRoot = mkdtempSync(join(tmpdir(), "marinara-default-background-"));
 const backgroundSeedDir = join(backgroundSeedRoot, "backgrounds");
@@ -5264,6 +5715,17 @@ try {
     /src\.id === "zai"[\s\S]{0,180}!ZAI_IMAGE_MODELS\.some[\s\S]{0,180}setLocalModel\("glm-image"\)/u,
     "Switching to Z.AI must replace a model that Z.AI does not support",
   );
+  assert.match(
+    connectionEditorSource,
+    /const swarmUiWorkflowError =\s*selectedImageService === "swarmui"[\s\S]{0,180}%reference_image_name/u,
+    "SwarmUI workflow validation must reject backend-local reference-image filenames before save",
+  );
+  assert.match(connectionEditorSource, /if \(swarmUiWorkflowError\) \{[\s\S]{0,180}throw new Error/u);
+  assert.match(
+    connectionEditorSource,
+    /type="button"[\s\S]{0,180}novelAiStylePlateInputRef\.current\?\.click\(\)[\s\S]{0,1000}type="file"/u,
+    "NovelAI style-plate selection must use an explicit non-submitting button instead of label navigation",
+  );
 
   const backgroundAutonomousSource = readFileSync(
     join(REPOSITORY_ROOT, "packages/client/src/hooks/use-background-autonomous.ts"),
@@ -5462,6 +5924,12 @@ try {
   )?.[0];
   assert.ok(testImageHandler, "The connection test-image handler must remain available");
   assert.match(testImageHandler, /width: 1024,\s*height: 1024,/u);
+  assert.match(testImageHandler, /debugMode: readDebugMode\(req\.body\)/u);
+  assert.match(
+    connectionsRouteSource,
+    /signal: AbortSignal\.timeout\(SWARMUI_CONTROL_REQUEST_TIMEOUT_MS\)/u,
+    "SwarmUI control requests must have a bounded timeout",
+  );
 
   assert.doesNotMatch(
     agentEditorSource,
@@ -5507,10 +5975,7 @@ try {
   const sidebarPanelSources = new Map(
     ["Characters", "Personas", "Lorebooks", "Agents", "Presets", "Connections"].map((panelName) => [
       panelName,
-      readFileSync(
-        join(REPOSITORY_ROOT, `packages/client/src/components/panels/${panelName}Panel.tsx`),
-        "utf8",
-      ),
+      readFileSync(join(REPOSITORY_ROOT, `packages/client/src/components/panels/${panelName}Panel.tsx`), "utf8"),
     ]),
   );
 
@@ -5532,9 +5997,8 @@ try {
     );
     const hiddenActionOverlayCount = source.match(/pointer-events-none[^"\n]*opacity-0/gu)?.length ?? 0;
     const focusVisibleOverlayCount =
-      source.match(
-        /pointer-events-none[^"\n]*\[@media\(pointer:fine\)\]:group-focus-within(?:\/member)?:opacity-100/gu,
-      )?.length ?? 0;
+      source.match(/pointer-events-none[^"\n]*\[@media\(pointer:fine\)\]:group-focus-within(?:\/member)?:opacity-100/gu)
+        ?.length ?? 0;
     const focusInteractiveOverlayCount =
       source.match(
         /pointer-events-none[^"\n]*\[@media\(pointer:fine\)\]:group-focus-within(?:\/member)?:(?:\[&_button\]:)?pointer-events-auto/gu,
@@ -5818,6 +6282,153 @@ try {
     reExported.includes(deflateSync(Buffer.from(base64Card, "ascii"))),
     false,
     "Export must strip stale zTXt chara chunks instead of shipping outdated data",
+  );
+}
+
+{
+  // #4704: the background-autonomous poller's server-side candidate filter
+  // must mirror the legacy client filter exactly (conversation mode with
+  // autonomousMessages enabled, excluding the Professor Mari home assistant;
+  // bad or missing metadata disqualifies).
+  const { isBackgroundAutonomousCandidate } =
+    await import("../../packages/server/src/services/conversation/autonomous-candidates.js");
+  const meta = (extra: Record<string, unknown>) => JSON.stringify({ autonomousMessages: true, ...extra });
+  assert.equal(isBackgroundAutonomousCandidate({ mode: "conversation", metadata: meta({}) }), true);
+  assert.equal(
+    isBackgroundAutonomousCandidate({ mode: "conversation", metadata: { autonomousMessages: true } }),
+    true,
+    "object metadata accepted",
+  );
+  assert.equal(
+    isBackgroundAutonomousCandidate({ mode: "roleplay", metadata: meta({}) }),
+    false,
+    "non-conversation excluded",
+  );
+  assert.equal(
+    isBackgroundAutonomousCandidate({ mode: "conversation", metadata: meta({ internalAssistant: "professor-mari" }) }),
+    false,
+    "Professor Mari home chat excluded",
+  );
+  assert.equal(
+    isBackgroundAutonomousCandidate({ mode: "conversation", metadata: JSON.stringify({ autonomousMessages: false }) }),
+    false,
+    "autonomous disabled excluded",
+  );
+  assert.equal(
+    isBackgroundAutonomousCandidate({ mode: "conversation", metadata: "{not json" }),
+    false,
+    "unparseable metadata excluded",
+  );
+  assert.equal(isBackgroundAutonomousCandidate({ mode: "conversation" }), false, "missing metadata excluded");
+
+  // The candidates route excludes EMPTIED Roleplay DM threads (the legacy poll
+  // ran the DM cleanup as a GET /chats side effect); the marker expression must
+  // stay in sync with cleanupEmptyRoleplayDmChats.
+  const { hasRoleplayDmThreadMarkers } =
+    await import("../../packages/server/src/services/conversation/autonomous-candidates.js");
+  assert.equal(hasRoleplayDmThreadMarkers({ roleplayDmThread: true }), true);
+  assert.equal(hasRoleplayDmThreadMarkers({ dmOriginChatId: "chat-1" }), true);
+  assert.equal(hasRoleplayDmThreadMarkers({ roleplayDmThread: false }), false);
+  assert.equal(hasRoleplayDmThreadMarkers({ dmOriginChatId: 42 }), false, "non-string origin id is not a marker");
+  assert.equal(hasRoleplayDmThreadMarkers({}), false);
+}
+
+{
+  // #4721: the chat transcript's infinite query keys ONLY by chat id — its
+  // pageSize lives in the option closures, so ANY second observer with a
+  // different pageSize hijacks the transcript's queryFn/getNextPageParam
+  // (last observer wins in React Query). The Chat Settings drawer's
+  // secret-plot reader did exactly that with a hardcoded 100: while the
+  // drawer was open, transcript refetches ignored the user's
+  // messages-per-page and "Load More" vanished on a mis-evaluated
+  // hasNextPage. Read-only newest-N windows must go through the peek hook,
+  // which keys by limit.
+  const drawerSource = readFileSync(
+    join(REPOSITORY_ROOT, "packages/client/src/components/chat/ChatSettingsDrawer.tsx"),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    drawerSource,
+    /useChatMessages\(/u,
+    "Chat Settings must not observe the shared chatKeys.messages infinite query (#4721)",
+  );
+  assert.match(
+    drawerSource,
+    /useChatMessagePeek\(\s*chat\.id,\s*100,/u,
+    "The secret-plot reader must fetch its newest-100 window through the limit-keyed peek hook",
+  );
+  const imageSettingUpdateSource =
+    /const updateCustomAgentImageSetting = useCallback\([\s\S]*?\n  const updateCustomAgentImageConnection/u.exec(
+      drawerSource,
+    )?.[0] ?? "";
+  assert.match(
+    imageSettingUpdateSource,
+    /setCustomAgentImageSettingsDraft\(\(current\) => \(\{[\s\S]*current\?\.chatId === chat\.id \? current\.patch : \{\}[\s\S]*\[agentId\]: hasAgentSettings \? agentSettings : null/u,
+    "Rapid custom-agent connection and style changes must merge into one visible local draft",
+  );
+  assert.match(
+    imageSettingUpdateSource,
+    /if \(removingAgentImageSettingsRef\.current\.has\(agentId\)\) return;/u,
+    "Selector changes for an agent being removed must not enqueue another full-map write",
+  );
+  const toggleAgentSource =
+    /const toggleAgent = async[\s\S]*?\n  const removeAgentFromMenu/u.exec(drawerSource)?.[0] ?? "";
+  assert.match(
+    toggleAgentSource,
+    /await flushPendingCustomAgentImageSettings\(\)[\s\S]*await customAgentImageSettingsWriteQueueRef\.current\.waitForIdle\(\)[\s\S]*const latestImageSettings = readLatestCustomAgentImageSettings\(\)[\s\S]*delete next\[agentId\]/u,
+    "Removing an agent must drain queued image writes before deleting that agent's override",
+  );
+  assert.match(
+    toggleAgentSource,
+    /removingAgentImageSettingsRef\.current\.add\(agentId\)[\s\S]*customAgentImageSettingsWriteQueueRef\.current\.enqueue\(saveAgentSelection\)[\s\S]*finally \{[\s\S]*removingAgentImageSettingsRef\.current\.delete\(agentId\)/u,
+    "Agent removal must be terminal in the image-settings queue and unblock the selector afterward",
+  );
+
+  const serializedWrites = createSerializedMutationQueue();
+  const writeOrder: string[] = [];
+  let releaseFirstWrite!: () => void;
+  const firstWriteGate = new Promise<void>((resolve) => {
+    releaseFirstWrite = resolve;
+  });
+  const firstWrite = serializedWrites.enqueue(async () => {
+    writeOrder.push("first:start");
+    await firstWriteGate;
+    writeOrder.push("first:end");
+  });
+  const removalWrite = serializedWrites.enqueue(async () => {
+    writeOrder.push("removal");
+  });
+  const removingAgentIds = new Set(["image-agent"]);
+  const blockedSelectorWrite = removingAgentIds.has("image-agent")
+    ? null
+    : serializedWrites.enqueue(async () => {
+        writeOrder.push("stale-selector-write");
+      });
+  assert.equal(blockedSelectorWrite, null, "A selector event during removal must not enqueue a stale map");
+  await Promise.resolve();
+  assert.deepEqual(writeOrder, ["first:start"], "A delayed older metadata write must hold newer writes in order");
+  releaseFirstWrite();
+  await Promise.all([firstWrite, removalWrite, serializedWrites.waitForIdle()]);
+  assert.deepEqual(writeOrder, ["first:start", "first:end", "removal"]);
+  const trackerModelSource = readFileSync(
+    join(REPOSITORY_ROOT, "packages/client/src/features/tracker-panel/hooks/use-tracker-panel-model.ts"),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    trackerModelSource,
+    /useChatMessages\(/u,
+    "The tracker panel must not observe the shared chatKeys.messages infinite query (#4724)",
+  );
+  assert.match(
+    trackerModelSource,
+    /useChatMessagePeek\(\s*activeChatId,\s*20,/u,
+    "The tracker panel must fetch its newest-20 sprite window through the limit-keyed peek hook",
+  );
+  const useChatsSource = readFileSync(join(REPOSITORY_ROOT, "packages/client/src/hooks/use-chats.ts"), "utf8");
+  assert.match(
+    useChatsSource,
+    /queryKey: \[\.\.\.chatKeys\.messagePeek\(chatId \?\? ""\), limit\]/u,
+    "The peek hook's query key must include its limit so different windows never share options",
   );
 }
 

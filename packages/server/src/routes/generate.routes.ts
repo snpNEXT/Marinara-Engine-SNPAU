@@ -37,6 +37,7 @@ import {
   customAgentHasCapability,
   CHAT_SUMMARY_PROMPT_SETTINGS_KEY,
   CUSTOM_GENERATION_PARAMETERS_SETTINGS_KEY,
+  DEFAULT_AGENT_MAX_TOKENS,
   DEFAULT_CONVERSATION_PROMPT,
   DEFAULT_GENERATION_PARAMS,
   unwrapConversationInstructions,
@@ -127,6 +128,7 @@ import {
 } from "../services/image/spatial-location-reference.js";
 import { persistGeneratedImageToEntityGalleries } from "../services/image/generated-image-entity-gallery.js";
 import { resolveImageConnectionFallback } from "../services/generation/media-connection-fallback.js";
+import { resolveCustomAgentStyleProfileId } from "../services/generation/custom-agent-image-settings.js";
 import { extractLeadingThinkingBlocks } from "../services/llm/inline-thinking.js";
 import { buildSpotifyDjConstraints } from "../services/spotify/spotify-dj-constraints.js";
 import {
@@ -163,7 +165,12 @@ import {
   resolveIllustratorImageConnectionId,
   resolveIllustratorPromptStyle,
 } from "../services/generation/illustrator-background-generation.js";
-import { npcAvatarSlug, sanitizeGameNpcAvatarUrls } from "../services/game/npc-avatar-utils.js";
+import {
+  findCharAvatarFuzzy,
+  loadCharacterLibraryAvatarLookup,
+  npcAvatarSlug,
+  sanitizeGameNpcAvatarUrls,
+} from "../services/game/npc-avatar-utils.js";
 import {
   parseCharacterCommands,
   parseCharacterCommandsBySpeaker,
@@ -466,10 +473,14 @@ import {
   type GenerationPromptMessage,
 } from "../services/generation/prompt-message-scope.js";
 import {
-  applyProviderMaxTokensOverride,
   readChatCompletionsReasoningMetadata,
+  resolveStoredChatOptions,
+  resolveStoredMaxTokens,
   shouldReplayStoredChatCompletionsReasoning,
 } from "../services/generation/generation-parameters.js";
+import { clampGenerationMaxOutputTokens } from "../services/generation/output-token-limits.js";
+import { createLLMProvider } from "../services/llm/provider-registry.js";
+import { withConnectionFallbackProvider } from "../services/llm/connection-fallback-provider.js";
 import {
   fitMessagesForModelAccess,
   mergeModelContextLimit,
@@ -1599,6 +1610,9 @@ export async function generateRoutes(app: FastifyInstance) {
         swipeIndex: number;
       }> = [];
       const collectedOocMessages: string[] = [];
+      // Embed the Mari relevance-ranking query once per turn, not once per
+      // follow-up iteration (the query is invariant across the turn's passes).
+      const mariQueryEmbeddingCache = new Map<string, number[] | null>();
 
       // eslint-disable-next-line no-constant-condition
       while (true) {
@@ -1797,11 +1811,10 @@ export async function generateRoutes(app: FastifyInstance) {
         // Always enabled for individual mode in roleplay/visual_novel so the model always has
         // character attribution in context. User-opt-in still works for merged and other modes.
         const shouldPrefixGroupHistorySpeakers =
-          chatMeta.groupSpeakerNamesInHistory === true &&
           characterIds.length > 1 &&
-          chatMode !== "conversation" &&
           chatMode !== "game" &&
-          promptGroupChatMode === "individual";
+          promptGroupChatMode === "individual" &&
+          (chatMode === "conversation" || chatMeta.groupSpeakerNamesInHistory === true);
         const promptMacroContext = await buildPromptMacroContext({
           db: app.db,
           characterIds: promptCharacterIds,
@@ -2476,9 +2489,30 @@ export async function generateRoutes(app: FastifyInstance) {
           });
 
           // ── Home Professor Mari: inject assistant knowledge & commands ──
+          // The instruction half (stablePrompt) rides the system message so it
+          // stays a static, cacheable prefix; the volatile half (name lists +
+          // fetched data) is injected as a tail user message below so a library
+          // change or a [fetch:] no longer invalidates that prefix (#4768).
+          let professorMariVolatileContext = "";
           if (isHomeProfessorMariAssistantChat) {
-            conversationSystemPrompt +=
-              "\n\n" + (await resolveProfessorMariPromptContext({ chatMeta, chars, lorebooksStore, chats, presets }));
+            const { stablePrompt, volatileContext } = await resolveProfessorMariPromptContext({
+              chatMeta,
+              chars,
+              lorebooksStore,
+              chats,
+              presets,
+              // Rank the name lists by relevance to the current message (#4768 ph3);
+              // degrades to the alphabetical list when the embedder is unavailable.
+              // Use the effective current input so a regeneration (no input.userMessage)
+              // still ranks against the preserved original text.
+              db: app.db,
+              queryText: currentUserInputContent() ?? "",
+              embeddingSource: memoryRecallEmbeddingSource,
+              vectorizerAvailable: memoryRecallVectorizerAvailable,
+              queryEmbeddingCache: mariQueryEmbeddingCache,
+            });
+            conversationSystemPrompt += "\n\n" + stablePrompt;
+            professorMariVolatileContext = volatileContext;
           }
 
           // Build the context injection (last user-role message before generation)
@@ -2585,6 +2619,21 @@ export async function generateRoutes(app: FastifyInstance) {
             // Post-history-strategy behavior stays near the generation tail; context remains last unless relocated.
             ...(convoProfileBlocks.behaviorPostHistoryBlock
               ? [{ role: "user" as const, content: convoProfileBlocks.behaviorPostHistoryBlock }]
+              : []),
+            // Home Professor Mari's name lists + fetched data, injected at the
+            // tail rather than the system prefix (#4768). contextKind "injection"
+            // means the normal history-trim pass leaves it alone (that pass only
+            // targets contextKind "history"); it is preferentially retained and
+            // only yields in the last-resort fitMessagesToContext passes once all
+            // history is gone — matching the recentSocialMediaActivityBlock pattern.
+            ...(professorMariVolatileContext.trim().length > 0
+              ? [
+                  {
+                    role: "user" as const,
+                    content: professorMariVolatileContext,
+                    contextKind: "injection" as const,
+                  },
+                ]
               : []),
           ];
           if (conversationContextMacroSlots.context) {
@@ -5099,23 +5148,59 @@ export async function generateRoutes(app: FastifyInstance) {
           ];
 
           try {
-            const selectorProvider = provider;
-            const selectorModel = conn.model;
-            const selectorMaxTokens = applyProviderMaxTokensOverride(selectorProvider, 512);
+            const selectorConnection = (await connections.getDefaultForAgents()) ?? conn;
+            const selectorFallbackConnection = await connections.getFallbackForAgents();
+            const selectorBaseUrl = resolveBaseUrl(selectorConnection);
+            if (!selectorBaseUrl) throw new Error("The group responder connection has no base URL");
+            const selectorProvider = withConnectionFallbackProvider({
+              primary: createLLMProvider(
+                selectorConnection.provider,
+                selectorBaseUrl,
+                selectorConnection.apiKey,
+                selectorConnection.maxContext,
+                selectorConnection.openrouterProvider,
+                selectorConnection.maxTokensOverride,
+                selectorConnection.claudeFastMode === "true",
+                selectorConnection.treatAsLocalEndpoint === "true",
+                selectorConnection.defaultParameters,
+              ),
+              primaryConnectionId: selectorConnection.id,
+              fallbackConnection: selectorFallbackConnection,
+              fallbackBaseUrl: selectorFallbackConnection ? resolveBaseUrl(selectorFallbackConnection) : "",
+              category: "agents",
+              onFallback,
+            });
+            const selectorModel = selectorConnection.model;
+            const selectorPolicy = resolveModelAccessPolicy({
+              provider: selectorConnection.provider,
+              model: selectorModel,
+              maxContext: selectorConnection.maxContext,
+            });
+            const selectorMaxTokens = clampGenerationMaxOutputTokens({
+              provider: selectorConnection.provider,
+              model: selectorModel,
+              maxTokens: resolveStoredMaxTokens(selectorConnection.defaultParameters, DEFAULT_AGENT_MAX_TOKENS),
+              maxTokensOverride: selectorConnection.maxTokensOverride,
+            });
+            const selectorDefaults = resolveStoredChatOptions(
+              selectorConnection.defaultParameters,
+              selectorConnection.provider,
+              selectorModel,
+            );
 
             const result = await withLlmRequestTimeout(chatGenerationTimeoutMs, () =>
               selectorProvider.chatComplete(selectionPrompt, {
                 model: selectorModel,
-                ...(suppressModelParameters
+                ...(selectorPolicy.suppressModelParameters
                   ? {}
                   : {
-                      temperature: 0.2,
+                      ...selectorDefaults,
+                      temperature: selectorDefaults.temperature ?? 0.2,
+                      topP: selectorDefaults.topP ?? 1,
                       maxTokens: selectorMaxTokens,
-                      maxContext: effectiveMaxContext,
-                      topP: 1,
-                      serviceTier,
+                      maxContext: selectorPolicy.effectiveMaxContext,
                     }),
-                suppressModelParameters,
+                suppressModelParameters: selectorPolicy.suppressModelParameters,
                 stream: false,
                 signal: abortController.signal,
               }),
@@ -5438,6 +5523,16 @@ export async function generateRoutes(app: FastifyInstance) {
               targetPromptPresetId: presetId ?? null,
               targetedOnly: true,
             });
+          }
+          if (usesIndividualGroupGeneration && requestedNarrativeDirectorMode && directorAgent) {
+            appendSeparateAgentInjectionMessage(
+              targetScopedMessagesForGen,
+              "director",
+              requestedNarrativeDirectorMode === "random"
+                ? "The scene is getting stale. For this next response, introduce a random but plausible event that fits the scene and continuity. Surprise the user!"
+                : "The scene is getting stale. For this next response, switch the scene to a new one or push the existing story forward naturally through its current tensions, goals, or unresolved threads.",
+              wrapFormat,
+            );
           }
           const spatiallyScopedMessagesForGen = injectOwnerSpatialPrompt(
             targetScopedMessagesForGen,
@@ -8184,10 +8279,14 @@ export async function generateRoutes(app: FastifyInstance) {
                   : chars;
 
                 // ── Enrich with avatar paths ──
-                // 1. Match against known character records in this chat
+                // 1. Match against character cards in the chat or library
                 // 2. Fall back to stored NPC avatars (per-chat generated/uploaded)
                 const NPC_AVATAR_DIR = join(DATA_DIR, "avatars", "npc");
                 const storedNpcAvatarByName = new Map<string, string>();
+                const libraryAvatarByName = await loadCharacterLibraryAvatarLookup(
+                  () => createCharactersStorage(app.db).list(),
+                  (error) => logger.warn(error, "[generate] Failed to load library characters for avatar enrichment"),
+                );
                 const gameNpcs = sanitizeGameNpcAvatarUrls((chatMeta.gameNpcs as GameNpc[]) ?? []);
                 if (gameNpcs !== chatMeta.gameNpcs) {
                   chatMeta.gameNpcs = gameNpcs;
@@ -8209,6 +8308,11 @@ export async function generateRoutes(app: FastifyInstance) {
                   if (char.avatarPath) continue; // already set
                   if (matched?.avatarPath) {
                     char.avatarPath = matched.avatarPath;
+                    continue;
+                  }
+                  const libraryAvatar = findCharAvatarFuzzy(name, libraryAvatarByName);
+                  if (libraryAvatar) {
+                    char.avatarPath = libraryAvatar;
                     continue;
                   }
                   const storedNpcAvatar = storedNpcAvatarByName.get(normalizeTextForMatch(name));
@@ -9020,12 +9124,14 @@ export async function generateRoutes(app: FastifyInstance) {
                       );
                       const imageDefaults = resolveConnectionImageDefaults(imgConnFull);
                       const imageSettings = await loadImageGenerationUserSettings(app.db);
-                      const styleProfileId =
-                        ((chatMeta.gameSetupConfig as Record<string, unknown> | undefined)?.imageStyleProfileId as
-                          | string
-                          | undefined) ??
-                        (chatMeta.imageStyleProfileId as string | undefined) ??
-                        null;
+                      const styleProfileId = resolveCustomAgentStyleProfileId({
+                        usesChatIllustratorSettings,
+                        agentSettings: imagePromptAgent?.settings,
+                        availableProfiles: imageSettings.styleProfiles.profiles,
+                        gameStyleProfileId: (chatMeta.gameSetupConfig as Record<string, unknown> | undefined)
+                          ?.imageStyleProfileId,
+                        chatStyleProfileId: chatMeta.imageStyleProfileId,
+                      });
 
                       const illustrationSize = resolveIllustratorImageSize(
                         requestChatMode === "game" ? imageSettings.game : imageSettings.illustration,
@@ -9688,6 +9794,8 @@ export async function generateRoutes(app: FastifyInstance) {
                   isHomeProfessorMariAssistantChat,
                   db: app.db,
                   stores: { chars, chats, lorebooksStore, presets },
+                  embeddingSource: memoryRecallEmbeddingSource,
+                  vectorizerAvailable: memoryRecallVectorizerAvailable,
                   sendAssistantAction: (data) => {
                     reply.raw.write(
                       `data: ${JSON.stringify({

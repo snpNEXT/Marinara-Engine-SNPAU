@@ -69,7 +69,18 @@ import {
   buildGmFormatReminder,
   buildPartyRecruitCardPrompt,
 } from "../../packages/server/src/services/game/gm-prompts.js";
+import {
+  addNameLookupEntry,
+  findCharAvatarFuzzy,
+  loadCharacterLibraryAvatarLookup,
+} from "../../packages/server/src/services/game/npc-avatar-utils.js";
 import { resolveConversationSelfieRequestedNames } from "../../packages/server/src/services/generation/conversation-selfie-command-runtime.js";
+import {
+  applyCustomAgentImageChatSettings,
+  forceImageGenerationScopeError,
+  needsForcedSnapshotFallback,
+  resolveCustomAgentStyleProfileId,
+} from "../../packages/server/src/services/generation/custom-agent-image-settings.js";
 import {
   normalizeCyoaChoiceOutput,
   normalizeCyoaDialogueQuotes,
@@ -1528,6 +1539,27 @@ const cases: RegressionCase[] = [
           "Mari: A question from the current Persona.",
         ],
       );
+
+      const generateRouteSource = readFileSync(
+        new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
+        "utf8",
+      );
+      const dryRunRouteSource = readFileSync(
+        new URL("../../packages/server/src/routes/generate/dry-run-route.ts", import.meta.url),
+        "utf8",
+      );
+      for (const source of [generateRouteSource, dryRunRouteSource]) {
+        assert.match(
+          source,
+          /\(chatMode === "conversation" \|\| chatMeta\.groupSpeakerNamesInHistory === true\)/u,
+          "individual Conversation groups should always identify speakers in model-visible history",
+        );
+      }
+      assert.match(
+        generateRouteSource,
+        /usesIndividualGroupGeneration && requestedNarrativeDirectorMode && directorAgent[\s\S]{0,700}appendSeparateAgentInjectionMessage\([\s\S]{0,400}requestedNarrativeDirectorMode === "random"/u,
+        "individual group prompts should retain the armed Narrative Director instruction at the responder boundary",
+      );
     },
   },
   {
@@ -2653,15 +2685,19 @@ const cases: RegressionCase[] = [
         "Regrator|Runs the Northland Bank.|AI engineer.|Keep the tone formal.|formal",
       );
       assert.equal(
-        resolveDeferredCharacterMacros(deferred, { name: "Dottore" }, {
-          ...initialContext,
-          convoFields: {
-            charDisplayName: "Il Dottore",
-            charAbout: "A researcher from Snezhnaya.",
-            personaAbout: "AI engineer.",
-            convoBehavior: "Be playful with Mari.",
+        resolveDeferredCharacterMacros(
+          deferred,
+          { name: "Dottore" },
+          {
+            ...initialContext,
+            convoFields: {
+              charDisplayName: "Il Dottore",
+              charAbout: "A researcher from Snezhnaya.",
+              personaAbout: "AI engineer.",
+              convoBehavior: "Be playful with Mari.",
+            },
           },
-        }),
+        ),
         "Il Dottore|A researcher from Snezhnaya.|AI engineer.|Be playful with Mari.|playful",
       );
     },
@@ -3855,12 +3891,9 @@ const cases: RegressionCase[] = [
       assert.match(mergeIllustratorNegativePrompt(ordinaryPrompt), /speech bubbles/iu);
       assert.match(mergeIllustratorNegativePrompt(ordinaryPrompt), /SFX lettering/iu);
       assert.equal(
-        mergeIllustratorNegativePrompt(
-          ordinaryPrompt,
-          "low quality, text, low quality",
-          "text",
-          { imageService: "novelai" },
-        ),
+        mergeIllustratorNegativePrompt(ordinaryPrompt, "low quality, text, low quality", "text", {
+          imageService: "novelai",
+        }),
         "low quality, text",
         "NovelAI should receive only the compiled explicit negative prompt without Illustrator's built-in anti-text list",
       );
@@ -8595,6 +8628,76 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         "playful",
         "stale values should be removed before Random Pick resolves",
       );
+
+      const booleanOptions = [{ value: "enabled" }];
+      assert.equal(
+        resolveChoiceVariableValue({
+          selected: "",
+          options: booleanOptions,
+          multiSelect: false,
+          randomPick: false,
+        }),
+        "",
+        "an explicit empty Boolean choice must stay OFF",
+      );
+      assert.equal(
+        resolveChoiceVariableValue({
+          selected: [],
+          options: booleanOptions,
+          multiSelect: true,
+          randomPick: false,
+        }),
+        "",
+        "an explicit empty multi-choice must stay empty",
+      );
+      assert.equal(
+        resolveChoiceVariableValue({
+          selected: undefined,
+          options: booleanOptions,
+          multiSelect: false,
+          randomPick: false,
+        }),
+        "enabled",
+        "missing legacy selections should retain the first-option fallback",
+      );
+    },
+  },
+  {
+    name: "Game portrait lookup reuses only unambiguous character-library avatars",
+    async run() {
+      const avatars = new Map<string, string>();
+      addNameLookupEntry(avatars, "Dottore", "/api/avatars/file/dottore.png");
+      assert.equal(findCharAvatarFuzzy("Il Dottore", avatars), "/api/avatars/file/dottore.png");
+      assert.equal(findCharAvatarFuzzy("Dottore", avatars), "/api/avatars/file/dottore.png");
+
+      addNameLookupEntry(avatars, "John Smith", "/api/avatars/file/john-smith.png");
+      addNameLookupEntry(avatars, "John Doe", "/api/avatars/file/john-doe.png");
+      assert.equal(findCharAvatarFuzzy("John", avatars), undefined, "ambiguous aliases must not select by insertion order");
+      assert.equal(findCharAvatarFuzzy("John Smith", avatars), "/api/avatars/file/john-smith.png");
+
+      const boundaryAvatars = new Map<string, string>();
+      addNameLookupEntry(boundaryAvatars, "Ann", "/api/avatars/file/ann.png");
+      assert.equal(findCharAvatarFuzzy("Joanne", boundaryAvatars), undefined, "partial matches require word boundaries");
+
+      let warned = false;
+      let updateByMessageCalled = false;
+      const unavailableLibrary = await loadCharacterLibraryAvatarLookup(
+        async () => {
+          throw new Error("library unavailable");
+        },
+        () => {
+          warned = true;
+        },
+      );
+      const gameStateStore = {
+        async updateByMessage() {
+          updateByMessageCalled = true;
+        },
+      };
+      await gameStateStore.updateByMessage();
+      assert.equal(unavailableLibrary.size, 0);
+      assert.equal(warned, true);
+      assert.equal(updateByMessageCalled, true, "optional avatar enrichment failures must not block tracker persistence");
     },
   },
   {
@@ -9183,6 +9286,102 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       assert.deepEqual(
         budgetedMixedMatches.map((match) => match.entry.id),
         ["entry-semantic-current"],
+      );
+    },
+  },
+  {
+    name: "forced image snapshots are limited to a single image-capable custom agent",
+    run() {
+      const imageAgent = { isCustomAgent: true, canEmitImagePrompt: true };
+      const nonImageAgent = { isCustomAgent: true, canEmitImagePrompt: false };
+      const builtIn = { isCustomAgent: false, canEmitImagePrompt: false };
+
+      assert.equal(forceImageGenerationScopeError(false, [imageAgent, builtIn, nonImageAgent]), null);
+      assert.equal(forceImageGenerationScopeError(true, [imageAgent]), null);
+      // Multi-agent and empty forced batches are rejected.
+      assert.match(forceImageGenerationScopeError(true, [imageAgent, imageAgent]) ?? "", /exactly one agent/);
+      assert.match(forceImageGenerationScopeError(true, []) ?? "", /exactly one agent/);
+      // Built-in targets are rejected — the Illustrator has its own manual path.
+      assert.match(forceImageGenerationScopeError(true, [builtIn]) ?? "", /custom image agents/);
+      // Custom agents without the Image generation ability are rejected.
+      assert.match(forceImageGenerationScopeError(true, [nonImageAgent]) ?? "", /Image generation ability/);
+    },
+  },
+  {
+    name: "forced snapshots surface successful results that carry no image prompt",
+    run() {
+      // A successful non-image_prompt result (or null data) would otherwise be a
+      // silent no-op for the camera press — the fallback error must fire.
+      assert.equal(needsForcedSnapshotFallback(true, { success: true, type: "context_injection", data: {} }), true);
+      assert.equal(needsForcedSnapshotFallback(true, { success: true, type: "image_prompt", data: null }), true);
+      assert.equal(needsForcedSnapshotFallback(true, { success: true, type: "image_prompt", data: "text" }), true);
+      // A usable image_prompt payload is handled by the generation block itself.
+      assert.equal(needsForcedSnapshotFallback(true, { success: true, type: "image_prompt", data: {} }), false);
+      // Failed results already surface their error via the agent_result event.
+      assert.equal(needsForcedSnapshotFallback(true, { success: false, type: "context_injection", data: {} }), false);
+      // Non-forced retries never use the fallback.
+      assert.equal(needsForcedSnapshotFallback(false, { success: true, type: "context_injection", data: {} }), false);
+    },
+  },
+  {
+    name: "per-chat custom agent image overrides apply to custom agents only",
+    run() {
+      const chatMeta = {
+        customAgentImageSettings: {
+          "scene-painter": { imageConnectionId: "conn-override", styleProfileId: "  style-override  " },
+          illustrator: { imageConnectionId: "conn-should-never-apply" },
+          "empty-entry": { imageConnectionId: "  " },
+        },
+      };
+      const base = { imageConnectionId: "conn-agent-default", other: "kept" };
+
+      const overridden = applyCustomAgentImageChatSettings("scene-painter", { ...base }, chatMeta);
+      assert.equal(overridden.imageConnectionId, "conn-override");
+      assert.equal(overridden.styleProfileId, "style-override");
+      assert.equal(overridden.other, "kept");
+
+      // Built-in agents keep their own dedicated chat-level override keys.
+      const builtIn = applyCustomAgentImageChatSettings("illustrator", { ...base }, chatMeta);
+      assert.equal(builtIn.imageConnectionId, "conn-agent-default");
+
+      // Blank or missing entries leave the agent's own configuration untouched.
+      const blank = applyCustomAgentImageChatSettings("empty-entry", { ...base }, chatMeta);
+      assert.equal(blank.imageConnectionId, "conn-agent-default");
+      const missing = applyCustomAgentImageChatSettings("unlisted-agent", { ...base }, chatMeta);
+      assert.equal(missing.imageConnectionId, "conn-agent-default");
+      const noMeta = applyCustomAgentImageChatSettings("scene-painter", { ...base }, null);
+      assert.equal(noMeta.imageConnectionId, "conn-agent-default");
+
+      const profiles = [{ id: "style-override" }];
+      assert.equal(
+        resolveCustomAgentStyleProfileId({
+          usesChatIllustratorSettings: false,
+          agentSettings: overridden,
+          availableProfiles: profiles,
+          gameStyleProfileId: "game-style",
+          chatStyleProfileId: "chat-style",
+        }),
+        "style-override",
+      );
+      assert.equal(
+        resolveCustomAgentStyleProfileId({
+          usesChatIllustratorSettings: false,
+          agentSettings: { styleProfileId: "deleted-profile" },
+          availableProfiles: profiles,
+          gameStyleProfileId: "game-style",
+          chatStyleProfileId: "chat-style",
+        }),
+        "game-style",
+      );
+      assert.equal(
+        resolveCustomAgentStyleProfileId({
+          usesChatIllustratorSettings: true,
+          agentSettings: overridden,
+          availableProfiles: profiles,
+          gameStyleProfileId: "",
+          chatStyleProfileId: "chat-style",
+        }),
+        "chat-style",
       );
     },
   },

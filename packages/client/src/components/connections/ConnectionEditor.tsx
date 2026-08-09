@@ -52,6 +52,7 @@ import { useTranslation, useTranslation as useUiTranslation } from "react-i18nex
 import { cn } from "../../lib/utils";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import { downloadJsonFile, sanitizeExportFilenamePart } from "../../lib/download-json";
+import { prepareImageAttachment } from "../../lib/chat-attachment-images";
 import {
   CONNECTION_EXPORT_WARNING,
   createConnectionExportEnvelope,
@@ -120,6 +121,7 @@ const API_KEY_LINKS: Partial<Record<APIProvider, { label: string; url: string }>
   openrouter: { label: "Get your OpenRouter API key", url: "https://openrouter.ai/keys" },
   nanogpt: { label: "Get your NanoGPT API key", url: "https://nano-gpt.com/api" },
   xai: { label: "Get your xAI API key", url: "https://console.x.ai" },
+  arli: { label: "Get your Arli AI API key", url: "https://www.arliai.com/account" },
   video_generation: { label: "Get your Google AI API key", url: "https://aistudio.google.com/apikey" },
 };
 
@@ -526,6 +528,10 @@ export function ConnectionEditor() {
     localProvider === "image_generation"
       ? localImageGenerationSource || localImageService || effectiveImageGenerationSource
       : "";
+  const swarmUiWorkflowError =
+    selectedImageService === "swarmui" && /%reference_image_name(?:_0[1-4])?%/.test(localComfyuiWorkflow)
+      ? localizeUi("ui.connections.connectioneditor.swarmuiDoesNotSupportReferenceImageName")
+      : null;
   const selectedImageDefaultsService = imageSourceToDefaultsService(selectedImageService);
   const selectedVideoService =
     localProvider === "video_generation"
@@ -535,7 +541,9 @@ export function ConnectionEditor() {
   const selectedVideoDefaultsService = videoSelectionToDefaultsService(selectedVideoService, localModel, localBaseUrl);
   const usesComfyUiWorkflow =
     (localProvider === "image_generation" &&
-      (selectedImageService === "comfyui" || selectedImageService === "runpod_comfyui")) ||
+      (selectedImageService === "comfyui" ||
+        selectedImageService === "swarmui" ||
+        selectedImageService === "runpod_comfyui")) ||
     (localProvider === "video_generation" && selectedVideoProvider === "comfyui");
   const apiKeyLink =
     localProvider === "image_generation" && selectedImageService === "arli"
@@ -655,6 +663,10 @@ export function ConnectionEditor() {
   const handleSave = useCallback(async () => {
     if (!connectionDetailId) return;
     setSaveError(null);
+    if (swarmUiWorkflowError) {
+      setSaveError(swarmUiWorkflowError);
+      throw new Error(swarmUiWorkflowError);
+    }
     if (baseUrlValidation.error) {
       setSaveError(baseUrlValidation.error);
       throw new Error(baseUrlValidation.error);
@@ -806,6 +818,7 @@ export function ConnectionEditor() {
     localImageCaptioningEnabled,
     localImageCaptioningConnectionId,
     selectedImageService,
+    swarmUiWorkflowError,
     selectedImageDefaultsService,
     selectedVideoProvider,
     selectedVideoDefaultsService,
@@ -1225,7 +1238,7 @@ export function ConnectionEditor() {
           {dirty && !saveError && <span className="mari-editor-status mr-2 text-amber-400 max-md:hidden">{localizeUi("ui.connections.connectioneditor.unsaved")}</span>}
           <button
             onClick={handleSave}
-            disabled={updateConnection.isPending || saveConnectionDefaults.isPending}
+            disabled={updateConnection.isPending || saveConnectionDefaults.isPending || !!swarmUiWorkflowError}
             className="mari-editor-action mari-editor-action--primary inline-flex disabled:opacity-50"
           >
             <Save size="0.8125rem" /> <span className="max-md:hidden">{localizeUi("ui.noodle.noodlehome.save")}</span>
@@ -1555,19 +1568,23 @@ export function ConnectionEditor() {
                   const sourceName =
                     src.id === "atlas"
                       ? t("connections.mediaSources.atlas.name")
-                      : src.id === "zai"
-                        ? t("connections.mediaSources.zai.name")
-                        : src.id === "arli"
-                          ? t("connections.mediaSources.arli.name")
-                          : src.name;
+                      : src.id === "swarmui"
+                        ? t("connections.mediaSources.swarmui.name")
+                        : src.id === "zai"
+                          ? t("connections.mediaSources.zai.name")
+                          : src.id === "arli"
+                            ? t("connections.mediaSources.arli.name")
+                            : src.name;
                   const sourceDescription =
                     src.id === "atlas"
                       ? t("connections.mediaSources.atlas.imageDescription")
-                      : src.id === "zai"
-                        ? t("connections.mediaSources.zai.imageDescription")
-                        : src.id === "arli"
-                          ? t("connections.mediaSources.arli.imageDescription")
-                          : src.description;
+                      : src.id === "swarmui"
+                        ? t("connections.mediaSources.swarmui.imageDescription")
+                        : src.id === "zai"
+                          ? t("connections.mediaSources.zai.imageDescription")
+                          : src.id === "arli"
+                            ? t("connections.mediaSources.arli.imageDescription")
+                            : src.description;
                   return (
                     <button
                       key={src.id}
@@ -1609,6 +1626,11 @@ export function ConnectionEditor() {
               {selectedImageService === "runpod_comfyui" && (
                 <div className="mt-2 rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-[0.625rem] text-amber-300/80">
                   <strong>{localizeUi("ui.connections.connectioneditor.runpodConfiguration")}</strong> {localizeUi("ui.connections.connectioneditor.yourEndpointIdGoesInThe")} <strong>{localizeUi("ui.connections.connectioneditor.endpointId")}</strong> {localizeUi("ui.connections.connectioneditor.fieldBelowTheApiKeyIsYourRunpodApi")} <strong>{localizeUi("ui.connections.connectioneditor.required")}</strong> {localizeUi("ui.connections.connectioneditor.theEndpointExecutesTheWorkflowYouSupplyUse")} <code>{"%prompt%"}</code> {localizeUi("ui.connections.connectioneditor.placeholdersInTheCliptextencodeNode")}</div>
+              )}
+              {selectedImageService === "swarmui" && (
+                <p className="mt-2 text-[0.625rem] text-[var(--muted-foreground)]">
+                  {t("connections.mediaSources.swarmui.authHelp")}
+                </p>
               )}
             </FieldGroup>
           )}
@@ -1903,7 +1925,9 @@ export function ConnectionEditor() {
                   ?localizeUi("ui.connections.connectioneditor.pasteAComfyuiVideoWorkflowInApiFormatUse")
                   : selectedImageService === "runpod_comfyui"
                     ?localizeUi("ui.connections.connectioneditor.pasteYourComfyuiWorkflowJsonApiFormatRunpodNeeds")
-                    :localizeUi("ui.connections.connectioneditor.pasteACustomComfyuiWorkflowJsonApiFormatUse")
+                    : selectedImageService === "swarmui"
+                      ?localizeUi("ui.connections.connectioneditor.pasteAComfyuiWorkflowForSwarmui")
+                      :localizeUi("ui.connections.connectioneditor.pasteACustomComfyuiWorkflowJsonApiFormatUse")
               }
             >
               <textarea
@@ -1916,11 +1940,17 @@ export function ConnectionEditor() {
                 placeholder={localizeUi("ui.connections.connectioneditor.pasteWorkflowJsonHereExportedFromComfyuiViaSave")}
                 className={cn(
                   "w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-xs font-mono outline-none ring-1 transition-shadow placeholder:text-[var(--muted-foreground)]/50 min-h-[120px] max-h-[300px] resize-y",
-                  comfyWorkflowValidation?.parseError
+                  comfyWorkflowValidation?.parseError || swarmUiWorkflowError
                     ? "ring-red-400/60 focus:ring-red-400"
                     : "ring-[var(--border)] focus:ring-sky-400/50",
                 )}
               />
+              {swarmUiWorkflowError && (
+                <p className="mt-1 flex items-start gap-1 text-[0.625rem] text-red-400">
+                  <AlertCircle size="0.625rem" className="mt-px shrink-0" />
+                  {swarmUiWorkflowError}
+                </p>
+              )}
               {comfyWorkflowValidation?.parseError && (
                 <p className="mt-1 flex items-start gap-1 text-[0.625rem] text-red-400">
                   <AlertCircle size="0.625rem" className="mt-px shrink-0" />
@@ -1980,7 +2010,11 @@ export function ConnectionEditor() {
               expanded={imageDefaultsExpanded}
               onExpandedChange={setImageDefaultsExpanded}
               onChange={(next) => {
-                setLocalImageDefaults(sanitizeImageGenerationProfile(next, selectedImageDefaultsService));
+                setLocalImageDefaults((current) => {
+                  if (!current) return current;
+                  const resolved = typeof next === "function" ? next(current) : next;
+                  return sanitizeImageGenerationProfile(resolved, selectedImageDefaultsService);
+                });
                 markDirty();
               }}
               onReset={() => {
@@ -2241,7 +2275,7 @@ export function ConnectionEditor() {
             </FieldGroup>
           )}
 
-          {/* ── Prompt Caching (Anthropic + OpenRouter Claude) ── */}
+          {/* ── Prompt Caching (Anthropic + compatible OpenRouter models) ── */}
           {(localProvider === "anthropic" || localProvider === "openrouter") && (
             <FieldGroup
               label={localizeUi("ui.connections.connectioneditor.promptCaching")}
@@ -2249,7 +2283,7 @@ export function ConnectionEditor() {
               help={
                 localProvider === "anthropic"
                   ?localizeUi("ui.connections.connectioneditor.enablesAnthropicPromptCachingWhichCachesYourSystemPrompt")
-                  :localizeUi("ui.connections.connectioneditor.forOpenrouterClaudeModelsSendsTheCacheControlFlag")
+                  :localizeUi("ui.connections.connectioneditor.enablesExplicitPromptCachingForCompatibleOpenrouterModels")
               }
             >
               <SettingsSwitch
@@ -2264,7 +2298,7 @@ export function ConnectionEditor() {
               <p className="text-[0.625rem] text-[var(--muted-foreground)] px-2">
                 {localProvider === "anthropic"
                   ?localizeUi("ui.connections.connectioneditor.cachesTheSystemPromptExplicitlyAndUsesAutomaticCaching")
-                  :localizeUi("ui.connections.connectioneditor.onOpenrouterThisCurrentlyTargetsClaudeModelsByAdding")}
+                  :localizeUi("ui.connections.connectioneditor.onOpenrouterAddsCacheControlForModelsThatSupportExplicitCaching")}
               </p>
               {localProvider === "anthropic" && localEnableCaching && (
                 <div className="mt-2 space-y-2">
@@ -2814,10 +2848,17 @@ function ImageGenerationDefaultsPanel({
   remoteLoras: RemoteConnectionModel[];
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
-  onChange: (next: ImageGenerationDefaultsProfile) => void;
+  onChange: (
+    next:
+      | ImageGenerationDefaultsProfile
+      | ((current: ImageGenerationDefaultsProfile) => ImageGenerationDefaultsProfile),
+  ) => void;
   onReset: () => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
+  const activeServiceRef = useRef(service);
+  const novelAiStylePlateInputRef = useRef<HTMLInputElement>(null);
+  activeServiceRef.current = service;
   const updateSeed = (seed: number) => {
     onChange({ ...value, seed });
   };
@@ -2858,7 +2899,7 @@ function ImageGenerationDefaultsPanel({
     });
   };
 
-  const handleNovelAiStylePlateUpload = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleNovelAiStylePlateUpload = async (event: ChangeEvent<HTMLInputElement>) => {
     const input = event.currentTarget;
     const file = input.files?.[0];
     if (!file) return;
@@ -2873,20 +2914,24 @@ function ImageGenerationDefaultsPanel({
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        updateNovelAi({ styleReferenceImage: reader.result });
-      } else {
-        toast.error(localizeUi("ui.connections.imagegenerationdefaultspanel.theNovelaiStylePlateCouldNotBeRead"));
-      }
-      input.value = "";
-    };
-    reader.onerror = () => {
+    try {
+      const prepared = await prepareImageAttachment(file, file.name);
+      if (activeServiceRef.current !== "novelai") return;
+      onChange((current) => {
+        const currentNovelAi =
+          current.novelai ?? createDefaultImageGenerationProfile("novelai").novelai!;
+        return {
+          ...current,
+          service: "novelai",
+          novelai: { ...currentNovelAi, styleReferenceImage: prepared.data },
+        };
+      });
+    } catch (error) {
+      console.error("[ConnectionEditor] Failed to prepare NovelAI style plate", error);
       toast.error(localizeUi("ui.connections.imagegenerationdefaultspanel.theNovelaiStylePlateCouldNotBeRead"));
+    } finally {
       input.value = "";
-    };
-    reader.readAsDataURL(file);
+    }
   };
 
   return (
@@ -3185,16 +3230,22 @@ function ImageGenerationDefaultsPanel({
                       <p className="text-[0.55rem] text-[var(--muted-foreground)]">{localizeUi("ui.connections.imagegenerationdefaultspanel.aPersistentStyleOnlyReferenceAppliedFirstToEvery")}</p>
                     </div>
                     <div className="flex items-center gap-2">
-                      <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--secondary)] px-2.5 py-1.5 text-[0.625rem] font-medium text-[var(--foreground)] ring-1 ring-[var(--border)] transition-colors hover:bg-[var(--accent)]">
+                      <button
+                        type="button"
+                        onClick={() => novelAiStylePlateInputRef.current?.click()}
+                        className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--secondary)] px-2.5 py-1.5 text-[0.625rem] font-medium text-[var(--foreground)] ring-1 ring-[var(--border)] transition-colors hover:bg-[var(--accent)]"
+                      >
                         <Upload size="0.6875rem" />
                         {novelai.styleReferenceImage ?localizeUi("settings.notifications.customSound.actions.replace") :localizeUi("ui.connections.imagegenerationdefaultspanel.chooseImage")}
-                        <input
-                          type="file"
-                          accept="image/png,image/jpeg,image/webp"
-                          className="sr-only"
-                          onChange={handleNovelAiStylePlateUpload}
-                        />
-                      </label>
+                      </button>
+                      <input
+                        ref={novelAiStylePlateInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        className="sr-only"
+                        tabIndex={-1}
+                        onChange={handleNovelAiStylePlateUpload}
+                      />
                       {novelai.styleReferenceImage && (
                         <button
                           type="button"
