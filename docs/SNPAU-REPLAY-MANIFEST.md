@@ -8,12 +8,14 @@ remains available as the archival reference.
 
 - Conversation `[selfie]` markers remain visible in message content and
   history so editing and later model context retain the original command.
-- Noodle manual post and reply generation, fast Nudge mode, reply vision
   fallback, current-time context, weaker-model prompting, and local-model JSON
   correction are replayed.
-- Noodle image connection hints and image-prompt compiler behavior are
   replayed. Staging's existing LLM image-prompt generation is reused instead
   of duplicated.
+- Noodle image connection hints and image-prompt compiler behavior are retained
+  only where they remain part of the shared Engine contracts. The old in-tree
+  Noodle UI and generation implementation is not carried forward after staging
+  extracted Noodle into a separate feature package.
 - Group message scope and assistant/user attribution controls are replayed.
 - Branch-specific generation, connection, prompt, roleplay, settings, and
   import changes present in the net archive diff are replayed.
@@ -27,6 +29,15 @@ remains available as the archival reference.
 - The current service-based Noodle generation and correction architecture.
 - Upstream agent background-generation behavior and other staging additions
   that were present at the clean branch base.
+
+## Deferred: Noodle Feature Request
+
+The local Noodle work is intentionally retired from this branch because
+staging extracted Noodle from the Engine. The former implementation and UX
+are recorded in `docs/LOCAL_FEATURES.md` for a future feature request against
+the extracted package, including focused public Nudge post/reply generation,
+guided prompts, reply character selection, Fast Mode, persistence, and image
+generation.
 
 ## Deferred: WebSim Extension
 
