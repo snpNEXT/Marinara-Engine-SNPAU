@@ -823,7 +823,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Updated the default Illustrator prompt rules so generated image prompts carry available character builds, clothing/outfits, and appearance details instead of relying on the image model to infer them.
 - Changed custom Roleplay Chat Summary prompts to apply globally across roleplay chats instead of only the currently open chat.
 
-#### Fixed
+- Added an editable Storyboard Agent shot-planner stage that inspects each generated keyframe before video generation, persists its suitability classification, and falls back to the planned motion when image-aware refinement is unavailable or invalid. The Storyboard Agent page now explains the four-stage prompt workflow and orders its shared prompt editors from illustration through image-aware grounding to video generation (#4839, Pasta-Devs/Marinara-Agents#296).
 
 - Fixed manual agent retry/rerun requests so only agents currently added to the chat can be resolved, preventing removed agents from being prompted by stale retry requests.
 - Fixed agent prompt assembly so the required output format is appended to the terminal user message after chat history using the selected chat prompt preset wrapper (`<output_format>`, `## Output Format`, or raw text).
