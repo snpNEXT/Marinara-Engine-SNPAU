@@ -43,6 +43,7 @@ import {
   unwrapConversationInstructions,
   findKnownModel,
   LOCAL_SIDECAR_CONNECTION_ID,
+  normalizeImagePromptInstructions,
   normalizeTextForMatch,
   parseManagedGenerationParameterDefinitions,
   normalizeGameStoryboardKeyframeCount,
@@ -3647,9 +3648,14 @@ export async function generateRoutes(app: FastifyInstance) {
           agentContext.memory._personaAvatarPath =
             persona && typeof persona.avatarPath === "string" ? persona.avatarPath : null;
         }
+<<<<<<< HEAD
         // Inject connection-specific image prompt guidance into agent memory.
-        {
+        if (resolvedAgents.some((entry) => entry.type === "illustrator")) {
           const illustratorAgentForHint = resolvedAgents.find((a) => a.type === "illustrator");
+=======
+        if (resolvedAgents.some((entry) => entry.type === "illustrator")) {
+          const illustratorAgentForInstructions = resolvedAgents.find((a) => a.type === "illustrator");
+>>>>>>> be35ad112 (Address code review)
           const imageConnectionId = resolveIllustratorImageConnectionId(
             requestChatMode,
             chatMeta,
@@ -3665,7 +3671,9 @@ export async function generateRoutes(app: FastifyInstance) {
               : "";
           if (hint) agentContext.memory._imagePromptHint = hint;
 
-          const imagePromptInstructions = imgConnForHint?.imagePromptInstructions?.trim() ?? "";
+          const imagePromptInstructions = normalizeImagePromptInstructions(
+            imgConnForHint?.imagePromptInstructions,
+          );
           if (imagePromptInstructions) agentContext.memory._imagePromptInstructions = imagePromptInstructions;
         }
         const getLatestUserExpressionSource = () =>

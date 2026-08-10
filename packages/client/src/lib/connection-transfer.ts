@@ -1,4 +1,9 @@
-import { PROVIDERS, type APIProvider, type ImageGenerationQuality } from "@marinara-engine/shared";
+import {
+  normalizeImagePromptInstructions,
+  PROVIDERS,
+  type APIProvider,
+  type ImageGenerationQuality,
+} from "@marinara-engine/shared";
 import type { CreateConnectionPayload } from "../hooks/use-connections";
 
 export type ConnectionTransferRow = {
@@ -138,7 +143,7 @@ export function normalizeImportedConnectionEntry(value: unknown): ConnectionImpo
       imagePromptHint: asNullableString(value.imagePromptHint),
       imageService,
       imageEndpointId: asNullableString(value.imageEndpointId),
-      imagePromptInstructions: asNullableString(value.imagePromptInstructions),
+      imagePromptInstructions: normalizeImagePromptInstructions(value.imagePromptInstructions),
       imageGenerationQuality: asImageGenerationQuality(value.imageGenerationQuality),
       videoGenerationSource: provider === "video_generation" ? asNullableString(value.videoGenerationSource) : null,
       videoService,
@@ -183,7 +188,7 @@ function serializeConnectionForExport(connection: ConnectionTransferRow): SafeCo
     videoGenerationSource: isVideoProvider ? asNullableString(connection.videoGenerationSource) : null,
     videoService: isVideoProvider ? asNullableString(connection.videoService ?? connection.service) : null,
     imageEndpointId: asNullableString(connection.imageEndpointId),
-    imagePromptInstructions: asNullableString(connection.imagePromptInstructions),
+    imagePromptInstructions: normalizeImagePromptInstructions(connection.imagePromptInstructions),
     imageGenerationQuality: asImageGenerationQuality(connection.imageGenerationQuality),
     comfyuiWorkflow: asNullableString(connection.comfyuiWorkflow),
     imagePromptHint: asNullableString(connection.imagePromptHint),
