@@ -70,6 +70,7 @@ export const createConnectionSchema = z.object({
   imagePromptHint: z.string().nullable().default(null),
   imageService: z.string().nullable().default(null),
   imageEndpointId: z.string().nullable().default(null),
+  imagePromptInstructions: z.string().nullable().default(null),
   imageGenerationQuality: imageGenerationQualitySchema.default("auto"),
   videoGenerationSource: z.string().nullable().default(null),
   videoService: z.string().nullable().default(null),

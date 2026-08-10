@@ -3647,8 +3647,7 @@ export async function generateRoutes(app: FastifyInstance) {
           agentContext.memory._personaAvatarPath =
             persona && typeof persona.avatarPath === "string" ? persona.avatarPath : null;
         }
-        // Inject the image connection's prompting hint into agent memory so the
-        // Illustrator sees guidance from the same connection it will generate with.
+        // Inject connection-specific image prompt guidance into agent memory.
         {
           const illustratorAgentForHint = resolvedAgents.find((a) => a.type === "illustrator");
           const imageConnectionId = resolveIllustratorImageConnectionId(
@@ -3665,6 +3664,9 @@ export async function generateRoutes(app: FastifyInstance) {
               ? ((imgConnForHint as any).imagePromptHint as string).trim()
               : "";
           if (hint) agentContext.memory._imagePromptHint = hint;
+
+          const imagePromptInstructions = imgConnForHint?.imagePromptInstructions?.trim() ?? "";
+          if (imagePromptInstructions) agentContext.memory._imagePromptInstructions = imagePromptInstructions;
         }
         const getLatestUserExpressionSource = () =>
           (

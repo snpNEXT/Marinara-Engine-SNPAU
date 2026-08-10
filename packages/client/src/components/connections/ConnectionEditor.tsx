@@ -300,6 +300,7 @@ export function ConnectionEditor() {
   const [localImagePromptHint, setLocalImagePromptHint] = useState("");
   const [localImageService, setLocalImageService] = useState<string | null>(null);
   const [localImageEndpointId, setLocalImageEndpointId] = useState("");
+  const [localImagePromptInstructions, setLocalImagePromptInstructions] = useState("");
   const [localImageGenerationQuality, setLocalImageGenerationQuality] = useState<ImageGenerationQuality>("auto");
   const [localVideoGenerationSource, setLocalVideoGenerationSource] = useState("");
   const [localVideoService, setLocalVideoService] = useState<string | null>(null);
@@ -420,6 +421,7 @@ export function ConnectionEditor() {
     setLocalImagePromptHint((c.imagePromptHint as string) ?? "");
     setLocalImageService(imageService);
     setLocalImageEndpointId((c.imageEndpointId as string) ?? "");
+    setLocalImagePromptInstructions((c.imagePromptInstructions as string) ?? "");
     setLocalImageGenerationQuality(
       c.imageGenerationQuality === "low" || c.imageGenerationQuality === "medium" || c.imageGenerationQuality === "high"
         ? c.imageGenerationQuality
@@ -722,6 +724,7 @@ export function ConnectionEditor() {
       imagePromptHint: isImageProvider ? localImagePromptHint.trim() || null : null,
       imageEndpointId:
         isImageProvider && selectedImageService === "runpod_comfyui" ? localImageEndpointId || null : null,
+      imagePromptInstructions: isImageProvider ? localImagePromptInstructions.trim() || null : null,
       imageGenerationQuality: isImageProvider ? localImageGenerationQuality : "auto",
       videoGenerationSource: isVideoProvider ? selectedVideoProvider || null : null,
       videoService: isVideoProvider ? selectedVideoDefaultsService : null,
@@ -822,6 +825,7 @@ export function ConnectionEditor() {
     localImagePromptHint,
     localImageService,
     localImageEndpointId,
+    localImagePromptInstructions,
     localImageGenerationQuality,
     localMaxTokensOverride,
     localClaudeFastMode,
@@ -927,6 +931,7 @@ export function ConnectionEditor() {
       videoService,
       imageEndpointId:
         isImageProvider && selectedImageService === "runpod_comfyui" ? localImageEndpointId || null : null,
+      imagePromptInstructions: isImageProvider ? localImagePromptInstructions.trim() || null : null,
       imageGenerationQuality: isImageProvider ? localImageGenerationQuality : "auto",
       comfyuiWorkflow:
         isImageProvider || (isVideoProvider && videoProvider === "comfyui") ? localComfyuiWorkflow || null : null,
@@ -966,6 +971,7 @@ export function ConnectionEditor() {
     selectedVideoProvider,
     selectedImageService,
     localImageEndpointId,
+    localImagePromptInstructions,
     localImageGenerationQuality,
     localComfyuiWorkflow,
     localImagePromptHint,
@@ -2011,6 +2017,24 @@ export function ConnectionEditor() {
                   <>{localizeUi("ui.connections.connectioneditor.placeholdersLike")} <code>{"%prompt%"}</code>, <code>{"%steps%"}</code>, <code>{"%sampler%"}</code>{localizeUi("ui.connections.connectioneditor.andReferenceImagePlaceholdersWillBeReplacedAtGeneration")}</>
                 )}
               </p>
+            </FieldGroup>
+          )}
+
+          {localProvider === "image_generation" && (
+            <FieldGroup
+              label={localizeUi("ui.connections.connectioneditor.imagePromptingInstructions")}
+              icon={<Sparkles size="0.875rem" className="text-sky-400" />}
+              help={localizeUi("ui.connections.connectioneditor.imagePromptingInstructionsHelp")}
+            >
+              <textarea
+                value={localImagePromptInstructions}
+                onChange={(event) => {
+                  setLocalImagePromptInstructions(event.target.value);
+                  markDirty();
+                }}
+                placeholder={localizeUi("ui.connections.connectioneditor.imagePromptingInstructionsPlaceholder")}
+                className="w-full min-h-[96px] resize-y rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm outline-none ring-1 ring-[var(--border)] transition-shadow placeholder:text-[var(--muted-foreground)]/50 focus:ring-sky-400/50"
+              />
             </FieldGroup>
           )}
 

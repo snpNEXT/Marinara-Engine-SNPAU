@@ -73,6 +73,8 @@ export interface APIConnection {
    *  Use this to tell the model exactly how to format prompts for this backend
    *  (e.g. danbooru tag style, required quality tokens, negative-prompt conventions, etc.). */
   imagePromptHint: string | null;
+  /** Instructions applied by an extra default-language-model call before image generation. */
+  imagePromptInstructions: string | null;
   /** OpenAI GPT Image quality saved for this connection. */
   imageGenerationQuality: ImageGenerationQuality;
   /** Explicit video backend selection for video-generation connections (e.g. Gemini Omni). */
