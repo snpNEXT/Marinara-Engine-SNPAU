@@ -10,7 +10,6 @@ export async function resolveConversationSelfieSystemPrompt(input: {
   characterImageInstructions?: string;
   personality?: string;
   selfieTagsBlock?: string;
-  imagePromptHint?: string | null;
 }): Promise<string> {
   const promptContext: ConversationSelfieCtx = {
     appearance: input.appearance,
@@ -20,7 +19,6 @@ export async function resolveConversationSelfieSystemPrompt(input: {
     selfieTagsBlock: input.selfieTagsBlock ?? "",
   };
   const chatPromptTemplate = input.chatPromptTemplate?.trim() ?? "";
-  const imagePromptHint = input.imagePromptHint?.trim() ?? "";
 
   const basePrompt = chatPromptTemplate
     ? renderTemplate(
@@ -30,7 +28,5 @@ export async function resolveConversationSelfieSystemPrompt(input: {
       )
     : await loadPrompt(input.promptOverridesStorage, CONVERSATION_SELFIE, promptContext);
 
-  return imagePromptHint
-    ? `${basePrompt}\n\n<image_provider_prompting_rules>\n${imagePromptHint}\n</image_provider_prompting_rules>`
-    : basePrompt;
+  return basePrompt;
 }

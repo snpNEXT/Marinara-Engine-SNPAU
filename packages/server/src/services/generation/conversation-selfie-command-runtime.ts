@@ -198,7 +198,6 @@ async function generateSelfie(
     charName: args.charName,
     characterImageInstructions,
     personality,
-    imagePromptHint: imgConnFull.imagePromptHint,
   });
   const selfieSystemPrompt = styleGuidance
     ? `${baseSelfieSystemPrompt}${formatImageStylePromptGuidance(styleGuidance)}`

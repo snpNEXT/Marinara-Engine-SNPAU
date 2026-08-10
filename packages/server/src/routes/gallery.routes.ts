@@ -1252,7 +1252,6 @@ export async function galleryRoutes(app: FastifyInstance) {
       chatPromptTemplate: selfiePromptTemplate,
       appearance,
       charName: characterName,
-      imagePromptHint: imageConn.imagePromptHint,
     });
     const selfieSystemPrompt = styleGuidance
       ? `${baseSelfieSystemPrompt}${formatImageStylePromptGuidance(styleGuidance)}`

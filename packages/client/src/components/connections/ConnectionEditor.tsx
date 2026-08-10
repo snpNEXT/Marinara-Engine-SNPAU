@@ -299,7 +299,6 @@ export function ConnectionEditor() {
   const [localOpenrouterProvider, setLocalOpenrouterProvider] = useState("");
   const [localImageGenerationSource, setLocalImageGenerationSource] = useState("");
   const [localComfyuiWorkflow, setLocalComfyuiWorkflow] = useState("");
-  const [localImagePromptHint, setLocalImagePromptHint] = useState("");
   const [localImageService, setLocalImageService] = useState<string | null>(null);
   const [localImageEndpointId, setLocalImageEndpointId] = useState("");
   const [localImagePromptInstructions, setLocalImagePromptInstructions] = useState("");
@@ -420,7 +419,6 @@ export function ConnectionEditor() {
     );
     setLocalImageGenerationSource(imageGenerationSource);
     setLocalComfyuiWorkflow((c.comfyuiWorkflow as string) ?? "");
-    setLocalImagePromptHint((c.imagePromptHint as string) ?? "");
     setLocalImageService(imageService);
     setLocalImageEndpointId((c.imageEndpointId as string) ?? "");
     setLocalImagePromptInstructions((c.imagePromptInstructions as string) ?? "");
@@ -723,7 +721,6 @@ export function ConnectionEditor() {
           ? localComfyuiWorkflow || null
           : null,
       imageService: isImageProvider ? localImageGenerationSource || localImageService || null : null,
-      imagePromptHint: isImageProvider ? localImagePromptHint.trim() || null : null,
       imageEndpointId:
         isImageProvider && selectedImageService === "runpod_comfyui" ? localImageEndpointId || null : null,
       imagePromptInstructions: isImageProvider ? normalizeImagePromptInstructions(localImagePromptInstructions) : null,
@@ -824,7 +821,6 @@ export function ConnectionEditor() {
     localOpenrouterProvider,
     localImageGenerationSource,
     localComfyuiWorkflow,
-    localImagePromptHint,
     localImageService,
     localImageEndpointId,
     localImagePromptInstructions,
@@ -937,7 +933,6 @@ export function ConnectionEditor() {
       imageGenerationQuality: isImageProvider ? localImageGenerationQuality : "auto",
       comfyuiWorkflow:
         isImageProvider || (isVideoProvider && videoProvider === "comfyui") ? localComfyuiWorkflow || null : null,
-      imagePromptHint: isImageProvider ? localImagePromptHint.trim() || null : null,
       claudeFastMode: localClaudeFastMode,
     };
 
@@ -976,7 +971,6 @@ export function ConnectionEditor() {
     localImagePromptInstructions,
     localImageGenerationQuality,
     localComfyuiWorkflow,
-    localImagePromptHint,
     localClaudeFastMode,
     selectedImageDefaultsService,
     selectedVideoDefaultsService,
@@ -2086,24 +2080,6 @@ export function ConnectionEditor() {
                 markDirty();
               }}
             />
-          )}
-
-          {localProvider === "image_generation" && (
-            <FieldGroup
-              label={localizeUi("ui.connections.connectioneditor.imagePromptingHint")}
-              icon={<Zap size="0.875rem" className="text-amber-400" />}
-              help={localizeUi("ui.connections.connectioneditor.injectedIntoEveryLlmImagePromptGenerationCallThat")}
-            >
-              <textarea
-                value={localImagePromptHint}
-                onChange={(e) => {
-                  setLocalImagePromptHint(e.target.value);
-                  markDirty();
-                }}
-                placeholder={localizeUi("ui.connections.connectioneditor.eGUseDanbooruStyleCommaSeparatedTagsAlways")}
-                className="w-full min-h-[90px] max-h-[260px] resize-y rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-xs ring-1 ring-[var(--border)] placeholder:text-[var(--muted-foreground)]/50 focus:outline-none focus:ring-sky-400/50 focus:ring-1"
-              />
-            </FieldGroup>
           )}
 
           {localProvider === "video_generation" && localVideoDefaults && (

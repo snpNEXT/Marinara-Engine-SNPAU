@@ -52,7 +52,6 @@ export type CreateConnectionPayload = {
   openrouterProvider?: string | null;
   imageGenerationSource?: string | null;
   comfyuiWorkflow?: string | null;
-  imagePromptHint?: string | null;
   imageService?: string | null;
   imageEndpointId?: string | null;
   imagePromptInstructions?: string | null;

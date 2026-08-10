@@ -6,7 +6,7 @@ import type { DB } from "../../db/connection.js";
 import { apiConnections } from "../../db/schema/index.js";
 import { newId, now } from "../../utils/id-generator.js";
 import { encryptApiKey, decryptApiKey } from "../../utils/crypto.js";
-import type { CreateConnectionInput } from "@marinara-engine/shared";
+import { normalizeImagePromptInstructions, type CreateConnectionInput } from "@marinara-engine/shared";
 import { sweepDanglingConnectionReferences } from "./connection-reference-cleanup.js";
 import { logger } from "../../lib/logger.js";
 
@@ -18,17 +18,28 @@ function defaultCategoryForProvider(provider: string): ConnectionDefaultCategory
   return "language";
 }
 
+async function migrateLegacyImagePromptHint(db: DB, row: any) {
+  const legacyHint = typeof row.imagePromptHint === "string" ? row.imagePromptHint.trim() : "";
+  if (!legacyHint) return row;
+
+  const currentInstructions = normalizeImagePromptInstructions(row.imagePromptInstructions);
+  const migratedInstructions = currentInstructions ?? normalizeImagePromptInstructions(legacyHint);
+  await db.update(apiConnections).set({ imagePromptHint: null, imagePromptInstructions: migratedInstructions }).where(eq(apiConnections.id, row.id));
+  return { ...row, imagePromptHint: null, imagePromptInstructions: migratedInstructions };
+}
+
 export function createConnectionsStorage(db: DB) {
   return {
     async list() {
       const rows = await db.select().from(apiConnections).orderBy(desc(apiConnections.updatedAt));
+      const migratedRows = await Promise.all(rows.map((row) => migrateLegacyImagePromptHint(db, row)));
       // Mask API keys in list response
-      return rows.map((r: any) => ({ ...r, apiKeyEncrypted: r.apiKeyEncrypted ? "••••••••" : "" }));
+      return migratedRows.map((r: any) => ({ ...r, apiKeyEncrypted: r.apiKeyEncrypted ? "••••••••" : "" }));
     },
 
     async getById(id: string) {
       const rows = await db.select().from(apiConnections).where(eq(apiConnections.id, id));
-      return rows[0] ?? null;
+      return rows[0] ? migrateLegacyImagePromptHint(db, rows[0]) : null;
     },
 
     /** Get connection with decrypted API key (for internal use only). */
@@ -75,7 +86,8 @@ export function createConnectionsStorage(db: DB) {
         .where(and(eq(apiConnections.defaultForAgents, "true"), eq(apiConnections.provider, "image_generation")));
       const row = rows[0] ?? null;
       if (!row) return null;
-      return { ...row, apiKey: decryptApiKey(row.apiKeyEncrypted) };
+      const migrated = await migrateLegacyImagePromptHint(db, row);
+      return { ...migrated, apiKey: decryptApiKey(migrated.apiKeyEncrypted) };
     },
 
     /** Get the image-generation connection used after an image generation failure. */
@@ -86,7 +98,8 @@ export function createConnectionsStorage(db: DB) {
         .where(and(eq(apiConnections.fallbackForAgents, "true"), eq(apiConnections.provider, "image_generation")));
       const row = rows[0] ?? null;
       if (!row) return null;
-      return { ...row, apiKey: decryptApiKey(row.apiKeyEncrypted) };
+      const migrated = await migrateLegacyImagePromptHint(db, row);
+      return { ...migrated, apiKey: decryptApiKey(migrated.apiKeyEncrypted) };
     },
 
     /** Get the video-generation connection marked as default for scene videos (with decrypted key). */
@@ -139,10 +152,9 @@ export function createConnectionsStorage(db: DB) {
         openrouterProvider: input.openrouterProvider ?? null,
         imageGenerationSource: input.imageGenerationSource ?? null,
         comfyuiWorkflow: input.comfyuiWorkflow ?? null,
-        imagePromptHint: input.imagePromptHint ?? null,
         imageService: input.imageService ?? null,
         imageEndpointId: input.imageEndpointId ?? null,
-        imagePromptInstructions: input.imagePromptInstructions ?? null,
+        imagePromptInstructions: normalizeImagePromptInstructions(input.imagePromptInstructions),
         imageGenerationQuality: input.imageGenerationQuality ?? "auto",
         videoGenerationSource: input.videoGenerationSource ?? null,
         videoService: input.videoService ?? null,
@@ -279,9 +291,6 @@ export function createConnectionsStorage(db: DB) {
       if (data.comfyuiWorkflow !== undefined) {
         updateFields.comfyuiWorkflow = data.comfyuiWorkflow;
       }
-      if (data.imagePromptHint !== undefined) {
-        updateFields.imagePromptHint = data.imagePromptHint;
-      }
       if (data.imageService !== undefined) {
         updateFields.imageService = data.imageService;
       }
@@ -289,7 +298,8 @@ export function createConnectionsStorage(db: DB) {
         updateFields.imageEndpointId = data.imageEndpointId;
       }
       if (data.imagePromptInstructions !== undefined) {
-        updateFields.imagePromptInstructions = data.imagePromptInstructions;
+        updateFields.imagePromptInstructions = normalizeImagePromptInstructions(data.imagePromptInstructions);
+        updateFields.imagePromptHint = null;
       }
       if (data.imageGenerationQuality !== undefined) {
         updateFields.imageGenerationQuality = data.imageGenerationQuality;

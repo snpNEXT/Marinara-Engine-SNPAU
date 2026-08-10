@@ -56,7 +56,10 @@ export function createCapabilityImageGenerationHost(
       const connection = connectionId?.trim()
         ? await connections.getWithKey(connectionId.trim())
         : await connections.getDefaultForImageGeneration();
-      const hint = connection && typeof connection.imagePromptHint === "string" ? connection.imagePromptHint.trim() : "";
+      const hint =
+        connection && typeof connection.imagePromptInstructions === "string"
+          ? connection.imagePromptInstructions.trim()
+          : "";
       return hint || null;
     },
     async generate(request: CapabilityImageGenerationRequest): Promise<CapabilityGeneratedImage> {
@@ -75,8 +78,11 @@ export function createCapabilityImageGenerationHost(
       if (!baseUrl) throw new Error("The selected image connection has no base URL.");
       const model = connection.model?.trim() || "";
       const source = String(connection.imageGenerationSource || connection.imageService || "").trim() || inferImageSource(model, baseUrl);
-      const imagePromptHint = typeof connection.imagePromptHint === "string" ? connection.imagePromptHint.trim() : "";
-      const providerPrompt = imagePromptHint ? await rewritePromptForImageConnection(prompt, imagePromptHint) : prompt;
+      const imagePromptInstructions =
+        typeof connection.imagePromptInstructions === "string" ? connection.imagePromptInstructions.trim() : "";
+      const providerPrompt = imagePromptInstructions
+        ? await rewritePromptForImageConnection(prompt, imagePromptInstructions)
+        : prompt;
       const fallback = await resolveImageConnectionFallback(connections, connection.id);
       const result = await runImageGenerationRequest({
         connectionKey: connection.id,

@@ -68,7 +68,6 @@ export const createConnectionSchema = z.object({
   openrouterProvider: z.string().nullable().default(null),
   imageGenerationSource: z.string().nullable().default(null),
   comfyuiWorkflow: z.string().nullable().default(null),
-  imagePromptHint: z.string().nullable().default(null),
   imageService: z.string().nullable().default(null),
   imageEndpointId: z.string().nullable().default(null),
   imagePromptInstructions: z.string().trim().max(MAX_IMAGE_PROMPT_INSTRUCTIONS_LENGTH).nullable().default(null),

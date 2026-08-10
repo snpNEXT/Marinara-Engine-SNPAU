@@ -3674,11 +3674,6 @@ export async function generateRoutes(app: FastifyInstance) {
             ? await connections.getById(imageConnectionId).catch(() => null)
             : null;
           imageConnectionForInstructions ??= await connections.getDefaultForImageGeneration().catch(() => null);
-          const hint =
-            imageConnectionForInstructions && typeof (imageConnectionForInstructions as any).imagePromptHint === "string"
-              ? ((imageConnectionForInstructions as any).imagePromptHint as string).trim()
-              : "";
-          if (hint) agentContext.memory._imagePromptHint = hint;
           const imagePromptInstructions = normalizeImagePromptInstructions(
             imageConnectionForInstructions?.imagePromptInstructions,
           );

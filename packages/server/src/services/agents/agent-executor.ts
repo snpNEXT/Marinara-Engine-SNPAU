@@ -2393,16 +2393,6 @@ function buildAgentMessages(
     finalParts.push("</image_prompting_instructions>");
   }
 
-  // Image prompting hint: inject right before the terminal instruction so it has
-  // maximum recency weight when the model generates the image prompt JSON.
-  const lateImagePromptHint =
-    typeof context.memory._imagePromptHint === "string" ? context.memory._imagePromptHint.trim() : "";
-  if (lateImagePromptHint) {
-    finalParts.push(`\n<image_prompt_hint>`);
-    finalParts.push(lateImagePromptHint);
-    finalParts.push(`</image_prompt_hint>`);
-  }
-
   if (requiresTerminalUserInstruction) {
     const instruction = "Now return the requested format(s).";
     finalParts.push(finalParts.length > 0 ? `\n${instruction}` : instruction);

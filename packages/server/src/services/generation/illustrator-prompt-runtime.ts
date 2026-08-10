@@ -15,7 +15,6 @@ export type IllustratorPromptConnection = FallbackConnection & {
   imageEndpointId?: string | null;
   imagePromptInstructions?: string | null;
   comfyuiWorkflow?: string | null;
-  imagePromptHint?: string | null;
 };
 
 export type IllustratorPromptConnectionsStore = {

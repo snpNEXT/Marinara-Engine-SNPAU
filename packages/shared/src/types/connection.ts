@@ -69,10 +69,6 @@ export interface APIConnection {
   imageService: string | null;
   /** For endpoint-based image services (e.g. RunPod Serverless): the endpoint ID sent alongside the base URL. */
   imageEndpointId: string | null;
-  /** Per-connection image prompting hint injected into every LLM image-prompt generation call.
-   *  Use this to tell the model exactly how to format prompts for this backend
-   *  (e.g. danbooru tag style, required quality tokens, negative-prompt conventions, etc.). */
-  imagePromptHint: string | null;
   /** Instructions applied by an extra default-language-model call before image generation. */
   imagePromptInstructions: string | null;
   /** OpenAI GPT Image quality saved for this connection. */

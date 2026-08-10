@@ -4261,29 +4261,6 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
       }
       if (preGenerationAgentContext) preGenerationAgentContext.signal = abortController.signal;
 
-      // Keep retry prompt guidance aligned with the image connection the
-      // Illustrator retry handler will actually use.
-      {
-        const illustratorCfg = resolvedAgents.find((a) => a.resolved.type === "illustrator");
-        const retryImageConnectionId = resolveIllustratorImageConnectionId(
-          chatMode,
-          chatMeta,
-          illustratorCfg?.resolved.settings?.imageConnectionId,
-        );
-        let retryImgConn = retryImageConnectionId
-          ? await conns.getById(retryImageConnectionId).catch(() => null)
-          : null;
-        retryImgConn ??= await conns.getDefaultForImageGeneration().catch(() => null);
-        const retryImgHint =
-          retryImgConn && typeof (retryImgConn as any).imagePromptHint === "string"
-            ? ((retryImgConn as any).imagePromptHint as string).trim()
-            : "";
-        if (retryImgHint) {
-          agentContext.memory._imagePromptHint = retryImgHint;
-          if (preGenerationAgentContext) preGenerationAgentContext.memory._imagePromptHint = retryImgHint;
-        }
-      }
-
       if (debugMode) {
         const emitRetryAgentDebug = (event: AgentCallDebugEvent) => {
           sendSseEvent(reply, { type: "agent_debug", data: event });
