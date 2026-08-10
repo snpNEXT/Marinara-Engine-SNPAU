@@ -11,9 +11,16 @@ import { generateImage } from "../image/image-generation.js";
 import { resolveConnectionImageDefaults } from "../image/image-generation-defaults.js";
 import { runImageGenerationRequest } from "../image/image-generation-queue.js";
 import { createConnectionsStorage } from "../storage/connections.storage.js";
+import { createCapabilityLanguageModelHost } from "./capability-language-model.service.js";
 
 const MAX_PROMPT_LENGTH = 4_000;
 const MAX_IMAGE_DIMENSION = 2_048;
+const IMAGE_PROMPT_REWRITE_SYSTEM_MESSAGE =
+  "Rewrite image ideas into a concise provider-ready prompt. Follow the image backend rules exactly. " +
+  "Prefer comma-separated tags and only minimal natural language when the rules call for tags. " +
+  "Preserve the supplied subject, identity, appearance, action, composition, and style details. Do not " +
+  "silently discard concrete details merely because the input contains multiple kinds of context. Do not add " +
+  "commentary, markdown, labels, or explanations. Return only the final positive image prompt.";
 
 function boundedDimension(value: number | undefined) {
   if (!Number.isFinite(value)) return undefined;
@@ -26,6 +33,23 @@ export function createCapabilityImageGenerationHost(
   allowed: boolean,
 ): CapabilityImageGenerationHost {
   const connections = createConnectionsStorage(db);
+  const languageModels = createCapabilityLanguageModelHost(db);
+  const rewritePromptForImageConnection = async (prompt: string, hint: string): Promise<string> => {
+    try {
+      const model = await languageModels.resolve();
+      const result = await model.chatComplete([
+        { role: "system", content: IMAGE_PROMPT_REWRITE_SYSTEM_MESSAGE },
+        {
+          role: "user",
+          content: `<image_backend_rules>\n${hint}\n</image_backend_rules>\n<image_idea>\n${prompt}\n</image_idea>`,
+        },
+      ]);
+      const rewritten = result.content?.trim() || "";
+      return rewritten || prompt;
+    } catch {
+      return prompt;
+    }
+  };
   return {
     async getPromptHint(connectionId?: string | null): Promise<string | null> {
       if (!allowed) throw new Error("This capability package has not declared the image-generation permission.");
@@ -51,12 +75,14 @@ export function createCapabilityImageGenerationHost(
       if (!baseUrl) throw new Error("The selected image connection has no base URL.");
       const model = connection.model?.trim() || "";
       const source = String(connection.imageGenerationSource || connection.imageService || "").trim() || inferImageSource(model, baseUrl);
+      const imagePromptHint = typeof connection.imagePromptHint === "string" ? connection.imagePromptHint.trim() : "";
+      const providerPrompt = imagePromptHint ? await rewritePromptForImageConnection(prompt, imagePromptHint) : prompt;
       const fallback = await resolveImageConnectionFallback(connections, connection.id);
       const result = await runImageGenerationRequest({
         connectionKey: connection.id,
         queue: true,
         task: () => generateImage(source, baseUrl, connection.apiKey || "", connection.imageService || source, {
-          prompt,
+          prompt: providerPrompt,
           negativePrompt: request.negativePrompt?.trim() || undefined,
           model,
           width: boundedDimension(request.width),
