@@ -115,7 +115,6 @@ import {
 } from "../../packages/shared/src/utils/managed-generation-parameters.js";
 import { isAgentManifestAvailableInChatMode } from "../../packages/shared/src/constants/chat-mode-agent-policy.js";
 import { CHAT_SETTINGS_SURFACES } from "../../packages/client/src/components/chat/chat-settings-surfaces.js";
-import { mergeNoodleCustomEmojiMap } from "../../packages/client/src/lib/noodle-custom-emojis.js";
 import {
   isBundledGameAssetFolderPath,
   isBundledGameAssetPath,
@@ -294,7 +293,15 @@ import {
   MariDbService,
   normalizeCharacterActionData,
 } from "../../packages/server/src/services/mari-db/mari-db.service.js";
-import { PROFESSOR_MARI_APP_DATA_ACTIONS } from "../../packages/server/src/services/professor-mari/workspace-agent.service.js";
+import {
+  HomeWidgetCatalogConflictError,
+  readHomeWidgetCatalog,
+  replaceHomeWidgetCatalog,
+} from "../../packages/server/src/services/home-widget-catalog.service.js";
+import {
+  isMutatingWorkspaceCommand,
+  PROFESSOR_MARI_APP_DATA_ACTIONS,
+} from "../../packages/server/src/services/professor-mari/workspace-agent.service.js";
 import {
   checkAutonomousMessaging,
   clearChatActivity,
@@ -328,6 +335,250 @@ import {
   filterAndSortBackgrounds,
   getNextBackgroundFolderName,
 } from "../../packages/client/src/lib/background-library.js";
+import { resolveProfessorMariNavigation } from "../../packages/client/src/lib/professor-mari-navigation.js";
+import { resolveCapabilityPackageDisplay } from "../../packages/client/src/lib/capability-package-localization.js";
+import { normalizeHydratedMessage } from "../../packages/client/src/lib/message-hydration.js";
+import { HOME_CHAT_MODE_ACCENTS } from "../../packages/client/src/lib/home-chat-mode-style.js";
+import { homeCustomWidgetCatalogSchema, type CapabilityPackageManifest } from "../../packages/shared/src/index.js";
+
+assert.deepEqual(resolveProfessorMariNavigation("Where are the characters?"), {
+  kind: "panel",
+  panel: "characters",
+});
+assert.deepEqual(resolveProfessorMariNavigation("CHARS"), { kind: "panel", panel: "characters" });
+assert.deepEqual(resolveProfessorMariNavigation("Persona?"), { kind: "panel", panel: "personas" });
+for (const query of ["Chats", "conversations", "convo", "roleplay", "GAME"]) {
+  assert.deepEqual(resolveProfessorMariNavigation(query), { kind: "chats" });
+}
+assert.deepEqual(resolveProfessorMariNavigation("Can I talk to Professor Mari?"), { kind: "professor" });
+assert.deepEqual(resolveProfessorMariNavigation("Where do I disable Professor Mari navigation?"), {
+  kind: "settings",
+  tab: "general",
+  controlId: "professor-mari-navigation",
+});
+assert.deepEqual(resolveProfessorMariNavigation("change my theme"), { kind: "settings", tab: "appearance" });
+assert.deepEqual(resolveProfessorMariNavigation("image generation settings"), {
+  kind: "settings",
+  tab: "generations",
+});
+assert.deepEqual(resolveProfessorMariNavigation("open Discord"), { kind: "window", window: "discord" });
+assert.deepEqual(resolveProfessorMariNavigation("customize my home widgets"), {
+  kind: "window",
+  window: "widgets",
+});
+const professorMariNamedResources = [
+  { kind: "character" as const, id: "character-maukie", name: "Maukie" },
+  { kind: "persona" as const, id: "persona-echo", name: "Echo" },
+  { kind: "character" as const, id: "character-echo", name: "Echo" },
+  { kind: "preset" as const, id: "preset-cinema", name: "Cinematic RP" },
+  { kind: "lorebook" as const, id: "lorebook-snezhnaya", name: "Snezhnaya Archives" },
+  { kind: "agent" as const, id: "illustrator", name: "Illustrator", aliases: ["image agent"] },
+];
+assert.deepEqual(resolveProfessorMariNavigation("Maukie", [], professorMariNamedResources), {
+  kind: "resource",
+  resource: "character",
+  id: "character-maukie",
+});
+assert.deepEqual(resolveProfessorMariNavigation("Where is Maukie?", [], professorMariNamedResources), {
+  kind: "resource",
+  resource: "character",
+  id: "character-maukie",
+});
+assert.deepEqual(resolveProfessorMariNavigation("Mauk", [], professorMariNamedResources), {
+  kind: "resource",
+  resource: "character",
+  id: "character-maukie",
+});
+assert.deepEqual(resolveProfessorMariNavigation("edit the Echo persona", [], professorMariNamedResources), {
+  kind: "resource",
+  resource: "persona",
+  id: "persona-echo",
+});
+// An ambiguous name resolves to the first matching resource in supply order.
+assert.deepEqual(resolveProfessorMariNavigation("Echo", [], professorMariNamedResources), {
+  kind: "resource",
+  resource: "persona",
+  id: "persona-echo",
+});
+assert.deepEqual(resolveProfessorMariNavigation("open Cinematic RP preset", [], professorMariNamedResources), {
+  kind: "resource",
+  resource: "preset",
+  id: "preset-cinema",
+});
+assert.deepEqual(resolveProfessorMariNavigation("Snezhnaya Archives lorebook", [], professorMariNamedResources), {
+  kind: "resource",
+  resource: "lorebook",
+  id: "lorebook-snezhnaya",
+});
+assert.deepEqual(resolveProfessorMariNavigation("Illustrator", [], professorMariNamedResources), {
+  kind: "resource",
+  resource: "agent",
+  id: "illustrator",
+});
+assert.deepEqual(
+  resolveProfessorMariNavigation("Where did Noodle go?", [
+    { id: "official.noodle", label: "Noodle", aliases: ["NoodleR"] },
+  ]),
+  { kind: "package", packageId: "official.noodle" },
+);
+assert.equal(resolveProfessorMariNavigation("Where did Noodle go?"), null);
+assert.equal(resolveProfessorMariNavigation("quantum spaghetti cupboard"), null);
+assert.deepEqual(
+  resolveProfessorMariNavigation(
+    "Midnight at Zapolyarny",
+    [],
+    [],
+    [{ id: "chat-midnight", name: "Midnight at Zapolyarny" }],
+  ),
+  { kind: "chat", chatId: "chat-midnight" },
+);
+assert.deepEqual(resolveProfessorMariNavigation("CHAT", [], [], [{ id: "chat-generic", name: "Chat" }]), {
+  kind: "chats",
+});
+for (const name of ["Conversation", "Roleplay", "Game"]) {
+  assert.deepEqual(resolveProfessorMariNavigation(name, [], [], [{ id: `chat-${name}`, name }]), {
+    kind: "chat",
+    chatId: `chat-${name}`,
+  });
+}
+
+const localizedPackageManifest = {
+  name: "Noodle",
+  description: "Canonical description",
+  contributions: { homeBrowserTab: { label: "Noodle", ariaLabel: "Open Noodle" } },
+  localizations: {
+    pl: {
+      name: "Kluska",
+      description: "Polski opis",
+      homeBrowserTab: { label: "Kluska", ariaLabel: "Otwórz Kluskę" },
+    },
+  },
+} as CapabilityPackageManifest;
+assert.deepEqual(resolveCapabilityPackageDisplay(localizedPackageManifest, "pl-PL"), {
+  name: "Kluska",
+  description: "Polski opis",
+  homeBrowserTab: { label: "Kluska", ariaLabel: "Otwórz Kluskę" },
+});
+assert.deepEqual(resolveCapabilityPackageDisplay(localizedPackageManifest, "de-DE"), {
+  name: "Noodle",
+  description: "Canonical description",
+  homeBrowserTab: { label: "Noodle", ariaLabel: "Open Noodle" },
+});
+const regionalLocalizedPackageManifest = {
+  ...localizedPackageManifest,
+  localizations: {
+    pt_BR: {
+      name: "Macarrão",
+      description: "Descrição em português",
+      homeBrowserTab: { label: "Macarrão", ariaLabel: "Abrir Macarrão" },
+    },
+  },
+} as CapabilityPackageManifest;
+assert.equal(resolveCapabilityPackageDisplay(regionalLocalizedPackageManifest, "pt-BR").name, "Macarrão");
+assert.equal(homeCustomWidgetCatalogSchema.parse({ widgets: [] }).revision, 0);
+assert.throws(() =>
+  homeCustomWidgetCatalogSchema.parse({
+    widgets: [
+      {
+        id: "bad-timestamp",
+        title: "Bad timestamp",
+        description: "Widget timestamps must use the ISO format emitted by the writer.",
+        accent: "cyan",
+        icon: "sparkles",
+        createdAt: "yesterday",
+        updatedAt: "today",
+      },
+    ],
+  }),
+);
+assert.equal(
+  isMutatingWorkspaceCommand({
+    id: "widget-preview",
+    name: "app_data",
+    arguments: { action: "home_widget.create", apply: false },
+  }),
+  false,
+);
+assert.equal(
+  isMutatingWorkspaceCommand({
+    id: "widget-save",
+    name: "app_data",
+    arguments: { action: "home_widget.create", apply: true },
+  }),
+  true,
+);
+
+assert.deepEqual(
+  normalizeHydratedMessage({
+    id: "legacy-reactions",
+    chatId: "chat-legacy",
+    role: "assistant",
+    content: { reactions: [{ emoji: "💖", count: 1 }] },
+    createdAt: "2026-08-09T00:00:00.000Z",
+  } as unknown as Message),
+  {
+    id: "legacy-reactions",
+    chatId: "chat-legacy",
+    role: "assistant",
+    content: "",
+    extra: {
+      displayText: null,
+      isGenerated: true,
+      tokenCount: null,
+      generationInfo: null,
+      reactions: [{ emoji: "💖", count: 1 }],
+    },
+    createdAt: "2026-08-09T00:00:00.000Z",
+    activeSwipeIndex: 0,
+  },
+);
+assert.throws(() =>
+  homeCustomWidgetCatalogSchema.parse({
+    widgets: [
+      {
+        id: "unsafe-widget",
+        title: "Unsafe",
+        description: "No executable fields are allowed.",
+        accent: "cyan",
+        icon: "sparkles",
+        html: "<script>alert(1)</script>",
+        createdAt: "2026-08-09T00:00:00.000Z",
+        updatedAt: "2026-08-09T00:00:00.000Z",
+      },
+    ],
+  }),
+);
+assert.throws(
+  () =>
+    homeCustomWidgetCatalogSchema.parse({
+      widgets: [
+        {
+          id: "duplicate-widget",
+          title: "One",
+          description: "First widget",
+          accent: "cyan",
+          icon: "note",
+          createdAt: "2026-08-09T00:00:00.000Z",
+          updatedAt: "2026-08-09T00:00:00.000Z",
+        },
+        {
+          id: "duplicate-widget",
+          title: "Two",
+          description: "Second widget",
+          accent: "pink",
+          icon: "heart",
+          createdAt: "2026-08-09T00:00:00.000Z",
+          updatedAt: "2026-08-09T00:00:00.000Z",
+        },
+      ],
+    }),
+  /Widget IDs must be unique/u,
+);
+assert.deepEqual(HOME_CHAT_MODE_ACCENTS, {
+  conversation: "oklch(0.79 0.16 205)",
+  roleplay: "oklch(0.76 0.19 52)",
+  game: "oklch(0.73 0.21 345)",
+});
 
 const backgroundOrganization = normalizeBackgroundLibraryOrganization({
   folders: [
@@ -905,9 +1156,7 @@ try {
   const legacyLorebook = await lorebookStorage.create(
     createLorebookSchema.parse({ name: "Legacy notes", characterIds: [legacyOwner.id], hiddenFromLibrary: true }),
   );
-  await db
-    .delete(lorebookCharacterLinks)
-    .where(eq(lorebookCharacterLinks.lorebookId, legacyLorebook.id));
+  await db.delete(lorebookCharacterLinks).where(eq(lorebookCharacterLinks.lorebookId, legacyLorebook.id));
   await characterStorage.remove(legacyOwner.id);
   const retainedLegacyOrphan = (await db.select().from(lorebooks).where(eq(lorebooks.id, legacyLorebook.id)))[0];
   assert.equal(retainedLegacyOrphan.characterId, null, "Deleting a Character must clear legacy direct ownership");
@@ -1382,6 +1631,80 @@ try {
   assert.equal(await lorebookStorage.getById(professorMariLorebookId), null);
   assert.equal((await lorebookStorage.listEntries(professorMariLorebookId)).length, 0);
 
+  // #4791 — Professor Mari's lorebook.create + updateEntry now persist the keyword-matching and
+  // selective fields that were previously hardcoded, so her authoring + fidelity pass can set them.
+  const professorMariParamLorebookId = "professor-mari-param-lorebook-regression";
+  const professorMariParamCreate = await mariDb.executeAction({
+    action: "lorebook.create",
+    lorebookId: professorMariParamLorebookId,
+    data: {
+      name: "Professor Mari parameterized entries",
+      entries: [
+        {
+          name: "Vlad",
+          content: "The immortal count.",
+          keys: ["Vlad"],
+          secondaryKeys: ["count", "castle"],
+          selective: true,
+          selectiveLogic: "and_all",
+          matchWholeWords: true,
+          caseSensitive: true,
+        },
+      ],
+    },
+    apply: true,
+  });
+  assert.equal(professorMariParamCreate.ok, true);
+  const professorMariParamEntry = (await lorebookStorage.listEntries(professorMariParamLorebookId))[0];
+  assert.ok(professorMariParamEntry);
+  assert.equal(professorMariParamEntry.selective, true, "create must persist selective");
+  assert.equal(professorMariParamEntry.selectiveLogic, "and_all", "create must persist selectiveLogic");
+  assert.equal(professorMariParamEntry.matchWholeWords, true, "create must persist matchWholeWords");
+  assert.equal(professorMariParamEntry.caseSensitive, true, "create must persist caseSensitive");
+  assert.equal(professorMariParamEntry.useRegex, false, "unset useRegex stays default");
+
+  // updateEntry (the fidelity-pass path, via assignLorebookEntryActionFields) patches the same fields.
+  const professorMariEntryUpdate = await mariDb.executeAction({
+    action: "lorebook.updateEntry",
+    entryId: professorMariParamEntry.id,
+    patch: { matchWholeWords: false, selectiveLogic: "not", useRegex: true },
+    apply: true,
+  });
+  assert.equal(professorMariEntryUpdate.ok, true);
+  const professorMariUpdatedEntry = (await lorebookStorage.listEntries(professorMariParamLorebookId))[0];
+  assert.ok(professorMariUpdatedEntry);
+  assert.equal(professorMariUpdatedEntry.matchWholeWords, false, "updateEntry must clear matchWholeWords");
+  assert.equal(professorMariUpdatedEntry.selectiveLogic, "not", "updateEntry must patch selectiveLogic");
+  assert.equal(professorMariUpdatedEntry.useRegex, true, "updateEntry must set useRegex");
+
+  // An invalid selectiveLogic is ignored; a valid sibling field in the same patch still applies.
+  const professorMariBadLogicUpdate = await mariDb.executeAction({
+    action: "lorebook.updateEntry",
+    entryId: professorMariParamEntry.id,
+    patch: { content: "Updated body.", selectiveLogic: "nonsense" },
+    apply: true,
+  });
+  assert.equal(professorMariBadLogicUpdate.ok, true);
+  const professorMariAfterBadLogic = (await lorebookStorage.listEntries(professorMariParamLorebookId))[0];
+  assert.ok(professorMariAfterBadLogic);
+  assert.equal(professorMariAfterBadLogic.content, "Updated body.", "valid sibling field still applies");
+  assert.equal(professorMariAfterBadLogic.selectiveLogic, "not", "invalid selectiveLogic is ignored");
+
+  // lorebook.addEntry (app_data action) shares the same whitelist + builders; confirm its path also persists a new field.
+  const professorMariAddEntry = await mariDb.executeAction({
+    action: "lorebook.addEntry",
+    lorebookId: professorMariParamLorebookId,
+    data: { name: "Regex entry", content: "Pattern-matched lore.", keys: ["\\bLycan\\b"], useRegex: true },
+    apply: true,
+  });
+  assert.equal(professorMariAddEntry.ok, true);
+  const professorMariAddedEntry = (await lorebookStorage.listEntries(professorMariParamLorebookId)).find(
+    (entry) => entry.name === "Regex entry",
+  );
+  assert.ok(professorMariAddedEntry);
+  assert.equal(professorMariAddedEntry.useRegex, true, "addEntry must persist useRegex");
+  await lorebookStorage.remove(professorMariParamLorebookId);
+
   const professorMariCliLorebookId = "professor-mari-cli-lorebook-create-regression";
   const professorMariCliLorebookResult = await mariDb.executeCli({
     argv: [
@@ -1424,6 +1747,63 @@ try {
       vectorMaxResults: 10,
     },
   );
+  // #4798 — the CLI add-entry / update-entry paths now expose the keyword-matching + selective
+  // fields that were previously hardcoded on the CLI. add-entry delegates to buildLorebookEntryCreateRow.
+  const professorMariCliAddEntry = await mariDb.executeCli({
+    argv: [
+      "lorebooks", "add-entry", professorMariCliLorebookId,
+      "--name", "Regex CLI entry",
+      "--keys", "Lycan",
+      "--secondary-keys", "moon,howl",
+      "--selective",
+      "--selective-logic", "and_all",
+      "--match-whole-words",
+      "--use-regex",
+      "--apply",
+    ],
+  });
+  assert.equal(professorMariCliAddEntry.ok, true, `CLI add-entry must succeed: ${JSON.stringify(professorMariCliAddEntry)}`);
+  const professorMariCliEntry = (await lorebookStorage.listEntries(professorMariCliLorebookId)).find(
+    (entry) => entry.name === "Regex CLI entry",
+  );
+  assert.ok(professorMariCliEntry);
+  assert.equal(professorMariCliEntry.selective, true, "CLI add-entry must persist --selective");
+  assert.equal(professorMariCliEntry.selectiveLogic, "and_all", "CLI add-entry must persist --selective-logic");
+  assert.equal(professorMariCliEntry.matchWholeWords, true, "CLI add-entry must persist --match-whole-words");
+  assert.equal(professorMariCliEntry.useRegex, true, "CLI add-entry must persist --use-regex");
+  assert.deepEqual(professorMariCliEntry.secondaryKeys, ["moon", "howl"], "CLI add-entry must persist --secondary-keys");
+  assert.equal(professorMariCliEntry.caseSensitive, false, "unset --case-sensitive stays default");
+
+  const professorMariCliUpdateEntry = await mariDb.executeCli({
+    argv: [
+      "lorebooks", "update-entry", professorMariCliEntry.id,
+      "--no-match-whole-words",
+      "--no-selective",
+      "--selective-logic", "not",
+      "--apply",
+    ],
+  });
+  assert.equal(professorMariCliUpdateEntry.ok, true, `CLI update-entry must succeed: ${JSON.stringify(professorMariCliUpdateEntry)}`);
+  const professorMariCliUpdatedEntry = (await lorebookStorage.listEntries(professorMariCliLorebookId)).find(
+    (entry) => entry.id === professorMariCliEntry.id,
+  );
+  assert.ok(professorMariCliUpdatedEntry);
+  assert.equal(professorMariCliUpdatedEntry.matchWholeWords, false, "CLI update-entry --no-match-whole-words clears it");
+  assert.equal(professorMariCliUpdatedEntry.selective, false, "CLI update-entry --no-selective clears it");
+  assert.equal(professorMariCliUpdatedEntry.selectiveLogic, "not", "CLI update-entry patches --selective-logic");
+
+  // An invalid --selective-logic is rejected with a clear error on both CLI subcommands.
+  const professorMariCliBadUpdateLogic = await mariDb.executeCli({
+    argv: ["lorebooks", "update-entry", professorMariCliEntry.id, "--selective-logic", "bogus", "--apply"],
+  });
+  assert.equal(professorMariCliBadUpdateLogic.ok, false, "CLI update-entry rejects an invalid --selective-logic");
+  assert.match(String(professorMariCliBadUpdateLogic.error), /selective-logic must be one of/u);
+  const professorMariCliBadAddLogic = await mariDb.executeCli({
+    argv: ["lorebooks", "add-entry", professorMariCliLorebookId, "--name", "Bad logic", "--selective-logic", "bogus", "--apply"],
+  });
+  assert.equal(professorMariCliBadAddLogic.ok, false, "CLI add-entry rejects an invalid --selective-logic");
+  assert.match(String(professorMariCliBadAddLogic.error), /selective-logic must be one of/u);
+
   await lorebookStorage.remove(professorMariCliLorebookId);
   assert.equal(await lorebookStorage.getById(professorMariCliLorebookId), null);
   const rangedChatId = "professor-mari-range-regression";
@@ -1737,7 +2117,11 @@ try {
   assert.equal(manyTagsCreate.ok, true, "#4767 tag-storm fixture must be created");
   const tagsRead = await mariDb.executeAction({ action: "character.get", id: manyTagsId });
   assert.equal(tagsRead.ok, true);
-  assert.equal((tagsRead.output as { data: Record<string, unknown> }).data.name, "Tag Storm", "#4767 name survives a tag storm");
+  assert.equal(
+    (tagsRead.output as { data: Record<string, unknown> }).data.name,
+    "Tag Storm",
+    "#4767 name survives a tag storm",
+  );
   assert.ok(
     JSON.stringify(tagsRead.output, null, 2).length < 30_000,
     "#4767 a many-short-strings card must be bounded, never inflated past the cap",
@@ -1755,7 +2139,11 @@ try {
   assert.equal(descHeavyCreate.ok, true, "#4767 description-heavy fixture must be created");
   const descRead = await mariDb.executeAction({ action: "character.get", id: descHeavyId });
   assert.equal(descRead.ok, true);
-  assert.equal((descRead.output as { data: Record<string, unknown> }).data.name, "Wordy", "#4767 name survives even when description is the bulk");
+  assert.equal(
+    (descRead.output as { data: Record<string, unknown> }).data.name,
+    "Wordy",
+    "#4767 name survives even when description is the bulk",
+  );
   assert.ok(
     (descRead.truncation?.fields ?? []).some((f) => f.path === "data.description"),
     "#4767 a description-dominated card elides the description (recoverable), not the identity",
@@ -1767,7 +2155,11 @@ try {
     offset: 0,
     limit: 20_000,
   });
-  assert.equal(descWindow.truncation?.field?.total, 40_000, "#4767 the elided description must be fully recoverable via field=");
+  assert.equal(
+    descWindow.truncation?.field?.total,
+    40_000,
+    "#4767 the elided description must be fully recoverable via field=",
+  );
 
   // A field= path that does not resolve returns the overview WITH a not-found signal.
   const missingField = await mariDb.executeAction({
@@ -1775,7 +2167,11 @@ try {
     id: heavyCharacterId,
     field: "data.no_such_field",
   });
-  assert.equal(missingField.truncation?.unresolvedField, "data.no_such_field", "#4767 an unresolved field= must be flagged, not silently swallowed");
+  assert.equal(
+    missingField.truncation?.unresolvedField,
+    "data.no_such_field",
+    "#4767 an unresolved field= must be flagged, not silently swallowed",
+  );
 
   // Same path on a SMALL row that needs no elision: still flags the miss, and
   // reports no elided fields (so the note must not promise a field list).
@@ -1784,7 +2180,11 @@ try {
     id: characterId,
     field: "data.no_such_field",
   });
-  assert.equal(smallMissingField.truncation?.unresolvedField, "data.no_such_field", "#4767 a small-row unresolved field= must still be flagged");
+  assert.equal(
+    smallMissingField.truncation?.unresolvedField,
+    "data.no_such_field",
+    "#4767 a small-row unresolved field= must still be flagged",
+  );
   assert.equal(
     (smallMissingField.truncation?.fields ?? []).length,
     0,
@@ -1799,7 +2199,11 @@ try {
     field: "constructor",
   });
   assert.equal(prototypeField.ok, true, "#4767 a prototype-key field= must not crash the read");
-  assert.equal(prototypeField.truncation?.unresolvedField, "constructor", "#4767 an inherited key must resolve as unresolved, not the constructor");
+  assert.equal(
+    prototypeField.truncation?.unresolvedField,
+    "constructor",
+    "#4767 an inherited key must resolve as unresolved, not the constructor",
+  );
 
   // A small read is untouched: no truncation metadata, behavior identical to before.
   const smallRead = await mariDb.executeAction({ action: "character.get", id: characterId });
@@ -1943,6 +2347,193 @@ try {
     "Serialized folder moves must preserve both memberships",
   );
 
+  const widgetPreview = await mariDb.executeAction({
+    action: "home_widget.create",
+    data: {
+      title: "Tonight's menu",
+      description: "A tiny reminder to choose a chat mood before cooking.",
+      accent: "orange",
+      icon: "note",
+    },
+    apply: false,
+  });
+  assert.equal(widgetPreview.ok, true);
+  assert.equal(widgetPreview.mode, "dry-run", "Professor Mari must preview a custom widget before confirmation");
+  assert.deepEqual((await mariDb.executeAction({ action: "home_widget.list" })).output, []);
+
+  const approvalsBeforeWidgetCreate = new Set(mariDb.getPendingApprovals().map((approval) => approval.id));
+  const widgetCreate = await mariDb.executeAction({
+    action: "home_widget.create",
+    data: {
+      title: "Tonight's menu",
+      description: "A tiny reminder to choose a chat mood before cooking.",
+      accent: "orange",
+      icon: "note",
+    },
+    apply: true,
+  });
+  assert.equal(widgetCreate.ok, true);
+  const widgetList = await mariDb.executeAction({ action: "home_widget.list" });
+  const createdWidget = (widgetList.output as Array<{ id: string; title: string }>)[0];
+  assert.equal(createdWidget?.title, "Tonight's menu");
+  assert.equal((await mariDb.executeAction({ action: "home_widget.get", widgetId: createdWidget.id })).ok, true);
+  const catalogBeforeConcurrentWrites = await readHomeWidgetCatalog(db);
+  const concurrentCatalogWrites = await Promise.allSettled([
+    replaceHomeWidgetCatalog(db, catalogBeforeConcurrentWrites.revision, catalogBeforeConcurrentWrites.widgets),
+    replaceHomeWidgetCatalog(db, catalogBeforeConcurrentWrites.revision, catalogBeforeConcurrentWrites.widgets),
+  ]);
+  assert.equal(
+    concurrentCatalogWrites.filter((result) => result.status === "fulfilled").length,
+    1,
+    "Only one write may commit for a Home widget catalog revision",
+  );
+  const rejectedCatalogWrite = concurrentCatalogWrites.find((result) => result.status === "rejected");
+  assert.equal(
+    rejectedCatalogWrite?.status === "rejected" &&
+      rejectedCatalogWrite.reason instanceof HomeWidgetCatalogConflictError,
+    true,
+  );
+  const widgetApproval = mariDb.getPendingApprovals().find((approval) => !approvalsBeforeWidgetCreate.has(approval.id));
+  assert.ok(widgetApproval, "Applying a Home widget change must create a review approval");
+  await assert.rejects(
+    mariDb.restoreAppliedReview(widgetApproval.id),
+    HomeWidgetCatalogConflictError,
+    "A conflicting Home widget restore must fail safely",
+  );
+  assert.equal(
+    mariDb.getPendingApprovals().some((approval) => approval.id === widgetApproval.id),
+    true,
+    "A failed Home widget restore must remain available to retry or keep",
+  );
+
+  // #4813 (PR 1): every Professor Mari `*.create` now applies through the same Keep/Restore
+  // review as edits and deletes — so a creation Mari made without being asked stays undoable in
+  // chat — and a create may never overwrite an existing row.
+  const pendingReviewIds = () => new Set(mariDb.getPendingApprovals().map((approval) => approval.id));
+  const newestReviewSince = (baseline: Set<string>) =>
+    mariDb.getPendingApprovals().find((approval) => !baseline.has(approval.id));
+
+  // (1) A create routes through review and is applied-but-undoable.
+  const beforeReviewableCreate = pendingReviewIds();
+  const reviewableCharacter = await mariDb.executeAction({
+    action: "character.create",
+    characterId: "mari-reviewable-character",
+    data: { name: "Reviewable Character" },
+    apply: true,
+  });
+  assert.equal(reviewableCharacter.ok, true);
+  assert.equal(
+    reviewableCharacter.approval?.status,
+    "pending",
+    "character.create must apply through the Keep/Restore review, not silently",
+  );
+  const reviewableApproval = newestReviewSince(beforeReviewableCreate);
+  assert.ok(reviewableApproval, "character.create must register a pending review");
+  assert.equal(
+    (await mariDb.executeAction({ action: "character.get", id: "mari-reviewable-character" })).ok,
+    true,
+    "the row is applied immediately (apply-with-undo), so it is readable while the review is pending",
+  );
+
+  // (2) Restore removes the created row and clears the review.
+  await mariDb.restoreAppliedReview(reviewableApproval.id);
+  assert.equal(
+    (await mariDb.executeAction({ action: "character.get", id: "mari-reviewable-character" })).ok,
+    false,
+    "Restoring a create must delete the row Mari added",
+  );
+  assert.equal(
+    mariDb.getPendingApprovals().some((approval) => approval.id === reviewableApproval.id),
+    false,
+    "a restored review leaves the pending list",
+  );
+
+  // (3) Keep persists the created row and clears the review.
+  const beforeKeptCreate = pendingReviewIds();
+  await mariDb.executeAction({
+    action: "character.create",
+    characterId: "mari-kept-character",
+    data: { name: "Kept Character" },
+    apply: true,
+  });
+  const keptApproval = newestReviewSince(beforeKeptCreate);
+  assert.ok(keptApproval);
+  await mariDb.keepAppliedReview(keptApproval.id);
+  assert.equal(
+    (await mariDb.executeAction({ action: "character.get", id: "mari-kept-character" })).ok,
+    true,
+    "Keeping a create leaves the row in place",
+  );
+  assert.equal(
+    mariDb.getPendingApprovals().some((approval) => approval.id === keptApproval.id),
+    false,
+    "a kept review leaves the pending list",
+  );
+
+  // (4) A create may not overwrite an existing row (the planInsert clobber guard).
+  const beforeClobber = pendingReviewIds();
+  const clobberAttempt = await mariDb.executeAction({
+    action: "character.create",
+    characterId: "mari-kept-character",
+    data: { name: "Impostor" },
+    apply: true,
+  });
+  assert.equal(clobberAttempt.ok, false, "creating over an existing id must be refused, not overwrite it");
+  assert.match(String(clobberAttempt.error ?? ""), /already exists/iu);
+  assert.equal(newestReviewSince(beforeClobber), undefined, "a refused create must not leave a dangling review");
+  assert.equal(
+    (await mariDb.executeAction({ action: "character.get", id: "mari-kept-character" })).ok,
+    true,
+    "the pre-existing row survives a refused create",
+  );
+
+  // (5) A multi-row create (lorebook + entry) restores every row in FK-safe order.
+  const beforeReviewableLorebook = pendingReviewIds();
+  await mariDb.executeAction({
+    action: "lorebook.create",
+    lorebookId: "mari-reviewable-lorebook",
+    data: {
+      name: "Reviewable Lorebook",
+      entries: [{ name: "Reviewable entry", content: "Reviewable entry content", keys: ["review"] }],
+    },
+    apply: true,
+  });
+  const reviewableLorebookApproval = newestReviewSince(beforeReviewableLorebook);
+  assert.ok(reviewableLorebookApproval, "lorebook.create must register a pending review");
+  assert.equal((await lorebookStorage.listEntries("mari-reviewable-lorebook")).length, 1);
+  await mariDb.restoreAppliedReview(reviewableLorebookApproval.id);
+  assert.ok(
+    !(await lorebookStorage.getById("mari-reviewable-lorebook")),
+    "Restoring a lorebook create removes the lorebook itself",
+  );
+  assert.equal(
+    (await lorebookStorage.listEntries("mari-reviewable-lorebook")).length,
+    0,
+    "Restoring a lorebook create also removes its entries",
+  );
+
+  // (6) A non-activating theme.create routes through review too, and Restore removes it.
+  const beforeReviewableTheme = pendingReviewIds();
+  const reviewableTheme = await mariDb.executeAction({
+    action: "theme.create",
+    themeId: "mari-reviewable-theme",
+    data: { name: "Reviewable Theme", css: "body { color: inherit; }" },
+    apply: true,
+  });
+  assert.equal(
+    reviewableTheme.approval?.status,
+    "pending",
+    "a non-activating theme.create must also route through review",
+  );
+  const reviewableThemeApproval = newestReviewSince(beforeReviewableTheme);
+  assert.ok(reviewableThemeApproval);
+  await mariDb.restoreAppliedReview(reviewableThemeApproval.id);
+  assert.equal(
+    (await mariDb.executeAction({ action: "theme.get", id: "mari-reviewable-theme" })).ok,
+    false,
+    "Restoring a theme create removes the theme",
+  );
+
   for (const approval of mariDb.getPendingApprovals()) {
     await mariDb.keepAppliedReview(approval.id);
   }
@@ -1998,6 +2589,50 @@ assert.equal(generatedLorebookEntry.lorebookId, "lorebook-generated");
 assert.equal(generatedLorebookEntry.content, "A city made from black glass.");
 assert.deepEqual(generatedLorebookEntry.keys, ["Glass City", "black glass"]);
 assert.deepEqual(generatedLorebookEntry.secondaryKeys, ["rain"]);
+// #4791 — unset keyword-matching/selective fields fall back to the stored defaults.
+assert.equal(generatedLorebookEntry.selective, "false");
+assert.equal(generatedLorebookEntry.selectiveLogic, "and");
+assert.equal(generatedLorebookEntry.matchWholeWords, "false");
+assert.equal(generatedLorebookEntry.caseSensitive, "false");
+assert.equal(generatedLorebookEntry.useRegex, "false");
+// #4791 — Professor Mari can now set them explicitly (previously hardcoded and ignored).
+const parameterizedLorebookEntry = buildLorebookEntryCreateRow(
+  {
+    name: "Vlad",
+    content: "The immortal count.",
+    keys: ["Vlad"],
+    secondaryKeys: ["count", "castle"],
+    selective: true,
+    selectiveLogic: "and_all",
+    matchWholeWords: true,
+    caseSensitive: true,
+    useRegex: false,
+  },
+  "lorebook-generated",
+  "entry-parameterized",
+  "2026-07-16T00:00:00.000Z",
+);
+assert.equal(parameterizedLorebookEntry.selective, "true");
+assert.equal(parameterizedLorebookEntry.selectiveLogic, "and_all");
+assert.equal(parameterizedLorebookEntry.matchWholeWords, "true");
+assert.equal(parameterizedLorebookEntry.caseSensitive, "true");
+assert.equal(parameterizedLorebookEntry.useRegex, "false");
+// An invalid selectiveLogic is rejected and falls back to the stored default.
+const invalidLogicLorebookEntry = buildLorebookEntryCreateRow(
+  { name: "Bad logic", content: "x", selectiveLogic: "nonsense" },
+  "lorebook-generated",
+  "entry-bad-logic",
+  "2026-07-16T00:00:00.000Z",
+);
+assert.equal(invalidLogicLorebookEntry.selectiveLogic, "and");
+// #4796 review — "or" is an accepted legacy selectiveLogic value (behaves like "and").
+const orLogicLorebookEntry = buildLorebookEntryCreateRow(
+  { name: "Or logic", content: "x", selectiveLogic: "or" },
+  "lorebook-generated",
+  "entry-or-logic",
+  "2026-07-16T00:00:00.000Z",
+);
+assert.equal(orLogicLorebookEntry.selectiveLogic, "or");
 
 // Issue #4135 — Markdown headings inside Lorebook Keeper content are content,
 // not approval-entry delimiters.
@@ -2845,7 +3480,7 @@ assert.match(
 );
 assert.match(
   professorMariHomeSource,
-  /const refreshWorkspaceStatus = useCallback\(async \(shouldApply\?: \(\) => boolean\)[\s\S]{0,500}if \(shouldApply\?\.\(\) === false\) return status;[\s\S]{0,80}setWorkspaceStatus\(status\)/u,
+  /const refreshWorkspaceStatus = useCallback\(\s*async \(shouldApply\?: \(\) => boolean\)[\s\S]{0,500}if \(shouldApply\?\.\(\) === false\) return status;[\s\S]{0,80}setWorkspaceStatus\(status\)/u,
   "Professor Mari workspace status loads must recheck an operation guard before applying a response",
 );
 assert.match(
@@ -3210,6 +3845,25 @@ assert.match(playwrightServerSource, /resolve\(dataRoot, name\)/u);
 assert.match(playwrightServerSource, /DATA_DIR:\s*dataDir/u);
 
 const appSource = readFileSync(new URL("../../packages/client/src/App.tsx", import.meta.url), "utf8");
+const homeBrowserHubSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/HomeBrowserHub.tsx", import.meta.url),
+  "utf8",
+);
+const globalStylesSource = readFileSync(
+  new URL("../../packages/client/src/styles/globals.css", import.meta.url),
+  "utf8",
+);
+assert.equal(
+  appSource.match(/document\.addEventListener\("visibilitychange", syncEffectsPausedState\)/gu)?.length,
+  1,
+  "Home effect pausing must keep one central visibility listener",
+);
+assert.match(appSource, /dispatchEvent\(new CustomEvent\("marinara:effects-paused"/u);
+assert.match(homeBrowserHubSource, /window\.removeEventListener\(MARINARA_EFFECTS_PAUSED_EVENT, sync\)/u);
+assert.match(
+  globalStylesSource,
+  /data-marinara-effects-paused="true"[^}]+mari-home-professor-popup__sprite[\s\S]+animation-play-state: paused !important;/u,
+);
 const agentEditorSource = readFileSync(
   new URL("../../packages/client/src/components/agents/AgentEditor.tsx", import.meta.url),
   "utf8",
@@ -4489,18 +5143,6 @@ assert.deepEqual(parseNoodleAvatarCrop({ zoom: 2, offsetX: -10, offsetY: 5, full
   fullImage: true,
 });
 assert.equal(parseNoodleAvatarCrop({ srcX: 0, srcY: 0, srcWidth: 0, srcHeight: 0 }), null);
-
-const noodleEmojiMap = mergeNoodleCustomEmojiMap(
-  [{ name: "d20lesbian", url: "/global-d20.png" }],
-  [
-    [
-      { customKind: "emoji", customName: "d20lesbian", url: "/persona-d20.png" },
-      { customKind: "sticker", customName: "not-an-emoji", url: "/sticker.png" },
-    ],
-  ],
-);
-assert.equal(noodleEmojiMap.get("d20lesbian"), "/persona-d20.png");
-assert.equal(noodleEmojiMap.has("not-an-emoji"), false);
 
 assert.deepEqual(appendLorebookActivationKeys(["Apples"], " Apple, Appletree, red fruit, Apple, , Apples "), [
   "Apples",
@@ -6430,6 +7072,17 @@ try {
     /queryKey: \[\.\.\.chatKeys\.messagePeek\(chatId \?\? ""\), limit\]/u,
     "The peek hook's query key must include its limit so different windows never share options",
   );
+}
+
+{
+  const { parseMessageCursor } = await import("../../packages/server/src/services/storage/chats.storage.js");
+  assert.deepEqual(parseMessageCursor("2026-08-09T12:00:00.000Z|message%7C42"), {
+    createdAt: "2026-08-09T12:00:00.000Z",
+    id: "message|42",
+  });
+  assert.equal(parseMessageCursor("2026-08-09T12:00:00.000Z"), null, "bare timestamps are not cursors");
+  assert.equal(parseMessageCursor("not-a-date|42"), null, "cursor timestamps must be valid");
+  assert.equal(parseMessageCursor("2026-08-09T12:00:00.000Z|%"), null, "cursor ids must be valid URI components");
 }
 
 console.info("Open-issue regressions passed.");

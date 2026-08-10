@@ -1,4 +1,4 @@
-import { PROVIDERS, type APIProvider } from "@marinara-engine/shared";
+import { PROVIDERS, type APIProvider, type ImageGenerationQuality } from "@marinara-engine/shared";
 import type { CreateConnectionPayload } from "../hooks/use-connections";
 
 export type ConnectionTransferRow = {
@@ -29,6 +29,7 @@ export type ConnectionTransferRow = {
   videoService?: unknown;
   service?: unknown;
   imageEndpointId?: unknown;
+  imageGenerationQuality?: unknown;
   comfyuiWorkflow?: unknown;
   imagePromptHint?: unknown;
   treatAsLocalEndpoint?: unknown;
@@ -62,6 +63,7 @@ export type SafeConnectionExport = {
   videoGenerationSource: string | null;
   videoService: string | null;
   imageEndpointId: string | null;
+  imageGenerationQuality: ImageGenerationQuality;
   comfyuiWorkflow: string | null;
   imagePromptHint: string | null;
   treatAsLocalEndpoint: boolean;
@@ -134,6 +136,7 @@ export function normalizeImportedConnectionEntry(value: unknown): ConnectionImpo
       imagePromptHint: asNullableString(value.imagePromptHint),
       imageService,
       imageEndpointId: asNullableString(value.imageEndpointId),
+      imageGenerationQuality: asImageGenerationQuality(value.imageGenerationQuality),
       videoGenerationSource: provider === "video_generation" ? asNullableString(value.videoGenerationSource) : null,
       videoService,
       promptPresetId: null,
@@ -177,11 +180,16 @@ function serializeConnectionForExport(connection: ConnectionTransferRow): SafeCo
     videoGenerationSource: isVideoProvider ? asNullableString(connection.videoGenerationSource) : null,
     videoService: isVideoProvider ? asNullableString(connection.videoService ?? connection.service) : null,
     imageEndpointId: asNullableString(connection.imageEndpointId),
+    imageGenerationQuality: asImageGenerationQuality(connection.imageGenerationQuality),
     comfyuiWorkflow: asNullableString(connection.comfyuiWorkflow),
     imagePromptHint: asNullableString(connection.imagePromptHint),
     treatAsLocalEndpoint: asBoolean(connection.treatAsLocalEndpoint),
     claudeFastMode: asBoolean(connection.claudeFastMode),
   };
+}
+
+function asImageGenerationQuality(value: unknown): ImageGenerationQuality {
+  return value === "low" || value === "medium" || value === "high" ? value : "auto";
 }
 
 function parseDefaultParameters(value: unknown): Record<string, unknown> | null {

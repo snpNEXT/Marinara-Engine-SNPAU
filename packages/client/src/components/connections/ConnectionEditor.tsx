@@ -100,6 +100,7 @@ import {
   type ComfyUiLoraSetting,
   type ImageDefaultsService,
   type ImageGenerationDefaultsProfile,
+  type ImageGenerationQuality,
   type ImageStyleProfileSettings,
   type VideoDefaultsService,
   type VideoGenerationDefaultsProfile,
@@ -299,6 +300,7 @@ export function ConnectionEditor() {
   const [localImagePromptHint, setLocalImagePromptHint] = useState("");
   const [localImageService, setLocalImageService] = useState<string | null>(null);
   const [localImageEndpointId, setLocalImageEndpointId] = useState("");
+  const [localImageGenerationQuality, setLocalImageGenerationQuality] = useState<ImageGenerationQuality>("auto");
   const [localVideoGenerationSource, setLocalVideoGenerationSource] = useState("");
   const [localVideoService, setLocalVideoService] = useState<string | null>(null);
   const [localMaxTokensOverride, setLocalMaxTokensOverride] = useState<number | null>(null);
@@ -418,6 +420,11 @@ export function ConnectionEditor() {
     setLocalImagePromptHint((c.imagePromptHint as string) ?? "");
     setLocalImageService(imageService);
     setLocalImageEndpointId((c.imageEndpointId as string) ?? "");
+    setLocalImageGenerationQuality(
+      c.imageGenerationQuality === "low" || c.imageGenerationQuality === "medium" || c.imageGenerationQuality === "high"
+        ? c.imageGenerationQuality
+        : "auto",
+    );
     setLocalVideoGenerationSource(videoProviderSource);
     setLocalVideoService(videoDefaultsService);
     setLocalMaxTokensOverride(typeof c.maxTokensOverride === "number" ? (c.maxTokensOverride as number) : null);
@@ -533,6 +540,10 @@ export function ConnectionEditor() {
       ? localizeUi("ui.connections.connectioneditor.swarmuiDoesNotSupportReferenceImageName")
       : null;
   const selectedImageDefaultsService = imageSourceToDefaultsService(selectedImageService);
+  const supportsGptImageQuality =
+    localProvider === "image_generation" &&
+    selectedImageService === "openai" &&
+    /^gpt-image-(?:1|1\.5|2)(?:$|-)/i.test(localModel.trim());
   const selectedVideoService =
     localProvider === "video_generation"
       ? localVideoGenerationSource || localVideoService || effectiveVideoGenerationSource
@@ -711,6 +722,7 @@ export function ConnectionEditor() {
       imagePromptHint: isImageProvider ? localImagePromptHint.trim() || null : null,
       imageEndpointId:
         isImageProvider && selectedImageService === "runpod_comfyui" ? localImageEndpointId || null : null,
+      imageGenerationQuality: isImageProvider ? localImageGenerationQuality : "auto",
       videoGenerationSource: isVideoProvider ? selectedVideoProvider || null : null,
       videoService: isVideoProvider ? selectedVideoDefaultsService : null,
       maxTokensOverride: localMaxTokensOverride ?? null,
@@ -810,6 +822,7 @@ export function ConnectionEditor() {
     localImagePromptHint,
     localImageService,
     localImageEndpointId,
+    localImageGenerationQuality,
     localMaxTokensOverride,
     localClaudeFastMode,
     localTreatAsLocalEndpoint,
@@ -914,6 +927,7 @@ export function ConnectionEditor() {
       videoService,
       imageEndpointId:
         isImageProvider && selectedImageService === "runpod_comfyui" ? localImageEndpointId || null : null,
+      imageGenerationQuality: isImageProvider ? localImageGenerationQuality : "auto",
       comfyuiWorkflow:
         isImageProvider || (isVideoProvider && videoProvider === "comfyui") ? localComfyuiWorkflow || null : null,
       imagePromptHint: isImageProvider ? localImagePromptHint.trim() || null : null,
@@ -952,6 +966,7 @@ export function ConnectionEditor() {
     selectedVideoProvider,
     selectedImageService,
     localImageEndpointId,
+    localImageGenerationQuality,
     localComfyuiWorkflow,
     localImagePromptHint,
     localClaudeFastMode,
@@ -1996,6 +2011,28 @@ export function ConnectionEditor() {
                   <>{localizeUi("ui.connections.connectioneditor.placeholdersLike")} <code>{"%prompt%"}</code>, <code>{"%steps%"}</code>, <code>{"%sampler%"}</code>{localizeUi("ui.connections.connectioneditor.andReferenceImagePlaceholdersWillBeReplacedAtGeneration")}</>
                 )}
               </p>
+            </FieldGroup>
+          )}
+
+          {supportsGptImageQuality && (
+            <FieldGroup
+              label={localizeUi("ui.connections.connectioneditor.gptImageQuality")}
+              icon={<Sparkles size="0.875rem" className="text-sky-400" />}
+              help={localizeUi("ui.connections.connectioneditor.gptImageQualityHelp")}
+            >
+              <select
+                value={localImageGenerationQuality}
+                onChange={(event) => {
+                  setLocalImageGenerationQuality(event.target.value as ImageGenerationQuality);
+                  markDirty();
+                }}
+                className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm outline-none ring-1 ring-[var(--border)] transition-shadow focus:ring-sky-400/50"
+              >
+                <option value="auto">{localizeUi("ui.connections.connectioneditor.imageQualityAuto")}</option>
+                <option value="low">{localizeUi("ui.connections.connectioneditor.imageQualityLow")}</option>
+                <option value="medium">{localizeUi("ui.connections.connectioneditor.imageQualityMedium")}</option>
+                <option value="high">{localizeUi("ui.connections.connectioneditor.imageQualityHigh")}</option>
+              </select>
             </FieldGroup>
           )}
 

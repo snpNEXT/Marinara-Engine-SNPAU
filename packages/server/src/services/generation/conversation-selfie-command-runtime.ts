@@ -11,7 +11,7 @@ import {
   resolveImageStyleGuidanceText,
 } from "../image/image-prompt-compiler.js";
 import { persistGeneratedImageToEntityGalleries } from "../image/generated-image-entity-gallery.js";
-import { resolveConnectionImageDefaults } from "../image/image-generation-defaults.js";
+import { resolveConnectionImageDefaults, resolveConnectionImageQuality } from "../image/image-generation-defaults.js";
 import { generateImage, saveImageToDisk } from "../image/image-generation.js";
 import { loadImageGenerationUserSettings } from "../image/image-generation-settings.js";
 import { generateIllustratorImageVariants } from "../image/illustrator-image-variants.js";
@@ -260,6 +260,7 @@ async function generateSelfie(
     });
     const referenceResolution = await resolveIllustratorCharacterReferences({
       charactersStore: args.chars,
+      characterGallery: createCharacterGalleryStorage(args.db),
       chatCharacters: args.charInfo.map((character) => ({
         id: character.id,
         name: character.name,
@@ -319,6 +320,7 @@ async function generateSelfie(
         imageEndpointId: imgConnFull.imageEndpointId || undefined,
         comfyWorkflow: imgConnFull.comfyuiWorkflow || undefined,
         imageDefaults,
+        quality: resolveConnectionImageQuality(imgConnFull),
         referenceImages: selfieReferenceImages,
         fallback: imageFallback,
         onFallback: reportFallback,

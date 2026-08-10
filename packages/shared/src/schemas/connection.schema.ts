@@ -2,6 +2,7 @@
 // Connection Zod Schemas
 // ──────────────────────────────────────────────
 import { z } from "zod";
+import { IMAGE_GENERATION_QUALITIES } from "../types/connection.js";
 
 export const apiProviderSchema = z.enum([
   "openai",
@@ -21,6 +22,8 @@ export const apiProviderSchema = z.enum([
   "image_generation",
   "video_generation",
 ]);
+
+export const imageGenerationQualitySchema = z.enum(IMAGE_GENERATION_QUALITIES);
 
 export const connectionImageCaptioningDefaultsSchema = z.object({
   imageCaptioningEnabled: z.boolean().optional(),
@@ -67,6 +70,7 @@ export const createConnectionSchema = z.object({
   imagePromptHint: z.string().nullable().default(null),
   imageService: z.string().nullable().default(null),
   imageEndpointId: z.string().nullable().default(null),
+  imageGenerationQuality: imageGenerationQualitySchema.default("auto"),
   videoGenerationSource: z.string().nullable().default(null),
   videoService: z.string().nullable().default(null),
   promptPresetId: z.string().nullable().default(null),

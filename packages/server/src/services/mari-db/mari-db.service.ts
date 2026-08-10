@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { eq } from "../../db/file-query.js";
 import type { DB } from "../../db/connection.js";
@@ -23,7 +23,12 @@ import { executeWikiCli } from "../professor-mari/fandom-mediawiki/wiki-cli.js";
 import {
   LIMITS,
   PROFESSOR_MARI_ID,
+  HOME_CUSTOM_WIDGET_LIMIT,
+  HOME_CUSTOM_WIDGETS_SETTINGS_KEY,
   createPersonalExtensionSchema,
+  homeCustomWidgetCatalogSchema,
+  homeCustomWidgetDraftSchema,
+  homeCustomWidgetSchema,
   normalizeLorebookCategory,
   normalizePersonalExtensionCapabilities,
   type MariDbCommandResult,
@@ -36,6 +41,7 @@ import {
   type MariDbValidationResult,
 } from "@marinara-engine/shared";
 import { computePersonalExtensionHash } from "../extensions/personal-extension-hash.js";
+import { replaceHomeWidgetCatalog } from "../home-widget-catalog.service.js";
 
 type Row = Record<string, unknown>;
 type Table = AnyFileTable;
@@ -69,7 +75,18 @@ type Plan = {
   request: ParsedMutationRequest;
 };
 type ParsedMutationRequest = {
-  kind: "insert" | "patch" | "replace" | "delete" | "transform" | "theme-create" | "theme-update" | "theme-set-active" | "character-move-folder";
+  kind:
+    | "insert"
+    | "patch"
+    | "replace"
+    | "delete"
+    | "transform"
+    | "theme-create"
+    | "theme-update"
+    | "theme-set-active"
+    | "character-move-folder"
+    | "preset-section-delete"
+    | "preset-group-delete";
   table: string | "all";
   id?: string;
   characterId?: string;
@@ -84,7 +101,6 @@ type ParsedMutationRequest = {
   activate?: boolean;
   cwd?: string;
   apply: boolean;
-  requiresApproval?: boolean;
   personalExtensionDraftMutation?: boolean;
   cascade: boolean;
   reason: string | null;
@@ -96,8 +112,24 @@ type PendingRecord = MariDbPendingApproval & {
   command: string;
   historyId: string | null;
   journalPath: string | null;
-  timer: NodeJS.Timeout;
 };
+
+function homeWidgetCatalogFromPlanRow(row: Row | null | undefined) {
+  if (typeof row?.value !== "string") return homeCustomWidgetCatalogSchema.parse({ widgets: [] });
+  return homeCustomWidgetCatalogSchema.parse(JSON.parse(row.value));
+}
+
+function singleHomeWidgetCatalogChange(plan: Plan): PlanChange | null {
+  const applied = plan.changes.filter((change) => change.apply);
+  if (
+    applied.length !== 1 ||
+    applied[0]?.table !== "app_settings" ||
+    applied[0].id !== HOME_CUSTOM_WIDGETS_SETTINGS_KEY
+  ) {
+    return null;
+  }
+  return applied[0];
+}
 
 type MariCliEnvelope = {
   argv?: string[];
@@ -132,8 +164,12 @@ type ProcessRunResult = {
 };
 
 const PREVIEW_LIMIT = 50;
-const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
 const HISTORY_LIMIT = 50;
+// #4813 (durable review): applied-review undo cards are persisted to disk so a Keep/Restore
+// survives a restart instead of vanishing after a timer. Keep at most this many; prune ones past
+// the retention window on load. The cap mirrors HISTORY_LIMIT.
+const PENDING_REVIEW_LIMIT = HISTORY_LIMIT;
+const PENDING_REVIEW_RETENTION_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 const COMMAND_OUTPUT_LIMIT = 32_000;
 const CODE_READ_TIMEOUT_MS = 30_000;
 const CODE_CHECK_TIMEOUT_MS = 15 * 60 * 1000;
@@ -147,6 +183,7 @@ const BOOLEAN_FLAGS = new Set([
   "apply",
   "cached",
   "cascade",
+  "case-sensitive",
   "changed",
   "constant",
   "disable",
@@ -156,15 +193,22 @@ const BOOLEAN_FLAGS = new Set([
   "global",
   "help",
   "jsonl",
+  "match-whole-words",
+  "no-case-sensitive",
   "no-constant",
   "no-global",
+  "no-match-whole-words",
+  "no-selective",
+  "no-use-regex",
   "parsed",
   "patch",
   "raw",
   "resume",
+  "selective",
   "staged",
   "strict",
   "tail",
+  "use-regex",
 ]);
 
 function truncateOutput(value: string, limit = COMMAND_OUTPUT_LIMIT): { text: string; truncated: boolean } {
@@ -172,7 +216,11 @@ function truncateOutput(value: string, limit = COMMAND_OUTPUT_LIMIT): { text: st
   return { text: `${value.slice(0, limit)}\n… output truncated at ${limit} characters …`, truncated: true };
 }
 
-function appendLimited(current: string, chunk: string, limit = COMMAND_OUTPUT_LIMIT): { text: string; truncated: boolean } {
+function appendLimited(
+  current: string,
+  chunk: string,
+  limit = COMMAND_OUTPUT_LIMIT,
+): { text: string; truncated: boolean } {
   if (current.length >= limit) return { text: current, truncated: true };
   const next = current + chunk;
   return truncateOutput(next, limit);
@@ -182,7 +230,11 @@ function displayCommand(bin: string, args: string[]) {
   return [bin, ...args].map((part) => (/[\s"']/.test(part) ? JSON.stringify(part) : part)).join(" ");
 }
 
-function runProcess(bin: string, args: string[], options: { cwd: string; timeoutMs: number }): Promise<ProcessRunResult> {
+function runProcess(
+  bin: string,
+  args: string[],
+  options: { cwd: string; timeoutMs: number },
+): Promise<ProcessRunResult> {
   const startedAt = Date.now();
   const command = displayCommand(bin, args);
   return new Promise((resolveRun) => {
@@ -660,8 +712,66 @@ function hasFlag(flags: Map<string, string | boolean>, name: string): boolean {
   return flags.has(name) && flags.get(name) !== false;
 }
 
+// #4812: map `mari presets` CLI flags to the data object the preset.* app_data actions accept, so
+// the CLI delegates to executePresetAction instead of reimplementing every child edit. Extra keys
+// are harmless — each action's field list keeps only what it uses.
+function presetDataFromFlags(flags: Map<string, string | boolean>): Row {
+  const data: Row = {};
+  const setStr = (flag: string, key: string) => {
+    const value = flagString(flags, flag);
+    if (value !== undefined) data[key] = value;
+  };
+  const setNum = (flag: string, key: string) => {
+    const value = flagString(flags, flag);
+    if (value === undefined || value.trim() === "") return;
+    const parsed = Number(value);
+    if (Number.isNaN(parsed)) throw new Error(`--${flag} must be a number, got "${value}"`);
+    data[key] = parsed;
+  };
+  setStr("name", "name");
+  setStr("content", "content");
+  setStr("role", "role");
+  setStr("identifier", "identifier");
+  setStr("group-id", "groupId");
+  setStr("parent-group-id", "parentGroupId");
+  setStr("injection-position", "injectionPosition");
+  setNum("injection-depth", "injectionDepth");
+  setNum("injection-order", "injectionOrder");
+  setNum("order", "order");
+  setStr("variable-name", "variableName");
+  setStr("question", "question");
+  setStr("separator", "separator");
+  setStr("display-mode", "displayMode");
+  setStr("option-sort", "optionSort");
+  setNum("sort-order", "sortOrder");
+  if (hasFlag(flags, "enable")) data.enabled = true;
+  if (hasFlag(flags, "disable")) data.enabled = false;
+  if (hasFlag(flags, "marker")) data.isMarker = true;
+  if (hasFlag(flags, "multi-select")) data.multiSelect = true;
+  if (hasFlag(flags, "random-pick")) data.randomPick = true;
+  const options = flagString(flags, "options");
+  if (options !== undefined) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(options);
+    } catch {
+      parsed = undefined;
+    }
+    data.options = Array.isArray(parsed)
+      ? parsed
+      : options
+          .split(",")
+          .map((option) => option.trim())
+          .filter(Boolean);
+  }
+  return data;
+}
+
 function normalizeAppDataActionName(action: string): string {
-  let key = action.trim().toLowerCase().replace(/[-_\s]+/g, "");
+  let key = action
+    .trim()
+    .toLowerCase()
+    .replace(/[-_\s]+/g, "");
   key = key
     .replace(/^characters\./, "character.")
     .replace(/^personas\./, "persona.")
@@ -819,6 +929,20 @@ export function normalizeCharacterActionData(input: Row): Row {
   return out;
 }
 
+const SELECTIVE_LOGIC_VALUES = new Set(["and", "and_all", "or", "not", "not_all"]);
+
+/** Validate a selectiveLogic string against the stored enum; undefined if absent or invalid. */
+function normalizeSelectiveLogicValue(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  const normalized = raw.trim().toLowerCase();
+  return SELECTIVE_LOGIC_VALUES.has(normalized) ? normalized : undefined;
+}
+
+/** Validate an incoming selectiveLogic against the stored enum; undefined if absent or invalid. */
+function normalizeSelectiveLogic(source: Row): string | undefined {
+  return normalizeSelectiveLogicValue(firstString(source, ["selectiveLogic", "selective_logic"]));
+}
+
 export function buildLorebookEntryCreateRow(
   data: Row,
   lorebookId: string,
@@ -837,11 +961,11 @@ export function buildLorebookEntryCreateRow(
     secondaryKeys: firstStringList(data, ["secondaryKeys", "secondary_keys"]) ?? [],
     enabled: boolText(firstBoolean(data, ["enabled"]) ?? true),
     constant: boolText(firstBoolean(data, ["constant"]) ?? false),
-    selective: "false",
-    selectiveLogic: "and",
-    matchWholeWords: "false",
-    caseSensitive: "false",
-    useRegex: "false",
+    selective: boolText(firstBoolean(data, ["selective"]) ?? false),
+    selectiveLogic: normalizeSelectiveLogic(data) ?? "and",
+    matchWholeWords: boolText(firstBoolean(data, ["matchWholeWords", "match_whole_words"]) ?? false),
+    caseSensitive: boolText(firstBoolean(data, ["caseSensitive", "case_sensitive"]) ?? false),
+    useRegex: boolText(firstBoolean(data, ["useRegex", "use_regex"]) ?? false),
     characterFilterMode: "any",
     characterFilterIds: [],
     characterTagFilterMode: "any",
@@ -946,12 +1070,13 @@ function normalizeAgentActionData(input: Row, existing?: Row | null): Row {
   if (resultType) settings.resultType = resultType;
   const row: Row = {
     ...input,
-    type: firstString(input, ["type", "agentType", "agent_type"]) ?? (typeof existing?.type === "string" ? existing.type : `custom-${slugFromName(name)}`),
+    type:
+      firstString(input, ["type", "agentType", "agent_type"]) ??
+      (typeof existing?.type === "string" ? existing.type : `custom-${slugFromName(name)}`),
     name,
-    description: firstString(input, ["description"]) ?? (typeof existing?.description === "string" ? existing.description : ""),
-    phase:
-      firstString(input, ["phase"]) ??
-      (typeof existing?.phase === "string" ? existing.phase : "parallel"),
+    description:
+      firstString(input, ["description"]) ?? (typeof existing?.description === "string" ? existing.description : ""),
+    phase: firstString(input, ["phase"]) ?? (typeof existing?.phase === "string" ? existing.phase : "parallel"),
     enabled: boolText(firstBoolean(input, ["enabled"]) ?? (existing ? existing.enabled !== "false" : true)),
     connectionId:
       input.connectionId === undefined && input.connection_id === undefined
@@ -978,7 +1103,8 @@ function normalizePromptPresetActionData(input: Row, existing?: Row | null): Row
   const row: Row = {
     ...input,
     name: firstString(input, ["name"]) ?? (typeof existing?.name === "string" ? existing.name : ""),
-    description: firstString(input, ["description"]) ?? (typeof existing?.description === "string" ? existing.description : ""),
+    description:
+      firstString(input, ["description"]) ?? (typeof existing?.description === "string" ? existing.description : ""),
     imagePath:
       input.imagePath === undefined && input.image_path === undefined
         ? (existing?.imagePath ?? null)
@@ -987,16 +1113,20 @@ function normalizePromptPresetActionData(input: Row, existing?: Row | null): Row
       firstString(input, ["conversationPrompt", "conversation_prompt"]) ??
       (typeof existing?.conversationPrompt === "string" ? existing.conversationPrompt : ""),
     gamePrompt:
-      firstString(input, ["gamePrompt", "game_prompt"]) ?? (typeof existing?.gamePrompt === "string" ? existing.gamePrompt : ""),
+      firstString(input, ["gamePrompt", "game_prompt"]) ??
+      (typeof existing?.gamePrompt === "string" ? existing.gamePrompt : ""),
     sectionOrder: jsonString(input.sectionOrder ?? input.section_order ?? existing?.sectionOrder, []),
     groupOrder: jsonString(input.groupOrder ?? input.group_order ?? existing?.groupOrder, []),
     variableGroups: jsonString(input.variableGroups ?? input.variable_groups ?? existing?.variableGroups, []),
     variableValues: jsonString(input.variableValues ?? input.variable_values ?? existing?.variableValues, {}),
     parameters: jsonString(input.parameters ?? existing?.parameters, {}),
     wrapFormat:
-      firstString(input, ["wrapFormat", "wrap_format"]) ?? (typeof existing?.wrapFormat === "string" ? existing.wrapFormat : "xml"),
+      firstString(input, ["wrapFormat", "wrap_format"]) ??
+      (typeof existing?.wrapFormat === "string" ? existing.wrapFormat : "xml"),
     defaultChoices: jsonString(input.defaultChoices ?? input.default_choices ?? existing?.defaultChoices, {}),
-    isDefault: boolText(firstBoolean(input, ["isDefault", "is_default"]) ?? (existing ? existing.isDefault === "true" : false)),
+    isDefault: boolText(
+      firstBoolean(input, ["isDefault", "is_default"]) ?? (existing ? existing.isDefault === "true" : false),
+    ),
     author: firstString(input, ["author"]) ?? (typeof existing?.author === "string" ? existing.author : ""),
   };
   delete row.conversation_prompt;
@@ -1202,6 +1332,159 @@ function normalizePromptPresetChildInserts(payload: Row, presetId: string): Arra
   if (!payload.groupOrder && groupOrder.length > 0) payload.groupOrder = groupOrder;
   if (!payload.sectionOrder && sectionOrder.length > 0) payload.sectionOrder = sectionOrder;
   return relatedInserts;
+}
+
+// #4812: field-by-field patch builders for granular section/group/choice-block edits. Only keys
+// present in the caller's data land in the patch; planPatch deep-merges it (arrays replace whole,
+// content strings replace, markerConfig object-merges), then serializeRow stringifies JSON columns.
+function buildPromptSectionPatch(data: Row): Row {
+  const patch: Row = {};
+  const name = firstString(data, ["name", "title", "label"]);
+  if (name !== undefined) patch.name = name;
+  const content = firstString(data, ["content", "prompt", "text"]);
+  if (content !== undefined) patch.content = content;
+  const role = firstString(data, ["role"]);
+  if (role !== undefined) {
+    if (!["system", "user", "assistant"].includes(role)) throw new Error(`role must be system, user, or assistant, got "${role}"`);
+    patch.role = role;
+  }
+  const enabled = firstBoolean(data, ["enabled"]);
+  if (enabled !== undefined) patch.enabled = boolText(enabled);
+  const isMarker = firstBoolean(data, ["isMarker", "marker"]);
+  if (isMarker !== undefined) patch.isMarker = boolText(isMarker);
+  if ("groupId" in data) patch.groupId = typeof data.groupId === "string" && data.groupId ? data.groupId : null;
+  if (isRecord(data.markerConfig)) patch.markerConfig = data.markerConfig;
+  const injectionPosition = firstString(data, ["injectionPosition"]);
+  if (injectionPosition !== undefined) {
+    if (injectionPosition !== "ordered" && injectionPosition !== "depth")
+      throw new Error(`injectionPosition must be ordered or depth, got "${injectionPosition}"`);
+    patch.injectionPosition = injectionPosition;
+  }
+  const injectionDepth = firstNumber(data, ["injectionDepth", "depth"]);
+  if (injectionDepth !== undefined) patch.injectionDepth = injectionDepth;
+  const injectionOrder = firstNumber(data, ["injectionOrder", "order", "sortOrder"]);
+  if (injectionOrder !== undefined) patch.injectionOrder = injectionOrder;
+  return patch;
+}
+
+function buildPromptGroupPatch(data: Row): Row {
+  const patch: Row = {};
+  const name = firstString(data, ["name", "title", "label"]);
+  if (name !== undefined) patch.name = name;
+  if ("parentGroupId" in data)
+    patch.parentGroupId = typeof data.parentGroupId === "string" && data.parentGroupId ? data.parentGroupId : null;
+  const order = firstNumber(data, ["order", "sortOrder"]);
+  if (order !== undefined) patch.order = order;
+  const enabled = firstBoolean(data, ["enabled"]);
+  if (enabled !== undefined) patch.enabled = boolText(enabled);
+  return patch;
+}
+
+function buildChoiceBlockPatch(data: Row, usedVariableNames: Set<string>): Row {
+  const patch: Row = {};
+  const variableName = firstString(data, ["variableName", "variable", "name", "key"]);
+  if (variableName !== undefined)
+    patch.variableName = normalizePromptVariableName(variableName, variableName, usedVariableNames);
+  const question = firstString(data, ["question", "prompt", "label", "title"]);
+  if (question !== undefined) patch.question = question;
+  if ("options" in data || "choices" in data || "values" in data) {
+    patch.options = promptOptionRows(data.options ?? data.choices ?? data.values);
+  }
+  const multiSelect = firstBoolean(data, ["multiSelect", "multi"]);
+  if (multiSelect !== undefined) patch.multiSelect = boolText(multiSelect);
+  const separator = firstString(data, ["separator"]);
+  if (separator !== undefined) patch.separator = separator;
+  const randomPick = firstBoolean(data, ["randomPick", "random"]);
+  if (randomPick !== undefined) patch.randomPick = boolText(randomPick);
+  const displayMode = firstString(data, ["displayMode"]);
+  if (displayMode !== undefined) {
+    if (!["auto", "buttons", "listbox"].includes(displayMode))
+      throw new Error(`displayMode must be auto, buttons, or listbox, got "${displayMode}"`);
+    patch.displayMode = displayMode;
+  }
+  const optionSort = firstString(data, ["optionSort"]);
+  if (optionSort !== undefined) {
+    if (optionSort !== "alphabetical" && optionSort !== "manual")
+      throw new Error(`optionSort must be alphabetical or manual, got "${optionSort}"`);
+    patch.optionSort = optionSort;
+  }
+  const sortOrder = firstNumber(data, ["sortOrder", "order"]);
+  if (sortOrder !== undefined) patch.sortOrder = sortOrder;
+  return patch;
+}
+
+// #4812: full insert rows for a single added section/group/choice-block, mirroring the per-child
+// building in normalizePromptPresetChildInserts. Always allocate a fresh id at the call site.
+// #4812: like the patch builders, the single-add insert path must reject an unsupported enum value
+// rather than silently coercing it to a default (which reports success on a typo). An absent or blank
+// value keeps the documented default.
+function requireOneOf(value: unknown, allowed: readonly string[], field: string, fallback: string): string {
+  if (value === undefined || value === null || value === "") return fallback;
+  const text = String(value);
+  if (!allowed.includes(text)) throw new Error(`${field} must be one of ${allowed.join(", ")}, got "${text}"`);
+  return text;
+}
+
+function buildPromptSectionInsertRow(
+  data: Row,
+  presetId: string,
+  id: string,
+  index: number,
+  usedIdentifiers: Set<string>,
+): Row {
+  const name = firstString(data, ["name", "title", "label"]) ?? `Section ${index}`;
+  return {
+    id,
+    presetId,
+    identifier: normalizePromptIdentifier(firstString(data, ["identifier", "key", "slug"]) ?? name, `section_${index}`, usedIdentifiers),
+    name,
+    content: firstString(data, ["content", "prompt", "text"]) ?? "",
+    role: requireOneOf(data.role, ["system", "user", "assistant"], "role", "system"),
+    enabled: boolText(firstBoolean(data, ["enabled"]) ?? true),
+    isMarker: boolText(firstBoolean(data, ["isMarker", "marker"]) ?? false),
+    groupId: typeof data.groupId === "string" && data.groupId ? data.groupId : null,
+    markerConfig: isRecord(data.markerConfig) ? JSON.stringify(data.markerConfig) : null,
+    injectionPosition: requireOneOf(data.injectionPosition, ["ordered", "depth"], "injectionPosition", "ordered"),
+    injectionDepth: firstNumber(data, ["injectionDepth", "depth"]) ?? 0,
+    injectionOrder: firstNumber(data, ["injectionOrder", "order", "sortOrder"]) ?? index * 100,
+    wrapInXml: "false",
+    xmlTagName: "",
+    forbidOverrides: boolText(firstBoolean(data, ["forbidOverrides"]) ?? false),
+  };
+}
+
+function buildPromptGroupInsertRow(data: Row, presetId: string, id: string, order: number): Row {
+  return {
+    id,
+    presetId,
+    name: firstString(data, ["name", "title", "label"]) ?? "Group",
+    parentGroupId: typeof data.parentGroupId === "string" && data.parentGroupId ? data.parentGroupId : null,
+    order: firstNumber(data, ["order", "sortOrder"]) ?? order,
+    enabled: boolText(firstBoolean(data, ["enabled"]) ?? true),
+  };
+}
+
+function buildChoiceBlockInsertRow(
+  data: Row,
+  presetId: string,
+  id: string,
+  index: number,
+  usedVariableNames: Set<string>,
+): Row {
+  const rawVariableName = firstString(data, ["variableName", "variable", "name", "key"]) ?? `variable_${index}`;
+  return {
+    id,
+    presetId,
+    variableName: normalizePromptVariableName(rawVariableName, `variable_${index}`, usedVariableNames),
+    question: firstString(data, ["question", "prompt", "label", "title"]) ?? rawVariableName,
+    options: promptOptionRows(data.options ?? data.choices ?? data.values),
+    multiSelect: boolText(firstBoolean(data, ["multiSelect", "multi"]) ?? false),
+    separator: firstString(data, ["separator"]) ?? ", ",
+    randomPick: boolText(firstBoolean(data, ["randomPick", "random"]) ?? false),
+    displayMode: requireOneOf(data.displayMode, ["auto", "buttons", "listbox"], "displayMode", "auto"),
+    optionSort: requireOneOf(data.optionSort, ["alphabetical", "manual"], "optionSort", "manual"),
+    sortOrder: firstNumber(data, ["sortOrder", "order"]) ?? index * 100,
+  };
 }
 
 function stripPromptPresetChildPayload(row: Row): Row {
@@ -1503,7 +1786,11 @@ function applyReadBounding(result: MariDbCommandResult, envelope: Row): MariDbCo
   const fieldPath = firstString(envelope, ["field"]);
   if (fieldPath) {
     const offset = normalizeOffset(firstNumber(envelope, ["offset"]));
-    const limit = normalizeLimit(firstNumber(envelope, ["limit"]), MARI_READ_FIELD_WINDOW_MAX, MARI_READ_FIELD_WINDOW_MAX);
+    const limit = normalizeLimit(
+      firstNumber(envelope, ["limit"]),
+      MARI_READ_FIELD_WINDOW_MAX,
+      MARI_READ_FIELD_WINDOW_MAX,
+    );
     const projected = projectReadField(output as Row, fieldPath, offset, limit);
     if (projected.found) {
       return {
@@ -1633,6 +1920,51 @@ function summarizePromptPresetRow(row: Row): Row {
   };
 }
 
+// #4812: compact index rows so Prof Mari can SEE a preset's sections/groups/choice-blocks with
+// their ids + a content preview, then read one in full and patch it — mirroring lorebook entries.
+function summarizePromptSectionRow(row: Row): Row {
+  const parsed = parseRow("prompt_sections", row);
+  return {
+    id: parsed.id,
+    presetId: parsed.presetId,
+    identifier: parsed.identifier,
+    name: parsed.name,
+    role: parsed.role,
+    enabled: parsed.enabled,
+    isMarker: parsed.isMarker,
+    groupId: parsed.groupId ?? null,
+    injectionPosition: parsed.injectionPosition,
+    injectionDepth: parsed.injectionDepth,
+    injectionOrder: parsed.injectionOrder,
+    content: typeof parsed.content === "string" ? truncateStr(parsed.content, 200) : "",
+  };
+}
+
+function summarizePromptGroupRow(row: Row): Row {
+  const parsed = parseRow("prompt_groups", row);
+  return {
+    id: parsed.id,
+    presetId: parsed.presetId,
+    name: parsed.name,
+    parentGroupId: parsed.parentGroupId ?? null,
+    order: parsed.order,
+    enabled: parsed.enabled,
+  };
+}
+
+function summarizeChoiceBlockRow(row: Row): Row {
+  const parsed = parseRow("choice_blocks", row);
+  return {
+    id: parsed.id,
+    presetId: parsed.presetId,
+    variableName: parsed.variableName,
+    question: typeof parsed.question === "string" ? truncateStr(parsed.question, 160) : "",
+    optionCount: parseJsonArrayValue(parsed.options).length,
+    multiSelect: parsed.multiSelect,
+    sortOrder: parsed.sortOrder,
+  };
+}
+
 function summarizeAgentConfigRow(row: Row): Row {
   const settings = parseJsonRecordValue(row.settings);
   return {
@@ -1691,11 +2023,18 @@ function looksLikeCharacterData(value: Row): boolean {
 }
 
 function looksLikeCharacterRowInput(value: Row): boolean {
-  return isRecord(value.data) || (typeof value.data === "string" && ["id", "comment", "avatarPath", "spriteFolderPath", "createdAt", "updatedAt"].some((key) => hasOwnKey(value, key)));
+  return (
+    isRecord(value.data) ||
+    (typeof value.data === "string" &&
+      ["id", "comment", "avatarPath", "spriteFolderPath", "createdAt", "updatedAt"].some((key) =>
+        hasOwnKey(value, key),
+      ))
+  );
 }
 
 function normalizeCharacterDataBase(base: Record<string, unknown>): Record<string, unknown> {
-  const parsedData = typeof base.data === "string" && looksLikeCharacterRowInput(base) ? parseJsonMaybe(base.data) : null;
+  const parsedData =
+    typeof base.data === "string" && looksLikeCharacterRowInput(base) ? parseJsonMaybe(base.data) : null;
   const source =
     isRecord(base.data) &&
     (typeof base.spec === "string" ||
@@ -1729,9 +2068,10 @@ function addUnknownColumnIssues(meta: TableMeta, row: Row, id: unknown, issues: 
   const unknownKeys = Object.keys(row).filter((key) => !meta.byKey.has(key));
   if (unknownKeys.length === 0) return;
   const issueId = id == null ? null : String(id);
-  const hint = meta.name === "characters" && unknownKeys.some((key) => key === "appearance" || key === "backstory")
-    ? " Use mari characters update --appearance/--backstory, or patch data.extensions.appearance/backstory."
-    : " Check `mari db schema <table>` and nest JSON-column edits under the JSON column name.";
+  const hint =
+    meta.name === "characters" && unknownKeys.some((key) => key === "appearance" || key === "backstory")
+      ? " Use mari characters update --appearance/--backstory, or patch data.extensions.appearance/backstory."
+      : " Check `mari db schema <table>` and nest JSON-column edits under the JSON column name.";
   issues.push({
     level: "error",
     table: meta.name,
@@ -1745,11 +2085,21 @@ function addCharacterDataShapeIssues(tableName: string, row: Row, id: unknown, i
   const card = tryParseJsonColumn(row, "data");
   const issueId = id == null ? null : String(id);
   if (!isRecord(card)) {
-    issues.push({ level: "error", table: tableName, id: issueId, message: "Character data does not look like a CharacterData card" });
+    issues.push({
+      level: "error",
+      table: tableName,
+      id: issueId,
+      message: "Character data does not look like a CharacterData card",
+    });
     return;
   }
   if (typeof card.name !== "string") {
-    issues.push({ level: "error", table: tableName, id: issueId, message: "Character data does not look like a CharacterData card" });
+    issues.push({
+      level: "error",
+      table: tableName,
+      id: issueId,
+      message: "Character data does not look like a CharacterData card",
+    });
   }
   const numericKeys = Object.keys(card).filter((key) => /^\d+$/.test(key));
   if (numericKeys.length > 0) {
@@ -1813,7 +2163,10 @@ function buildMinimalCharacterData(
   const tagsVal = flagString(flags, "tags");
   if (tagsVal !== undefined) {
     data.tags = tagsVal
-      ? tagsVal.split(/[,|]/).map((t: string) => t.trim()).filter(Boolean)
+      ? tagsVal
+          .split(/[,|]/)
+          .map((t: string) => t.trim())
+          .filter(Boolean)
       : [];
   }
   return data;
@@ -1850,6 +2203,7 @@ type TransformContext = {
 
 export class MariDbService {
   private pending = new Map<string, PendingRecord>();
+  private pendingHydrated = false;
   private history: MariDbHistoryEntry[] = [];
   private writeQueue: Promise<unknown> = Promise.resolve();
   private characterFolderMutationQueue: Promise<void> = Promise.resolve();
@@ -1886,6 +2240,9 @@ export class MariDbService {
       if (group === "lorebook" || group === "lorebooks") {
         return await this.executeLorebooksCommand(argv.slice(1), { command, sessionId, cwd: envelope.cwd });
       }
+      if (group === "preset" || group === "presets") {
+        return await this.executePresetsCommand(argv.slice(1), { command, sessionId, cwd: envelope.cwd });
+      }
       if (group === "chat" || group === "chats") {
         return await this.executeChatsCommand(argv.slice(1), { command, sessionId, cwd: envelope.cwd });
       }
@@ -1895,7 +2252,8 @@ export class MariDbService {
             ok: false,
             mode: "read",
             command,
-            error: "mari storage tx is reserved for a later hot-reload repair phase; use mari db for managed data edits.",
+            error:
+              "mari storage tx is reserved for a later hot-reload repair phase; use mari db for managed data edits.",
           };
         }
         return { ok: false, mode: "read", command, error: this.topLevelHelpText() };
@@ -1914,26 +2272,34 @@ export class MariDbService {
       command = formatAppDataActionCommand(action, envelope);
       const context = {
         command,
-        sessionId: typeof envelope.sessionId === "string" && envelope.sessionId.trim() ? envelope.sessionId.trim() : "mari-app-data",
+        sessionId:
+          typeof envelope.sessionId === "string" && envelope.sessionId.trim()
+            ? envelope.sessionId.trim()
+            : "mari-app-data",
         cwd: typeof envelope.cwd === "string" ? envelope.cwd : undefined,
       };
       const key = normalizeAppDataActionName(action);
       const dispatch = async (): Promise<MariDbCommandResult> => {
-        if (key.startsWith("character.")) return this.executeCharacterAction(key.slice("character.".length), envelope, context);
-        if (key.startsWith("persona.")) return this.executePersonaAction(key.slice("persona.".length), envelope, context);
-        if (key.startsWith("lorebook.")) return this.executeLorebookAction(key.slice("lorebook.".length), envelope, context);
+        if (key.startsWith("character."))
+          return this.executeCharacterAction(key.slice("character.".length), envelope, context);
+        if (key.startsWith("persona."))
+          return this.executePersonaAction(key.slice("persona.".length), envelope, context);
+        if (key.startsWith("lorebook."))
+          return this.executeLorebookAction(key.slice("lorebook.".length), envelope, context);
         if (key.startsWith("theme.")) return this.executeThemeAction(key.slice("theme.".length), envelope, context);
         if (key.startsWith("personalextension.")) {
           return this.executePersonalExtensionAction(key.slice("personalextension.".length), envelope, context);
         }
         if (key.startsWith("agent.")) return this.executeAgentAction(key.slice("agent.".length), envelope, context);
         if (key.startsWith("preset.")) return this.executePresetAction(key.slice("preset.".length), envelope, context);
+        if (key.startsWith("homewidget."))
+          return this.executeHomeWidgetAction(key.slice("homewidget.".length), envelope, context);
         return {
           ok: false,
           mode: "read",
           command,
           error:
-            "Unsupported app_data action. Use character.*, persona.*, lorebook.*, theme.*, personal_extension.*, agent.*, or preset.* actions for structured no-shell app-data work.",
+            "Unsupported app_data action. Use character.*, persona.*, lorebook.*, theme.*, personal_extension.*, agent.*, preset.*, or home_widget.* actions for structured no-shell app-data work.",
         };
       };
       // Field-aware bounding keeps a single read response within the workspace
@@ -1981,7 +2347,12 @@ export class MariDbService {
       case "get": {
         const id = requiredString(args, ["id", "characterId"], "character id");
         const row = await this.getRawById(getMeta("characters"), id);
-        return { ok: Boolean(row), mode: "read", command: context.command, output: row ? parseRow("characters", row) : null };
+        return {
+          ok: Boolean(row),
+          mode: "read",
+          command: context.command,
+          output: row ? parseRow("characters", row) : null,
+        };
       }
       case "search": {
         const query = requiredString(args, ["query", "search"], "character search query").toLowerCase();
@@ -1994,24 +2365,28 @@ export class MariDbService {
       }
       case "create": {
         const data = normalizeCharacterActionData(
-          actionDataWithTopLevel(args, ["data", "card", "character"], [
-            "name",
-            "description",
-            "personality",
-            "scenario",
-            "first_mes",
-            "firstMes",
-            "mes_example",
-            "creator_notes",
-            "creatorNotes",
-            "backstory",
-            "appearance",
-            "aboutMe",
-            "about_me",
-            "about-me",
-            "tags",
-            "comment",
-          ]),
+          actionDataWithTopLevel(
+            args,
+            ["data", "card", "character"],
+            [
+              "name",
+              "description",
+              "personality",
+              "scenario",
+              "first_mes",
+              "firstMes",
+              "mes_example",
+              "creator_notes",
+              "creatorNotes",
+              "backstory",
+              "appearance",
+              "aboutMe",
+              "about_me",
+              "about-me",
+              "tags",
+              "comment",
+            ],
+          ),
         );
         const name = requiredString(data, ["name"], "character name");
         const comment = firstString(data, ["comment"]) ?? "";
@@ -2032,7 +2407,6 @@ export class MariDbService {
             id,
             row,
             apply: appDataCreateApply(args),
-            requiresApproval: false,
             cascade: false,
             reason: firstString(args, ["reason"]) ?? null,
             cwd: context.cwd,
@@ -2048,31 +2422,42 @@ export class MariDbService {
         const existingDataRaw = tryParseJsonColumn(existing, "data");
         const existingData = isRecord(existingDataRaw) ? existingDataRaw : {};
         const patchData = normalizeCharacterActionData(
-          actionDataWithTopLevel(args, ["patch", "data", "card", "character"], [
-            "name",
-            "description",
-            "personality",
-            "scenario",
-            "first_mes",
-            "firstMes",
-            "mes_example",
-            "creator_notes",
-            "creatorNotes",
-            "backstory",
-            "appearance",
-            "aboutMe",
-            "about_me",
-            "about-me",
-            "tags",
-            "comment",
-          ]),
+          actionDataWithTopLevel(
+            args,
+            ["patch", "data", "card", "character"],
+            [
+              "name",
+              "description",
+              "personality",
+              "scenario",
+              "first_mes",
+              "firstMes",
+              "mes_example",
+              "creator_notes",
+              "creatorNotes",
+              "backstory",
+              "appearance",
+              "aboutMe",
+              "about_me",
+              "about-me",
+              "tags",
+              "comment",
+            ],
+          ),
         );
-        const comment = firstString(patchData, ["comment"]) ?? (typeof existing.comment === "string" ? existing.comment : "");
+        const comment =
+          firstString(patchData, ["comment"]) ?? (typeof existing.comment === "string" ? existing.comment : "");
         delete patchData.comment;
-        if (Object.keys(patchData).length === 0 && comment === (typeof existing.comment === "string" ? existing.comment : "")) {
-          throw new Error("character.update needs a patch field such as name, description, personality, scenario, firstMes, creatorNotes, backstory, appearance, aboutMe, tags, or comment");
+        if (
+          Object.keys(patchData).length === 0 &&
+          comment === (typeof existing.comment === "string" ? existing.comment : "")
+        ) {
+          throw new Error(
+            "character.update needs a patch field such as name, description, personality, scenario, firstMes, creatorNotes, backstory, appearance, aboutMe, tags, or comment",
+          );
         }
-        const name = firstString(patchData, ["name"]) ?? (typeof existingData.name === "string" ? existingData.name : "");
+        const name =
+          firstString(patchData, ["name"]) ?? (typeof existingData.name === "string" ? existingData.name : "");
         const row: Row = {
           id,
           data: buildMinimalCharacterData(name, deepMerge(existingData, patchData) as Row, new Map()),
@@ -2160,7 +2545,12 @@ export class MariDbService {
         const rows = (await this.rawRows("personas")).sort((a, b) =>
           String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")),
         );
-        return { ok: true, mode: "read", command: context.command, output: rows.slice(0, limit).map(summarizePersonaRow) };
+        return {
+          ok: true,
+          mode: "read",
+          command: context.command,
+          output: rows.slice(0, limit).map(summarizePersonaRow),
+        };
       }
       case "active": {
         const row = (await this.rawRows("personas")).find((candidate) => candidate.isActive === "true") ?? null;
@@ -2169,7 +2559,12 @@ export class MariDbService {
       case "get": {
         const id = requiredString(args, ["id", "personaId"], "persona id");
         const row = await this.getRawById(getMeta("personas"), id);
-        return { ok: Boolean(row), mode: "read", command: context.command, output: row ? parseRow("personas", row) : null };
+        return {
+          ok: Boolean(row),
+          mode: "read",
+          command: context.command,
+          output: row ? parseRow("personas", row) : null,
+        };
       }
       case "search": {
         const query = requiredString(args, ["query", "search"], "persona search query").toLowerCase();
@@ -2181,27 +2576,31 @@ export class MariDbService {
         return { ok: true, mode: "read", command: context.command, output: rows };
       }
       case "create": {
-        const data = actionDataWithTopLevel(args, ["data", "persona", "row"], [
-          "name",
-          "description",
-          "personality",
-          "scenario",
-          "backstory",
-          "appearance",
-          "comment",
-          "creator",
-          "creatorNotes",
-          "creator_notes",
-          "tags",
-          "phoneticName",
-          "phonetic_name",
-          "convoDisplayName",
-          "convo_display_name",
-          "aboutMe",
-          "about_me",
-          "convoBehavior",
-          "convo_behavior",
-        ]);
+        const data = actionDataWithTopLevel(
+          args,
+          ["data", "persona", "row"],
+          [
+            "name",
+            "description",
+            "personality",
+            "scenario",
+            "backstory",
+            "appearance",
+            "comment",
+            "creator",
+            "creatorNotes",
+            "creator_notes",
+            "tags",
+            "phoneticName",
+            "phonetic_name",
+            "convoDisplayName",
+            "convo_display_name",
+            "aboutMe",
+            "about_me",
+            "convoBehavior",
+            "convo_behavior",
+          ],
+        );
         const timestamp = now();
         const id = firstString(args, ["id", "personaId"]) ?? newId();
         const row = buildPersonaCreateRow(data, id, timestamp);
@@ -2212,7 +2611,6 @@ export class MariDbService {
             id,
             row,
             apply: appDataCreateApply(args),
-            requiresApproval: false,
             cascade: false,
             reason: firstString(args, ["reason"]) ?? null,
             cwd: context.cwd,
@@ -2223,27 +2621,31 @@ export class MariDbService {
       }
       case "update": {
         const id = requiredString(args, ["id", "personaId"], "persona id");
-        const data = actionDataWithTopLevel(args, ["patch", "data", "persona"], [
-          "name",
-          "description",
-          "personality",
-          "scenario",
-          "backstory",
-          "appearance",
-          "comment",
-          "creator",
-          "creatorNotes",
-          "creator_notes",
-          "tags",
-          "phoneticName",
-          "phonetic_name",
-          "convoDisplayName",
-          "convo_display_name",
-          "aboutMe",
-          "about_me",
-          "convoBehavior",
-          "convo_behavior",
-        ]);
+        const data = actionDataWithTopLevel(
+          args,
+          ["patch", "data", "persona"],
+          [
+            "name",
+            "description",
+            "personality",
+            "scenario",
+            "backstory",
+            "appearance",
+            "comment",
+            "creator",
+            "creatorNotes",
+            "creator_notes",
+            "tags",
+            "phoneticName",
+            "phonetic_name",
+            "convoDisplayName",
+            "convo_display_name",
+            "aboutMe",
+            "about_me",
+            "convoBehavior",
+            "convo_behavior",
+          ],
+        );
         const patch: Row = { updatedAt: now() };
         assignStringField(patch, data, ["name"], "name");
         assignStringField(patch, data, ["description"], "description");
@@ -2262,14 +2664,20 @@ export class MariDbService {
           "convoDisplayName",
         );
         assignStringField(patch, data, ["aboutMe", "about_me", "about-me"], "aboutMe");
-        if (data.convoBehavior !== undefined || data.convo_behavior !== undefined || data["convo-behavior"] !== undefined) {
+        if (
+          data.convoBehavior !== undefined ||
+          data.convo_behavior !== undefined ||
+          data["convo-behavior"] !== undefined
+        ) {
           patch.convoBehavior = normalizePersonaConvoBehavior(
             data.convoBehavior ?? data.convo_behavior ?? data["convo-behavior"],
           );
         }
         assignListField(patch, data, ["tags"], "tags");
         if (Object.keys(patch).length <= 1) {
-          throw new Error("persona.update needs a patch field such as name, description, personality, scenario, backstory, appearance, tags, comment, creator, or creatorNotes");
+          throw new Error(
+            "persona.update needs a patch field such as name, description, personality, scenario, backstory, appearance, tags, comment, creator, or creatorNotes",
+          );
         }
         return this.executeMutation(
           {
@@ -2332,7 +2740,8 @@ export class MariDbService {
         LIMITS.LOREBOOK_ENTRY_LIMIT_MIN,
         LIMITS.LOREBOOK_ENTRY_LIMIT_MAX,
       ) || changed;
-    changed = assignBooleanTextField(target, source, ["recursiveScanning", "recursive"], "recursiveScanning") || changed;
+    changed =
+      assignBooleanTextField(target, source, ["recursiveScanning", "recursive"], "recursiveScanning") || changed;
     changed =
       assignBoundedNumberField(
         target,
@@ -2342,7 +2751,13 @@ export class MariDbService {
         1,
         10,
       ) || changed;
-    changed = assignBooleanTextField(target, source, ["excludeFromVectorization", "vectorsDisabled"], "excludeFromVectorization") || changed;
+    changed =
+      assignBooleanTextField(
+        target,
+        source,
+        ["excludeFromVectorization", "vectorsDisabled"],
+        "excludeFromVectorization",
+      ) || changed;
     changed =
       assignBoundedNumberField(
         target,
@@ -2361,8 +2776,7 @@ export class MariDbService {
         0,
         1,
         false,
-      ) ||
-      changed;
+      ) || changed;
     changed =
       assignBoundedNumberField(
         target,
@@ -2409,6 +2823,16 @@ export class MariDbService {
     changed = assignNumberField(target, source, ["depth"], "depth") || changed;
     changed = assignStringField(target, source, ["role"], "role") || changed;
     changed = assignStringField(target, source, ["group"], "group") || changed;
+    changed = assignBooleanTextField(target, source, ["selective"], "selective") || changed;
+    const selectiveLogic = normalizeSelectiveLogic(source);
+    if (selectiveLogic !== undefined) {
+      target.selectiveLogic = selectiveLogic;
+      changed = true;
+    }
+    changed =
+      assignBooleanTextField(target, source, ["matchWholeWords", "match_whole_words"], "matchWholeWords") || changed;
+    changed = assignBooleanTextField(target, source, ["caseSensitive", "case_sensitive"], "caseSensitive") || changed;
+    changed = assignBooleanTextField(target, source, ["useRegex", "use_regex"], "useRegex") || changed;
     return changed;
   }
 
@@ -2424,14 +2848,24 @@ export class MariDbService {
         const rows = (await this.rawRows("lorebooks"))
           .filter((row) => !globalOnly || row.isGlobal === "true")
           .sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
-        return { ok: true, mode: "read", command: context.command, output: rows.slice(0, limit).map(summarizeLorebookRow) };
+        return {
+          ok: true,
+          mode: "read",
+          command: context.command,
+          output: rows.slice(0, limit).map(summarizeLorebookRow),
+        };
       }
       case "get": {
         const id = requiredString(args, ["id", "lorebookId"], "lorebook id");
         const row = await this.getRawById(getMeta("lorebooks"), id);
         if (!row) return { ok: false, mode: "read", command: context.command, output: null };
         const entryCount = (await this.rawRows("lorebook_entries")).filter((entry) => entry.lorebookId === id).length;
-        return { ok: true, mode: "read", command: context.command, output: { ...parseRow("lorebooks", row), entryCount } };
+        return {
+          ok: true,
+          mode: "read",
+          command: context.command,
+          output: { ...parseRow("lorebooks", row), entryCount },
+        };
       }
       case "entries": {
         const lorebookId = requiredString(args, ["lorebookId", "id"], "lorebook id");
@@ -2465,27 +2899,31 @@ export class MariDbService {
         return { ok: true, mode: "read", command: context.command, output: rows };
       }
       case "create": {
-        const data = actionDataWithTopLevel(args, ["data", "lorebook", "row"], [
-          "name",
-          "description",
-          "category",
-          "tags",
-          "global",
-          "isGlobal",
-          "enabled",
-          "scanDepth",
-          "tokenBudget",
-          "entryLimit",
-          "recursiveScanning",
-          "recursive",
-          "maxRecursionDepth",
-          "excludeFromVectorization",
-          "vectorQueryDepth",
-          "vectorScoreThreshold",
-          "vectorMaxResults",
-          "scope",
-          "entries",
-        ]);
+        const data = actionDataWithTopLevel(
+          args,
+          ["data", "lorebook", "row"],
+          [
+            "name",
+            "description",
+            "category",
+            "tags",
+            "global",
+            "isGlobal",
+            "enabled",
+            "scanDepth",
+            "tokenBudget",
+            "entryLimit",
+            "recursiveScanning",
+            "recursive",
+            "maxRecursionDepth",
+            "excludeFromVectorization",
+            "vectorQueryDepth",
+            "vectorScoreThreshold",
+            "vectorMaxResults",
+            "scope",
+            "entries",
+          ],
+        );
         const name = requiredString(data, ["name"], "lorebook name");
         const timestamp = now();
         const id = firstString(args, ["id", "lorebookId"]) ?? newId();
@@ -2529,7 +2967,6 @@ export class MariDbService {
             id,
             row,
             apply: appDataCreateApply(args),
-            requiresApproval: false,
             cascade: false,
             reason: firstString(args, ["reason"]) ?? null,
             cwd: context.cwd,
@@ -2541,32 +2978,38 @@ export class MariDbService {
       }
       case "update": {
         const id = requiredString(args, ["id", "lorebookId"], "lorebook id");
-        const data = actionDataWithTopLevel(args, ["patch", "data", "lorebook"], [
-          "name",
-          "description",
-          "category",
-          "tags",
-          "global",
-          "isGlobal",
-          "enabled",
-          "enable",
-          "disable",
-          "scanDepth",
-          "tokenBudget",
-          "entryLimit",
-          "recursiveScanning",
-          "recursive",
-          "maxRecursionDepth",
-          "excludeFromVectorization",
-          "vectorQueryDepth",
-          "vectorScoreThreshold",
-          "vectorMaxResults",
-          "scope",
-        ]);
+        const data = actionDataWithTopLevel(
+          args,
+          ["patch", "data", "lorebook"],
+          [
+            "name",
+            "description",
+            "category",
+            "tags",
+            "global",
+            "isGlobal",
+            "enabled",
+            "enable",
+            "disable",
+            "scanDepth",
+            "tokenBudget",
+            "entryLimit",
+            "recursiveScanning",
+            "recursive",
+            "maxRecursionDepth",
+            "excludeFromVectorization",
+            "vectorQueryDepth",
+            "vectorScoreThreshold",
+            "vectorMaxResults",
+            "scope",
+          ],
+        );
         const patch: Row = { updatedAt: now() };
         this.assignLorebookActionFields(patch, data);
         if (Object.keys(patch).length <= 1) {
-          throw new Error("lorebook.update needs a patch field such as name, description, category, tags, enabled, global, scanDepth, tokenBudget, entryLimit, recursiveScanning, excludeFromVectorization, vectorQueryDepth, vectorScoreThreshold, or vectorMaxResults");
+          throw new Error(
+            "lorebook.update needs a patch field such as name, description, category, tags, enabled, global, scanDepth, tokenBudget, entryLimit, recursiveScanning, excludeFromVectorization, vectorQueryDepth, vectorScoreThreshold, or vectorMaxResults",
+          );
         }
         return this.executeMutation(
           {
@@ -2588,22 +3031,31 @@ export class MariDbService {
         const lorebookId = requiredString(args, ["lorebookId"], "lorebook id");
         const lorebookExists = await this.getRawById(getMeta("lorebooks"), lorebookId);
         if (!lorebookExists) throw new Error(`Lorebook ${lorebookId} not found`);
-        const data = actionDataWithTopLevel(args, ["data", "entry", "row"], [
-          "name",
-          "content",
-          "description",
-          "tag",
-          "keys",
-          "secondaryKeys",
-          "enabled",
-          "constant",
-          "order",
-          "position",
-          "outletName",
-          "depth",
-          "role",
-          "group",
-        ]);
+        const data = actionDataWithTopLevel(
+          args,
+          ["data", "entry", "row"],
+          [
+            "name",
+            "content",
+            "description",
+            "tag",
+            "keys",
+            "secondaryKeys",
+            "enabled",
+            "constant",
+            "order",
+            "position",
+            "outletName",
+            "depth",
+            "role",
+            "group",
+            "selective",
+            "selectiveLogic",
+            "matchWholeWords",
+            "caseSensitive",
+            "useRegex",
+          ],
+        );
         const timestamp = now();
         const id = firstString(args, ["entryId", "id"]) ?? newId();
         const row = buildLorebookEntryCreateRow(data, lorebookId, id, timestamp);
@@ -2615,7 +3067,6 @@ export class MariDbService {
             id,
             row,
             apply: appDataCreateApply(args),
-            requiresApproval: false,
             cascade: false,
             reason: firstString(args, ["reason"]) ?? null,
             cwd: context.cwd,
@@ -2628,28 +3079,39 @@ export class MariDbService {
         const entryId = requiredString(args, ["entryId", "id"], "lorebook entry id");
         const entryExists = await this.getRawById(getMeta("lorebook_entries"), entryId);
         if (!entryExists) throw new Error(`Lorebook entry ${entryId} not found`);
-        const data = actionDataWithTopLevel(args, ["patch", "data", "entry"], [
-          "name",
-          "content",
-          "description",
-          "tag",
-          "keys",
-          "secondaryKeys",
-          "enabled",
-          "enable",
-          "disable",
-          "constant",
-          "order",
-          "position",
-          "outletName",
-          "depth",
-          "role",
-          "group",
-        ]);
+        const data = actionDataWithTopLevel(
+          args,
+          ["patch", "data", "entry"],
+          [
+            "name",
+            "content",
+            "description",
+            "tag",
+            "keys",
+            "secondaryKeys",
+            "enabled",
+            "enable",
+            "disable",
+            "constant",
+            "order",
+            "position",
+            "outletName",
+            "depth",
+            "role",
+            "group",
+            "selective",
+            "selectiveLogic",
+            "matchWholeWords",
+            "caseSensitive",
+            "useRegex",
+          ],
+        );
         const patch: Row = { updatedAt: now() };
         this.assignLorebookEntryActionFields(patch, data);
         if (Object.keys(patch).length <= 1) {
-          throw new Error("lorebook.updateEntry needs entryId plus a patch field such as name, content, keys, description, enabled, constant, or order");
+          throw new Error(
+            "lorebook.updateEntry needs entryId plus a patch field such as name, content, keys, description, enabled, constant, or order",
+          );
         }
         return this.executeMutation(
           {
@@ -2671,6 +3133,95 @@ export class MariDbService {
     }
   }
 
+  private async executeHomeWidgetAction(
+    sub: string,
+    args: Row,
+    context: { command: string; sessionId: string; cwd?: string },
+  ): Promise<MariDbCommandResult> {
+    const rows = await this.rawRows("app_settings");
+    const settingsRow = rows.find((row) => row.key === HOME_CUSTOM_WIDGETS_SETTINGS_KEY) ?? null;
+    let catalog = homeCustomWidgetCatalogSchema.parse({ widgets: [] });
+    if (typeof settingsRow?.value === "string") {
+      try {
+        catalog = homeCustomWidgetCatalogSchema.parse(JSON.parse(settingsRow.value));
+      } catch {
+        throw new Error("The stored Home custom widget catalog is invalid and must be repaired before editing it.");
+      }
+    }
+
+    const saveCatalog = (widgets: typeof catalog.widgets) => {
+      const nextCatalog = homeCustomWidgetCatalogSchema.parse({ revision: catalog.revision + 1, widgets });
+      const request: ParsedMutationRequest = {
+        kind: settingsRow ? "replace" : "insert",
+        table: "app_settings",
+        ...(settingsRow ? { id: HOME_CUSTOM_WIDGETS_SETTINGS_KEY } : {}),
+        row: { key: HOME_CUSTOM_WIDGETS_SETTINGS_KEY, value: JSON.stringify(nextCatalog), updatedAt: now() },
+        apply: firstBoolean(args, ["apply"]) === true,
+        cascade: false,
+        reason: firstString(args, ["reason"]) ?? null,
+        cwd: context.cwd,
+      };
+      return this.executeMutation(request, context.command, context.sessionId);
+    };
+
+    switch (sub) {
+      case "list":
+        return { ok: true, mode: "read", command: context.command, output: catalog.widgets };
+      case "get": {
+        const id = requiredString(args, ["id", "widgetId"], "Home widget id");
+        const widget = catalog.widgets.find((candidate) => candidate.id === id) ?? null;
+        return { ok: Boolean(widget), mode: "read", command: context.command, output: widget };
+      }
+      case "create": {
+        if (catalog.widgets.length >= HOME_CUSTOM_WIDGET_LIMIT)
+          throw new Error(`Home supports at most ${HOME_CUSTOM_WIDGET_LIMIT} custom widgets.`);
+        const data = actionDataWithTopLevel(args, ["data", "widget"], ["title", "description", "accent", "icon"]);
+        const draft = homeCustomWidgetDraftSchema.parse(data);
+        const slug =
+          draft.title
+            .toLowerCase()
+            .normalize("NFKD")
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "")
+            .slice(0, 48) || "widget";
+        const suffix = newId()
+          .replace(/[^a-z0-9]/gi, "")
+          .toLowerCase()
+          .slice(0, 8);
+        const timestamp = now();
+        return saveCatalog([
+          ...catalog.widgets,
+          homeCustomWidgetSchema.parse({
+            ...draft,
+            id: `${slug}-${suffix}`,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          }),
+        ]);
+      }
+      case "update": {
+        const id = requiredString(args, ["id", "widgetId"], "Home widget id");
+        const index = catalog.widgets.findIndex((candidate) => candidate.id === id);
+        if (index < 0) throw new Error(`Home widget ${id} was not found.`);
+        const patch = homeCustomWidgetDraftSchema
+          .partial()
+          .parse(actionDataWithTopLevel(args, ["patch", "data", "widget"], ["title", "description", "accent", "icon"]));
+        if (Object.keys(patch).length === 0) throw new Error("home_widget.update needs a non-empty patch.");
+        const widgets = [...catalog.widgets];
+        widgets[index] = homeCustomWidgetSchema.parse({ ...widgets[index], ...patch, updatedAt: now() });
+        return saveCatalog(widgets);
+      }
+      case "delete": {
+        const id = requiredString(args, ["id", "widgetId"], "Home widget id");
+        if (!catalog.widgets.some((candidate) => candidate.id === id))
+          throw new Error(`Home widget ${id} was not found.`);
+        return saveCatalog(catalog.widgets.filter((candidate) => candidate.id !== id));
+      }
+      default:
+        return { ok: false, mode: "read", command: context.command, error: "Unsupported Home widget app_data action." };
+    }
+  }
+
   private async executeThemeAction(
     sub: string,
     args: Row,
@@ -2683,10 +3234,16 @@ export class MariDbService {
         const rows = (await this.rawRows(THEME_TABLE))
           .filter((row) => !activeOnly || row.isActive === THEME_ACTIVE_TRUE)
           .sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
-        return { ok: true, mode: "read", command: context.command, output: rows.slice(0, limit).map(summarizeThemeRow) };
+        return {
+          ok: true,
+          mode: "read",
+          command: context.command,
+          output: rows.slice(0, limit).map(summarizeThemeRow),
+        };
       }
       case "active": {
-        const row = (await this.rawRows(THEME_TABLE)).find((candidate) => candidate.isActive === THEME_ACTIVE_TRUE) ?? null;
+        const row =
+          (await this.rawRows(THEME_TABLE)).find((candidate) => candidate.isActive === THEME_ACTIVE_TRUE) ?? null;
         return { ok: true, mode: "read", command: context.command, output: row ? parseThemeRow(row) : null };
       }
       case "get": {
@@ -2695,7 +3252,11 @@ export class MariDbService {
         return { ok: Boolean(row), mode: "read", command: context.command, output: row ? parseThemeRow(row) : null };
       }
       case "create": {
-        const data = actionDataWithTopLevel(args, ["data", "theme", "row"], ["name", "css", "activate", "active", "installedAt"]);
+        const data = actionDataWithTopLevel(
+          args,
+          ["data", "theme", "row"],
+          ["name", "css", "activate", "active", "installedAt"],
+        );
         const id = firstString(args, ["id", "themeId"]) ?? newId();
         const activate = firstBoolean(data, ["activate", "active"]) === true;
         const request: ParsedMutationRequest = {
@@ -2707,7 +3268,6 @@ export class MariDbService {
           installedAt: firstString(data, ["installedAt", "installed_at"]) ?? now(),
           activate,
           apply: appDataCreateApply(args),
-          requiresApproval: activate ? undefined : false,
           cascade: false,
           reason: firstString(args, ["reason"]) ?? null,
           cwd: context.cwd,
@@ -2727,7 +3287,8 @@ export class MariDbService {
           reason: firstString(args, ["reason"]) ?? null,
           cwd: context.cwd,
         };
-        if (request.name === undefined && request.css === undefined) throw new Error("theme.update needs a patch with name or css");
+        if (request.name === undefined && request.css === undefined)
+          throw new Error("theme.update needs a patch with name or css");
         return this.executeMutation(request, context.command, context.sessionId);
       }
       case "setactive": {
@@ -2811,16 +3372,11 @@ export class MariDbService {
         return { ok: true, mode: "read", command: context.command, output: rows };
       }
       case "create": {
-        const data = actionDataWithTopLevel(args, ["data", "extension", "row"], [
-          "name",
-          "version",
-          "description",
-          "runtime",
-          "capabilities",
-          "css",
-          "js",
-          "serverJs",
-        ]);
+        const data = actionDataWithTopLevel(
+          args,
+          ["data", "extension", "row"],
+          ["name", "version", "description", "runtime", "capabilities", "css", "js", "serverJs"],
+        );
         const parsed = createPersonalExtensionSchema.parse(data);
         const runtime = parsed.runtime === "server" ? "server" : "client";
         const executable = {
@@ -2855,7 +3411,6 @@ export class MariDbService {
             id,
             row,
             apply: appDataCreateApply(args),
-            requiresApproval: false,
             personalExtensionDraftMutation: true,
             cascade: false,
             reason: firstString(args, ["reason"]) ?? "Professor Mari created a Personal Extension draft",
@@ -2870,18 +3425,16 @@ export class MariDbService {
         const existingRaw = await this.getRawById(getMeta(table), id);
         if (!existingRaw) throw new Error(`Personal Extension ${id} not found`);
         const existing = parseRow(table, existingRaw);
-        const data = actionDataWithTopLevel(args, ["patch", "data", "extension"], [
-          "name",
-          "version",
-          "description",
-          "runtime",
-          "capabilities",
-          "css",
-          "js",
-          "serverJs",
-        ]);
+        const data = actionDataWithTopLevel(
+          args,
+          ["patch", "data", "extension"],
+          ["name", "version", "description", "runtime", "capabilities", "css", "js", "serverJs"],
+        );
         if (Object.keys(data).length === 0) throw new Error("personal_extension.update needs a code or metadata patch");
-        const runtime = data.runtime === "server" || (data.runtime === undefined && existing.runtime === "server") ? "server" : "client";
+        const runtime =
+          data.runtime === "server" || (data.runtime === undefined && existing.runtime === "server")
+            ? "server"
+            : "client";
         const textOrFallback = (key: string, fallback: unknown) =>
           data[key] === null ? null : typeof data[key] === "string" ? data[key] : fallback;
         const parsed = createPersonalExtensionSchema.parse({
@@ -2922,9 +3475,7 @@ export class MariDbService {
                 ...previousExecutable,
                 savedAt: now(),
               },
-              ...existingRevisions.filter(
-                (revision) => !isRecord(revision) || revision.contentHash !== previousHash,
-              ),
+              ...existingRevisions.filter((revision) => !isRecord(revision) || revision.contentHash !== previousHash),
             ].slice(0, 10)
           : existingRevisions;
         const row: Row = {
@@ -2990,7 +3541,12 @@ export class MariDbService {
       case "get": {
         const id = requiredString(args, ["id", "agentId", "agentConfigId"], "agent id");
         const row = await this.getRawById(getMeta("agent_configs"), id);
-        return { ok: Boolean(row), mode: "read", command: context.command, output: row ? parseRow("agent_configs", row) : null };
+        return {
+          ok: Boolean(row),
+          mode: "read",
+          command: context.command,
+          output: row ? parseRow("agent_configs", row) : null,
+        };
       }
       case "search": {
         const query = requiredString(args, ["query", "search"], "agent search query").toLowerCase();
@@ -3003,20 +3559,24 @@ export class MariDbService {
       }
       case "create": {
         const data = normalizeAgentActionData(
-          actionDataWithTopLevel(args, ["data", "agent", "row"], [
-            "type",
-            "agentType",
-            "name",
-            "description",
-            "phase",
-            "enabled",
-            "connectionId",
-            "imagePath",
-            "promptTemplate",
-            "prompt",
-            "settings",
-            "resultType",
-          ]),
+          actionDataWithTopLevel(
+            args,
+            ["data", "agent", "row"],
+            [
+              "type",
+              "agentType",
+              "name",
+              "description",
+              "phase",
+              "enabled",
+              "connectionId",
+              "imagePath",
+              "promptTemplate",
+              "prompt",
+              "settings",
+              "resultType",
+            ],
+          ),
         );
         requiredString(data, ["name"], "agent name");
         requiredString(data, ["type"], "agent type");
@@ -3025,7 +3585,6 @@ export class MariDbService {
           table: "agent_configs",
           row: data,
           apply: appDataCreateApply(args),
-          requiresApproval: false,
           cascade: false,
           reason: firstString(args, ["reason"]) ?? null,
           cwd: context.cwd,
@@ -3036,20 +3595,24 @@ export class MariDbService {
         const id = requiredString(args, ["id", "agentId", "agentConfigId"], "agent id");
         const existing = await this.requireRawById(getMeta("agent_configs"), id);
         const data = normalizeAgentActionData(
-          actionDataWithTopLevel(args, ["patch", "data", "agent"], [
-            "type",
-            "agentType",
-            "name",
-            "description",
-            "phase",
-            "enabled",
-            "connectionId",
-            "imagePath",
-            "promptTemplate",
-            "prompt",
-            "settings",
-            "resultType",
-          ]),
+          actionDataWithTopLevel(
+            args,
+            ["patch", "data", "agent"],
+            [
+              "type",
+              "agentType",
+              "name",
+              "description",
+              "phase",
+              "enabled",
+              "connectionId",
+              "imagePath",
+              "promptTemplate",
+              "prompt",
+              "settings",
+              "resultType",
+            ],
+          ),
           parseRow("agent_configs", existing),
         );
         delete data.id;
@@ -3090,7 +3653,12 @@ export class MariDbService {
       case "get": {
         const id = requiredString(args, ["id", "presetId", "promptPresetId"], "prompt preset id");
         const row = await this.getRawById(getMeta("prompt_presets"), id);
-        return { ok: Boolean(row), mode: "read", command: context.command, output: row ? parsePromptPresetRow(row) : null };
+        return {
+          ok: Boolean(row),
+          mode: "read",
+          command: context.command,
+          output: row ? parsePromptPresetRow(row) : null,
+        };
       }
       case "search": {
         const query = requiredString(args, ["query", "search"], "prompt preset search query").toLowerCase();
@@ -3102,28 +3670,32 @@ export class MariDbService {
         return { ok: true, mode: "read", command: context.command, output: rows };
       }
       case "create": {
-        const payload = actionDataWithTopLevel(args, ["data", "preset", "promptPreset", "row"], [
-          "name",
-          "description",
-          "imagePath",
-          "conversationPrompt",
-          "gamePrompt",
-          "sectionOrder",
-          "groupOrder",
-          "variableGroups",
-          "variableValues",
-          "parameters",
-          "wrapFormat",
-          "defaultChoices",
-          "isDefault",
-          "author",
-          "groups",
-          "sections",
-          "promptSections",
-          "choiceBlocks",
-          "variables",
-          "choices",
-        ]);
+        const payload = actionDataWithTopLevel(
+          args,
+          ["data", "preset", "promptPreset", "row"],
+          [
+            "name",
+            "description",
+            "imagePath",
+            "conversationPrompt",
+            "gamePrompt",
+            "sectionOrder",
+            "groupOrder",
+            "variableGroups",
+            "variableValues",
+            "parameters",
+            "wrapFormat",
+            "defaultChoices",
+            "isDefault",
+            "author",
+            "groups",
+            "sections",
+            "promptSections",
+            "choiceBlocks",
+            "variables",
+            "choices",
+          ],
+        );
         const presetId = firstString(payload, ["id", "presetId", "promptPresetId"]) ?? newId();
         payload.id = presetId;
         const relatedInserts = normalizePromptPresetChildInserts(payload, presetId);
@@ -3134,7 +3706,6 @@ export class MariDbService {
           table: "prompt_presets",
           row: data,
           apply: appDataCreateApply(args),
-          requiresApproval: false,
           cascade: false,
           reason: firstString(args, ["reason"]) ?? null,
           cwd: context.cwd,
@@ -3145,28 +3716,32 @@ export class MariDbService {
       case "update": {
         const id = requiredString(args, ["id", "presetId", "promptPresetId"], "prompt preset id");
         const existing = await this.requireRawById(getMeta("prompt_presets"), id);
-        const payload = actionDataWithTopLevel(args, ["patch", "data", "preset", "promptPreset"], [
-          "name",
-          "description",
-          "imagePath",
-          "conversationPrompt",
-          "gamePrompt",
-          "sectionOrder",
-          "groupOrder",
-          "variableGroups",
-          "variableValues",
-          "parameters",
-          "wrapFormat",
-          "defaultChoices",
-          "isDefault",
-          "author",
-          "groups",
-          "sections",
-          "promptSections",
-          "choiceBlocks",
-          "variables",
-          "choices",
-        ]);
+        const payload = actionDataWithTopLevel(
+          args,
+          ["patch", "data", "preset", "promptPreset"],
+          [
+            "name",
+            "description",
+            "imagePath",
+            "conversationPrompt",
+            "gamePrompt",
+            "sectionOrder",
+            "groupOrder",
+            "variableGroups",
+            "variableValues",
+            "parameters",
+            "wrapFormat",
+            "defaultChoices",
+            "isDefault",
+            "author",
+            "groups",
+            "sections",
+            "promptSections",
+            "choiceBlocks",
+            "variables",
+            "choices",
+          ],
+        );
         const relatedInserts = normalizePromptPresetChildInserts(payload, id);
         const data = normalizePromptPresetActionData(stripPromptPresetChildPayload(payload), existing);
         delete data.id;
@@ -3183,12 +3758,384 @@ export class MariDbService {
         };
         return this.executeMutation(request, context.command, context.sessionId);
       }
+      case "sections": {
+        const presetId = requiredString(args, ["presetId", "id"], "prompt preset id");
+        const preset = await this.getRawById(getMeta("prompt_presets"), presetId);
+        if (!preset) throw new Error(`Prompt preset ${presetId} not found`);
+        const sectionId = firstString(args, ["sectionId"]);
+        const orderIndex = new Map(
+          parseJsonArrayValue(preset.sectionOrder).map((id, index) => [String(id), index] as const),
+        );
+        const sections = (await this.rawRows("prompt_sections"))
+          .filter((section) => section.presetId === presetId)
+          .filter((section) => !sectionId || section.id === sectionId)
+          .sort(
+            (a, b) =>
+              (orderIndex.get(String(a.id)) ?? Number.MAX_SAFE_INTEGER) -
+              (orderIndex.get(String(b.id)) ?? Number.MAX_SAFE_INTEGER),
+          )
+          .map(summarizePromptSectionRow);
+        return { ok: true, mode: "read", command: context.command, output: sections };
+      }
+      case "getsection": {
+        const sectionId = requiredString(args, ["sectionId", "id"], "prompt section id");
+        const row = await this.getRawById(getMeta("prompt_sections"), sectionId);
+        return {
+          ok: Boolean(row),
+          mode: "read",
+          command: context.command,
+          output: row ? parseRow("prompt_sections", row) : null,
+        };
+      }
+      case "groups": {
+        const presetId = requiredString(args, ["presetId", "id"], "prompt preset id");
+        const preset = await this.getRawById(getMeta("prompt_presets"), presetId);
+        if (!preset) throw new Error(`Prompt preset ${presetId} not found`);
+        const orderIndex = new Map(
+          parseJsonArrayValue(preset.groupOrder).map((id, index) => [String(id), index] as const),
+        );
+        const groups = (await this.rawRows("prompt_groups"))
+          .filter((group) => group.presetId === presetId)
+          .sort(
+            (a, b) =>
+              (orderIndex.get(String(a.id)) ?? Number.MAX_SAFE_INTEGER) -
+              (orderIndex.get(String(b.id)) ?? Number.MAX_SAFE_INTEGER),
+          )
+          .map(summarizePromptGroupRow);
+        return { ok: true, mode: "read", command: context.command, output: groups };
+      }
+      case "getgroup": {
+        const groupId = requiredString(args, ["groupId", "id"], "prompt group id");
+        const row = await this.getRawById(getMeta("prompt_groups"), groupId);
+        return {
+          ok: Boolean(row),
+          mode: "read",
+          command: context.command,
+          output: row ? parseRow("prompt_groups", row) : null,
+        };
+      }
+      case "choiceblocks": {
+        const presetId = requiredString(args, ["presetId", "id"], "prompt preset id");
+        const preset = await this.getRawById(getMeta("prompt_presets"), presetId);
+        if (!preset) throw new Error(`Prompt preset ${presetId} not found`);
+        const blocks = (await this.rawRows("choice_blocks"))
+          .filter((block) => block.presetId === presetId)
+          .sort((a, b) => Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0))
+          .map(summarizeChoiceBlockRow);
+        return { ok: true, mode: "read", command: context.command, output: blocks };
+      }
+      case "getchoiceblock": {
+        const choiceBlockId = requiredString(args, ["choiceBlockId", "id"], "choice block id");
+        const row = await this.getRawById(getMeta("choice_blocks"), choiceBlockId);
+        return {
+          ok: Boolean(row),
+          mode: "read",
+          command: context.command,
+          output: row ? parseRow("choice_blocks", row) : null,
+        };
+      }
+      case "updatesection": {
+        const sectionId = requiredString(args, ["sectionId", "id"], "prompt section id");
+        const existing = await this.getRawById(getMeta("prompt_sections"), sectionId);
+        if (!existing) throw new Error(`Prompt section ${sectionId} not found`);
+        const data = actionDataWithTopLevel(
+          args,
+          ["patch", "data", "section"],
+          ["name", "content", "role", "enabled", "isMarker", "groupId", "markerConfig", "injectionPosition", "injectionDepth", "injectionOrder"],
+        );
+        const patch = buildPromptSectionPatch(data);
+        if (Object.keys(patch).length === 0) {
+          throw new Error(
+            "preset.updateSection needs sectionId plus a field such as content, name, role, enabled, groupId, or injectionOrder",
+          );
+        }
+        if (String(existing.isMarker) === "true" && typeof patch.content === "string") {
+          throw new Error(
+            `Section ${sectionId} is a marker; its content is generated from markerConfig at assembly, so a content edit has no effect. Edit markerConfig instead.`,
+          );
+        }
+        // #4812: a section may only join a group in its OWN preset, or it drops out of its preset's
+        // group tree. validateTouchedRows only checks the group row exists, not its presetId.
+        if (typeof patch.groupId === "string" && patch.groupId) {
+          const group = await this.getRawById(getMeta("prompt_groups"), patch.groupId);
+          if (!group || String(group.presetId) !== String(existing.presetId)) {
+            throw new Error(`Group ${patch.groupId} is not a group in this section's preset.`);
+          }
+        }
+        return this.executeMutation(
+          {
+            kind: "patch",
+            table: "prompt_sections",
+            id: sectionId,
+            patch,
+            apply: firstBoolean(args, ["apply"]) === true,
+            cascade: false,
+            reason: firstString(args, ["reason"]) ?? null,
+            cwd: context.cwd,
+          },
+          context.command,
+          context.sessionId,
+        );
+      }
+      case "updategroup": {
+        const groupId = requiredString(args, ["groupId", "id"], "prompt group id");
+        const existing = await this.getRawById(getMeta("prompt_groups"), groupId);
+        if (!existing) throw new Error(`Prompt group ${groupId} not found`);
+        const data = actionDataWithTopLevel(args, ["patch", "data", "group"], ["name", "parentGroupId", "order", "enabled"]);
+        const patch = buildPromptGroupPatch(data);
+        if (Object.keys(patch).length === 0) {
+          throw new Error("preset.updateGroup needs groupId plus a field such as name, enabled, order, or parentGroupId");
+        }
+        // #4812: a parent group must live in the same preset and must not create a cycle (a group
+        // nested under itself or under one of its own descendants would loop any tree walk).
+        if (typeof patch.parentGroupId === "string" && patch.parentGroupId) {
+          const parentId = patch.parentGroupId;
+          if (parentId === groupId) throw new Error("A group cannot be its own parent.");
+          const groupsById = new Map((await this.rawRows("prompt_groups")).map((group) => [String(group.id), group]));
+          const parent = groupsById.get(parentId);
+          if (!parent || String(parent.presetId) !== String(existing.presetId)) {
+            throw new Error(`Parent group ${parentId} is not a group in this preset.`);
+          }
+          const seen = new Set<string>();
+          let cursor: Row | undefined = parent;
+          while (cursor) {
+            const cursorId = String(cursor.id);
+            if (cursorId === groupId) throw new Error("That parent would create a group cycle.");
+            if (seen.has(cursorId)) break;
+            seen.add(cursorId);
+            cursor =
+              typeof cursor.parentGroupId === "string" && cursor.parentGroupId ? groupsById.get(cursor.parentGroupId) : undefined;
+          }
+        }
+        return this.executeMutation(
+          {
+            kind: "patch",
+            table: "prompt_groups",
+            id: groupId,
+            patch,
+            apply: firstBoolean(args, ["apply"]) === true,
+            cascade: false,
+            reason: firstString(args, ["reason"]) ?? null,
+            cwd: context.cwd,
+          },
+          context.command,
+          context.sessionId,
+        );
+      }
+      case "updatechoiceblock": {
+        const choiceBlockId = requiredString(args, ["choiceBlockId", "id"], "choice block id");
+        const existing = await this.getRawById(getMeta("choice_blocks"), choiceBlockId);
+        if (!existing) throw new Error(`Choice block ${choiceBlockId} not found`);
+        const data = actionDataWithTopLevel(
+          args,
+          ["patch", "data", "choiceBlock", "choice"],
+          ["variableName", "variable", "question", "options", "choices", "values", "multiSelect", "separator", "randomPick", "displayMode", "optionSort", "sortOrder"],
+        );
+        const usedVariableNames = new Set(
+          (await this.rawRows("choice_blocks"))
+            .filter((block) => block.presetId === existing.presetId && block.id !== choiceBlockId)
+            .map((block) => String(block.variableName)),
+        );
+        const patch = buildChoiceBlockPatch(data, usedVariableNames);
+        if (Object.keys(patch).length === 0) {
+          throw new Error(
+            "preset.updateChoiceBlock needs choiceBlockId plus a field such as question, options, variableName, or multiSelect",
+          );
+        }
+        if (Array.isArray(patch.options) && patch.options.length === 0) {
+          throw new Error("preset.updateChoiceBlock cannot set an empty options array; a choice block needs at least one option");
+        }
+        return this.executeMutation(
+          {
+            kind: "patch",
+            table: "choice_blocks",
+            id: choiceBlockId,
+            patch,
+            apply: firstBoolean(args, ["apply"]) === true,
+            cascade: false,
+            reason: firstString(args, ["reason"]) ?? null,
+            cwd: context.cwd,
+          },
+          context.command,
+          context.sessionId,
+        );
+      }
+      case "addsection": {
+        const presetId = requiredString(args, ["presetId", "id"], "prompt preset id");
+        const preset = await this.getRawById(getMeta("prompt_presets"), presetId);
+        if (!preset) throw new Error(`Prompt preset ${presetId} not found`);
+        const data = actionDataWithTopLevel(
+          args,
+          ["data", "section", "row"],
+          ["name", "identifier", "content", "role", "enabled", "isMarker", "groupId", "markerConfig", "injectionPosition", "injectionDepth", "injectionOrder"],
+        );
+        requiredString(data, ["name", "title", "label"], "section name");
+        // #4812: a section may only be filed under a group in its OWN preset (same reason as
+        // updateSection) — validateTouchedRows only checks the group row exists, not its presetId.
+        if (typeof data.groupId === "string" && data.groupId) {
+          const group = await this.getRawById(getMeta("prompt_groups"), data.groupId);
+          if (!group || String(group.presetId) !== String(presetId)) {
+            throw new Error(`Group ${data.groupId} is not a group in this preset.`);
+          }
+        }
+        const sectionOrder = parseJsonArrayValue(preset.sectionOrder).map(String);
+        const sectionId = newId();
+        const usedIdentifiers = new Set(
+          (await this.rawRows("prompt_sections"))
+            .filter((section) => section.presetId === presetId)
+            .map((section) => String(section.identifier)),
+        );
+        const row = buildPromptSectionInsertRow(data, presetId, sectionId, sectionOrder.length + 1, usedIdentifiers);
+        // Insert the section AND append its id to the parent sectionOrder in one reviewable plan;
+        // a section missing from sectionOrder is never assembled (would look like the #4812 bug).
+        return this.executeMutation(
+          {
+            kind: "patch",
+            table: "prompt_presets",
+            id: presetId,
+            patch: { sectionOrder: [...sectionOrder, sectionId] },
+            apply: appDataCreateApply(args),
+            cascade: false,
+            reason: firstString(args, ["reason"]) ?? null,
+            cwd: context.cwd,
+            relatedInserts: [{ table: "prompt_sections", row }],
+          },
+          context.command,
+          context.sessionId,
+        );
+      }
+      case "addgroup": {
+        const presetId = requiredString(args, ["presetId", "id"], "prompt preset id");
+        const preset = await this.getRawById(getMeta("prompt_presets"), presetId);
+        if (!preset) throw new Error(`Prompt preset ${presetId} not found`);
+        const data = actionDataWithTopLevel(args, ["data", "group", "row"], ["name", "parentGroupId", "order", "enabled"]);
+        requiredString(data, ["name", "title", "label"], "group name");
+        // #4812: a parent group must live in the same preset. A fresh group has no descendants yet,
+        // so a cycle is impossible here — only the cross-preset/existence check is needed.
+        if (typeof data.parentGroupId === "string" && data.parentGroupId) {
+          const parent = await this.getRawById(getMeta("prompt_groups"), data.parentGroupId);
+          if (!parent || String(parent.presetId) !== String(presetId)) {
+            throw new Error(`Parent group ${data.parentGroupId} is not a group in this preset.`);
+          }
+        }
+        const groupOrder = parseJsonArrayValue(preset.groupOrder).map(String);
+        const groupId = newId();
+        const row = buildPromptGroupInsertRow(data, presetId, groupId, (groupOrder.length + 1) * 100);
+        return this.executeMutation(
+          {
+            kind: "patch",
+            table: "prompt_presets",
+            id: presetId,
+            patch: { groupOrder: [...groupOrder, groupId] },
+            apply: appDataCreateApply(args),
+            cascade: false,
+            reason: firstString(args, ["reason"]) ?? null,
+            cwd: context.cwd,
+            relatedInserts: [{ table: "prompt_groups", row }],
+          },
+          context.command,
+          context.sessionId,
+        );
+      }
+      case "addchoiceblock": {
+        const presetId = requiredString(args, ["presetId", "id"], "prompt preset id");
+        const preset = await this.getRawById(getMeta("prompt_presets"), presetId);
+        if (!preset) throw new Error(`Prompt preset ${presetId} not found`);
+        const data = actionDataWithTopLevel(
+          args,
+          ["data", "choiceBlock", "choice", "row"],
+          ["variableName", "variable", "question", "options", "choices", "values", "multiSelect", "separator", "randomPick", "displayMode", "optionSort", "sortOrder"],
+        );
+        const existingBlocks = (await this.rawRows("choice_blocks")).filter((block) => block.presetId === presetId);
+        const choiceBlockId = newId();
+        const usedVariableNames = new Set(existingBlocks.map((block) => String(block.variableName)));
+        const row = buildChoiceBlockInsertRow(data, presetId, choiceBlockId, existingBlocks.length + 1, usedVariableNames);
+        if ((row.options as unknown[]).length === 0) {
+          throw new Error("preset.addChoiceBlock needs a non-empty options array (each option is a label the user can pick)");
+        }
+        // choice_blocks are ordered by their own sortOrder column, not a parent order array, so a
+        // plain insert is enough — no parent patch needed.
+        return this.executeMutation(
+          {
+            kind: "insert",
+            table: "choice_blocks",
+            id: choiceBlockId,
+            row,
+            apply: appDataCreateApply(args),
+            cascade: false,
+            reason: firstString(args, ["reason"]) ?? null,
+            cwd: context.cwd,
+          },
+          context.command,
+          context.sessionId,
+        );
+      }
+      case "deletesection": {
+        const sectionId = requiredString(args, ["sectionId", "id"], "prompt section id");
+        const existing = await this.getRawById(getMeta("prompt_sections"), sectionId);
+        if (!existing) throw new Error(`Prompt section ${sectionId} not found`);
+        return this.executeMutation(
+          {
+            kind: "preset-section-delete",
+            table: "prompt_sections",
+            id: sectionId,
+            apply: firstBoolean(args, ["apply"]) === true,
+            cascade: false,
+            reason: firstString(args, ["reason"]) ?? null,
+            cwd: context.cwd,
+          },
+          context.command,
+          context.sessionId,
+        );
+      }
+      case "deletegroup": {
+        const groupId = requiredString(args, ["groupId", "id"], "prompt group id");
+        const existing = await this.getRawById(getMeta("prompt_groups"), groupId);
+        if (!existing) throw new Error(`Prompt group ${groupId} not found`);
+        return this.executeMutation(
+          {
+            kind: "preset-group-delete",
+            table: "prompt_groups",
+            id: groupId,
+            apply: firstBoolean(args, ["apply"]) === true,
+            cascade: false,
+            reason: firstString(args, ["reason"]) ?? null,
+            cwd: context.cwd,
+          },
+          context.command,
+          context.sessionId,
+        );
+      }
+      case "deletechoiceblock": {
+        const choiceBlockId = requiredString(args, ["choiceBlockId", "id"], "choice block id");
+        const existing = await this.getRawById(getMeta("choice_blocks"), choiceBlockId);
+        if (!existing) throw new Error(`Choice block ${choiceBlockId} not found`);
+        return this.executeMutation(
+          {
+            kind: "delete",
+            table: "choice_blocks",
+            id: choiceBlockId,
+            apply: firstBoolean(args, ["apply"]) === true,
+            cascade: false,
+            reason: firstString(args, ["reason"]) ?? null,
+            cwd: context.cwd,
+          },
+          context.command,
+          context.sessionId,
+        );
+      }
       default:
-        return { ok: false, mode: "read", command: context.command, error: "Unsupported prompt preset app_data action." };
+        return {
+          ok: false,
+          mode: "read",
+          command: context.command,
+          error: "Unsupported prompt preset app_data action.",
+        };
     }
   }
 
   getPendingApprovals(): MariDbPendingApproval[] {
+    this.ensurePendingHydrated();
     return Array.from(this.pending.values()).map((record) => this.pendingView(record));
   }
 
@@ -3218,7 +4165,10 @@ export class MariDbService {
     await writeFile(this.historyPath(), "", "utf8");
   }
 
-  async keepAppliedReviewAndWait(id: string): Promise<{ approval: MariDbPendingApproval; history: MariDbHistoryEntry | null; completed: boolean } | null> {
+  async keepAppliedReviewAndWait(
+    id: string,
+  ): Promise<{ approval: MariDbPendingApproval; history: MariDbHistoryEntry | null; completed: boolean } | null> {
+    this.ensurePendingHydrated();
     const record = this.pending.get(id);
     if (!record) return null;
     const approval = this.pendingView(record);
@@ -3227,10 +4177,11 @@ export class MariDbService {
   }
 
   async keepAppliedReview(id: string): Promise<MariDbHistoryEntry | null> {
+    this.ensurePendingHydrated();
     const record = this.pending.get(id);
     if (!record) return null;
-    clearTimeout(record.timer);
     this.pending.delete(id);
+    await this.deletePendingSidecar(id);
     const history = await this.recordHistory({
       plan: record.plan,
       command: record.command,
@@ -3241,13 +4192,16 @@ export class MariDbService {
     return history;
   }
 
-  async restoreAppliedReview(id: string): Promise<{ approval: MariDbPendingApproval; history: MariDbHistoryEntry } | null> {
+  async restoreAppliedReview(
+    id: string,
+  ): Promise<{ approval: MariDbPendingApproval; history: MariDbHistoryEntry } | null> {
+    this.ensurePendingHydrated();
     const record = this.pending.get(id);
     if (!record) return null;
     const approval = this.pendingView(record);
-    clearTimeout(record.timer);
-    this.pending.delete(id);
     await this.restorePlan(record.plan);
+    this.pending.delete(id);
+    await this.deletePendingSidecar(id);
     const history = await this.recordHistory({
       plan: record.plan,
       command: record.command,
@@ -3276,7 +4230,12 @@ export class MariDbService {
       for (const row of rows) {
         const id = row[pk];
         if (typeof id !== "string" || id.trim().length === 0) {
-          issues.push({ level: "error", table: tableName, id: id == null ? null : String(id), message: `Missing primary key ${pk}` });
+          issues.push({
+            level: "error",
+            table: tableName,
+            id: id == null ? null : String(id),
+            message: `Missing primary key ${pk}`,
+          });
         } else if (ids.has(id)) {
           issues.push({ level: "error", table: tableName, id, message: `Duplicate primary key ${pk}=${id}` });
         } else {
@@ -3284,7 +4243,12 @@ export class MariDbService {
         }
         for (const column of meta.columns) {
           if (column.notNull && (row[column.key] === null || row[column.key] === undefined)) {
-            issues.push({ level: "error", table: tableName, id: id == null ? null : String(id), message: `Missing required column ${column.key}` });
+            issues.push({
+              level: "error",
+              table: tableName,
+              id: id == null ? null : String(id),
+              message: `Missing required column ${column.key}`,
+            });
           }
         }
         for (const key of JSON_COLUMNS[tableName] ?? []) {
@@ -3295,7 +4259,12 @@ export class MariDbService {
           try {
             JSON.parse(value);
           } catch {
-            issues.push({ level: "error", table: tableName, id: id == null ? null : String(id), message: `Column ${key} is not valid JSON` });
+            issues.push({
+              level: "error",
+              table: tableName,
+              id: id == null ? null : String(id),
+              message: `Column ${key} is not valid JSON`,
+            });
           }
         }
         addCharacterDataShapeIssues(tableName, row, id, issues);
@@ -3318,7 +4287,9 @@ export class MariDbService {
 
     for (const cascade of CASCADES) {
       if (table && table !== cascade.child && table !== cascade.parent) continue;
-      const parents = new Set((await getRows(cascade.parent)).map((row) => row[cascade.parentKey]).filter((id) => typeof id === "string"));
+      const parents = new Set(
+        (await getRows(cascade.parent)).map((row) => row[cascade.parentKey]).filter((id) => typeof id === "string"),
+      );
       for (const child of await getRows(cascade.child)) {
         const ref = child[cascade.childKey];
         if (typeof ref === "string" && ref && !parents.has(ref)) {
@@ -3355,10 +4326,20 @@ export class MariDbService {
       });
     }
     if (typeof row.enabled !== "string" || !BOOLEAN_TEXT_VALUES.has(row.enabled)) {
-      issues.push({ level: "error", table: "agent_configs", id, message: "Agent enabled must be stored as \"true\" or \"false\"" });
+      issues.push({
+        level: "error",
+        table: "agent_configs",
+        id,
+        message: 'Agent enabled must be stored as "true" or "false"',
+      });
     }
     if (row.connectionId !== null && row.connectionId !== undefined && typeof row.connectionId !== "string") {
-      issues.push({ level: "error", table: "agent_configs", id, message: "Agent connectionId must be a string or null" });
+      issues.push({
+        level: "error",
+        table: "agent_configs",
+        id,
+        message: "Agent connectionId must be a string or null",
+      });
     }
     if (row.imagePath !== null && row.imagePath !== undefined && typeof row.imagePath !== "string") {
       issues.push({ level: "error", table: "agent_configs", id, message: "Agent imagePath must be a string or null" });
@@ -3378,7 +4359,12 @@ export class MariDbService {
       issues.push({ level: "error", table: "custom_tools", id, message: "Tool name must be lowercase snake_case" });
     }
     if (typeof row.description !== "string" || row.description.trim().length === 0) {
-      issues.push({ level: "error", table: "custom_tools", id, message: "Tool description must be a non-empty string" });
+      issues.push({
+        level: "error",
+        table: "custom_tools",
+        id,
+        message: "Tool description must be a non-empty string",
+      });
     }
     if (typeof row.executionType !== "string" || !TOOL_EXECUTION_TYPES.has(row.executionType)) {
       issues.push({
@@ -3397,7 +4383,12 @@ export class MariDbService {
       });
     }
     if (typeof row.enabled !== "string" || !BOOLEAN_TEXT_VALUES.has(row.enabled)) {
-      issues.push({ level: "error", table: "custom_tools", id, message: "Tool enabled must be stored as \"true\" or \"false\"" });
+      issues.push({
+        level: "error",
+        table: "custom_tools",
+        id,
+        message: 'Tool enabled must be stored as "true" or "false"',
+      });
     }
     if (
       row.includeHiddenContext !== undefined &&
@@ -3407,16 +4398,26 @@ export class MariDbService {
         level: "error",
         table: "custom_tools",
         id,
-        message: "Tool includeHiddenContext must be stored as \"true\" or \"false\"",
+        message: 'Tool includeHiddenContext must be stored as "true" or "false"',
       });
     }
     const parametersSchema = tryParseJsonColumn(row, "parametersSchema");
     if (parametersSchema !== undefined && !isRecord(parametersSchema)) {
-      issues.push({ level: "error", table: "custom_tools", id, message: "Tool parametersSchema must be a JSON object" });
+      issues.push({
+        level: "error",
+        table: "custom_tools",
+        id,
+        message: "Tool parametersSchema must be a JSON object",
+      });
     }
     if (row.webhookUrl !== null && row.webhookUrl !== undefined && row.webhookUrl !== "") {
       if (typeof row.webhookUrl !== "string") {
-        issues.push({ level: "error", table: "custom_tools", id, message: "Tool webhookUrl must be a URL string or null" });
+        issues.push({
+          level: "error",
+          table: "custom_tools",
+          id,
+          message: "Tool webhookUrl must be a URL string or null",
+        });
       } else {
         try {
           new URL(row.webhookUrl);
@@ -3426,10 +4427,25 @@ export class MariDbService {
       }
     }
     if (row.executionType === "script" && (typeof row.scriptBody !== "string" || row.scriptBody.trim().length === 0)) {
-      issues.push({ level: "error", table: "custom_tools", id, message: "Script tools require a non-empty scriptBody" });
+      issues.push({
+        level: "error",
+        table: "custom_tools",
+        id,
+        message: "Script tools require a non-empty scriptBody",
+      });
     }
-    if (row.executionType === "static" && row.staticResult !== null && row.staticResult !== undefined && typeof row.staticResult !== "string") {
-      issues.push({ level: "error", table: "custom_tools", id, message: "Static tool result must be a string or null" });
+    if (
+      row.executionType === "static" &&
+      row.staticResult !== null &&
+      row.staticResult !== undefined &&
+      typeof row.staticResult !== "string"
+    ) {
+      issues.push({
+        level: "error",
+        table: "custom_tools",
+        id,
+        message: "Static tool result must be a string or null",
+      });
     }
   }
 
@@ -3443,7 +4459,8 @@ export class MariDbService {
       return { ok: true, mode: "read", command: context.command, output: this.codeHelpText() };
     }
     const parsed = parseArgs(args.slice(1));
-    if (hasFlag(parsed.flags, "help")) return { ok: true, mode: "read", command: context.command, output: this.codeHelpText() };
+    if (hasFlag(parsed.flags, "help"))
+      return { ok: true, mode: "read", command: context.command, output: this.codeHelpText() };
 
     switch (sub) {
       case "status":
@@ -3499,13 +4516,18 @@ export class MariDbService {
           statusShort: statusText,
           changedFiles: parseGitStatusFiles(statusText),
           diffStat: stat.stdout.trim(),
-          errors: [repoRoot, branch, status, stat].filter((result) => !result.ok).map((result) => result.stderr.trim() || `${result.command} failed`),
+          errors: [repoRoot, branch, status, stat]
+            .filter((result) => !result.ok)
+            .map((result) => result.stderr.trim() || `${result.command} failed`),
         },
       },
     };
   }
 
-  private async executeCodeDiff(context: CodeCommandContext, flags: Map<string, string | boolean>): Promise<MariDbCommandResult> {
+  private async executeCodeDiff(
+    context: CodeCommandContext,
+    flags: Map<string, string | boolean>,
+  ): Promise<MariDbCommandResult> {
     const cwd = this.codeCwd(context.cwd);
     const cached = hasFlag(flags, "cached") || hasFlag(flags, "staged");
     const includePatch = hasFlag(flags, "patch") || hasFlag(flags, "full");
@@ -3514,14 +4536,18 @@ export class MariDbService {
       runProcess("git", ["status", "--short", "--branch"], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS }),
       runProcess("git", [...diffBaseArgs, "--stat"], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS }),
       runProcess("git", [...diffBaseArgs, "--name-only"], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS }),
-      includePatch ? runProcess("git", [...diffBaseArgs, "--patch"], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS }) : Promise.resolve(null),
+      includePatch
+        ? runProcess("git", [...diffBaseArgs, "--patch"], { cwd, timeoutMs: CODE_READ_TIMEOUT_MS })
+        : Promise.resolve(null),
     ]);
     const statusText = status.stdout.trim();
     const gitFiles = nameOnly.stdout
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean);
-    const changedFiles = [...new Set([...parseGitStatusFiles(statusText), ...gitFiles])].sort((a, b) => a.localeCompare(b));
+    const changedFiles = [...new Set([...parseGitStatusFiles(statusText), ...gitFiles])].sort((a, b) =>
+      a.localeCompare(b),
+    );
     return {
       ok: status.ok && stat.ok && nameOnly.ok && (!patch || patch.ok),
       mode: "read",
@@ -3534,12 +4560,17 @@ export class MariDbService {
         stat: stat.stdout.trim(),
         patch: patch?.stdout,
         truncated: Boolean(patch?.truncated || stat.truncated || nameOnly.truncated),
-        errors: [status, stat, nameOnly, patch].filter((result): result is ProcessRunResult => !!result && !result.ok).map((result) => result.stderr.trim() || `${result.command} failed`),
+        errors: [status, stat, nameOnly, patch]
+          .filter((result): result is ProcessRunResult => !!result && !result.ok)
+          .map((result) => result.stderr.trim() || `${result.command} failed`),
       },
     };
   }
 
-  private async executeCodeCheck(context: CodeCommandContext, flags: Map<string, string | boolean>): Promise<MariDbCommandResult> {
+  private async executeCodeCheck(
+    context: CodeCommandContext,
+    flags: Map<string, string | boolean>,
+  ): Promise<MariDbCommandResult> {
     const cwd = this.codeCwd(context.cwd);
     const changedOnly = hasFlag(flags, "changed");
     const result = await runProcess("pnpm", ["check"], { cwd, timeoutMs: CODE_CHECK_TIMEOUT_MS });
@@ -3597,7 +4628,12 @@ export class MariDbService {
       return { ok: true, mode: "read", command: context.command, output: this.codeReloadHelpText() };
     }
     if (sub !== "request") {
-      return { ok: false, mode: "read", command: context.command, error: `Unknown mari code reload command: ${sub}\n${this.codeReloadHelpText()}` };
+      return {
+        ok: false,
+        mode: "read",
+        command: context.command,
+        error: `Unknown mari code reload command: ${sub}\n${this.codeReloadHelpText()}`,
+      };
     }
     const kind = flagString(parsed.flags, "kind") ?? "client";
     if (!["client", "server", "full"].includes(kind)) {
@@ -3620,19 +4656,27 @@ export class MariDbService {
           kind === "client"
             ? ["Reload the browser tab or rely on Vite HMR if it already updated.", "Continue after the UI reconnects."]
             : kind === "server"
-              ? ["Restart the Marinara server or wait for tsx watch/dev launcher to restart it.", "Run mari code health after reconnecting."]
-              : ["Restart the Marinara server and reload the browser client.", "Run mari code health after reconnecting."],
+              ? [
+                  "Restart the Marinara server or wait for tsx watch/dev launcher to restart it.",
+                  "Run mari code health after reconnecting.",
+                ]
+              : [
+                  "Restart the Marinara server and reload the browser client.",
+                  "Run mari code health after reconnecting.",
+                ],
       },
     };
   }
 
   private executeCodeContinue(runId: string | undefined, context: CodeCommandContext): MariDbCommandResult {
-    if (!runId) return { ok: false, mode: "read", command: context.command, error: "Usage: mari code continue <run-id>" };
+    if (!runId)
+      return { ok: false, mode: "read", command: context.command, error: "Usage: mari code continue <run-id>" };
     return {
       ok: false,
       mode: "read",
       command: context.command,
-      error: "Durable workspace run resume is planned but not implemented yet. Reopen Professor Mari and paste the run context or continue manually.",
+      error:
+        "Durable workspace run resume is planned but not implemented yet. Reopen Professor Mari and paste the run context or continue manually.",
     };
   }
 
@@ -3663,7 +4707,12 @@ export class MariDbService {
         const id = parsed.positionals[0];
         if (!id) throw new Error("Usage: mari characters get <id>");
         const row = await this.getRawById(getMeta("characters"), id);
-        return { ok: Boolean(row), mode: "read", command: context.command, output: row ? parseRow("characters", row) : null };
+        return {
+          ok: Boolean(row),
+          mode: "read",
+          command: context.command,
+          output: row ? parseRow("characters", row) : null,
+        };
       }
       case "search": {
         const query = parsed.positionals[0];
@@ -3784,7 +4833,12 @@ export class MariDbService {
         const rows = (await this.rawRows("personas")).sort((a, b) =>
           String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")),
         );
-        return { ok: true, mode: "read", command: context.command, output: rows.slice(0, limit).map(summarizePersonaRow) };
+        return {
+          ok: true,
+          mode: "read",
+          command: context.command,
+          output: rows.slice(0, limit).map(summarizePersonaRow),
+        };
       }
       case "active": {
         const row = (await this.rawRows("personas")).find((r) => r.isActive === "true") ?? null;
@@ -3794,7 +4848,12 @@ export class MariDbService {
         const id = parsed.positionals[0];
         if (!id) throw new Error("Usage: mari personas get <id>");
         const row = await this.getRawById(getMeta("personas"), id);
-        return { ok: Boolean(row), mode: "read", command: context.command, output: row ? parseRow("personas", row) : null };
+        return {
+          ok: Boolean(row),
+          mode: "read",
+          command: context.command,
+          output: row ? parseRow("personas", row) : null,
+        };
       }
       case "search": {
         const query = parsed.positionals[0];
@@ -3875,7 +4934,10 @@ export class MariDbService {
         const personaTagsRaw = flagString(flags, "tags");
         if (personaTagsRaw !== undefined) {
           patch.tags = personaTagsRaw
-            ? personaTagsRaw.split(/[,|]/).map((t) => t.trim()).filter(Boolean)
+            ? personaTagsRaw
+                .split(/[,|]/)
+                .map((t) => t.trim())
+                .filter(Boolean)
             : [];
         }
         const convoBehaviorRaw = flagString(flags, "convo-behavior");
@@ -3936,7 +4998,12 @@ export class MariDbService {
           .filter((row) => !globalOnly || row.isGlobal === "true")
           .filter((row) => !characterId || row.characterId === characterId)
           .sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
-        return { ok: true, mode: "read", command: context.command, output: rows.slice(0, limit).map(summarizeLorebookRow) };
+        return {
+          ok: true,
+          mode: "read",
+          command: context.command,
+          output: rows.slice(0, limit).map(summarizeLorebookRow),
+        };
       }
       case "get": {
         const id = parsed.positionals[0];
@@ -3944,11 +5011,17 @@ export class MariDbService {
         const row = await this.getRawById(getMeta("lorebooks"), id);
         if (!row) return { ok: false, mode: "read", command: context.command, output: null };
         const entryCount = (await this.rawRows("lorebook_entries")).filter((e) => e.lorebookId === id).length;
-        return { ok: true, mode: "read", command: context.command, output: { ...parseRow("lorebooks", row), entryCount } };
+        return {
+          ok: true,
+          mode: "read",
+          command: context.command,
+          output: { ...parseRow("lorebooks", row), entryCount },
+        };
       }
       case "entries": {
         const lorebookId = parsed.positionals[0];
-        if (!lorebookId) throw new Error("Usage: mari lorebooks entries <lorebook-id> [--limit <n>] [--entry-id <entry-id>]");
+        if (!lorebookId)
+          throw new Error("Usage: mari lorebooks entries <lorebook-id> [--limit <n>] [--entry-id <entry-id>]");
         const limit = normalizeLimit(flagString(flags, "limit"), 100, 2000);
         const entryId = flagString(flags, "entry-id") ?? flagString(flags, "entryId");
         const entries = (await this.rawRows("lorebook_entries"))
@@ -3983,7 +5056,8 @@ export class MariDbService {
       }
       case "create": {
         const name = flagString(flags, "name")?.trim();
-        if (!name) throw new Error("Usage: mari lorebooks create --name <name> [--description <text>] [--global] [--apply]");
+        if (!name)
+          throw new Error("Usage: mari lorebooks create --name <name> [--description <text>] [--global] [--apply]");
         const timestamp = now();
         const row: Row = {
           id: flagString(flags, "id") ?? newId(),
@@ -4045,7 +5119,10 @@ export class MariDbService {
         const lorebookTagsRaw = flagString(flags, "tags");
         if (lorebookTagsRaw !== undefined) {
           patch.tags = lorebookTagsRaw
-            ? lorebookTagsRaw.split(/[,|]/).map((t) => t.trim()).filter(Boolean)
+            ? lorebookTagsRaw
+                .split(/[,|]/)
+                .map((t) => t.trim())
+                .filter(Boolean)
             : [];
         }
         if (Object.keys(patch).length <= 1) {
@@ -4069,7 +5146,7 @@ export class MariDbService {
         const lorebookId = parsed.positionals[0];
         if (!lorebookId) {
           throw new Error(
-            "Usage: mari lorebooks add-entry <lorebook-id> --name <name> [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--outlet-name <name>] [--folder-id <folder-id>] [--apply] [--reason <text>]",
+            "Usage: mari lorebooks add-entry <lorebook-id> --name <name> [--content <text>] [--keys <k1,k2,...>] [--secondary-keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--selective] [--selective-logic <and|and_all|or|not|not_all>] [--match-whole-words] [--case-sensitive] [--use-regex] [--outlet-name <name>] [--folder-id <folder-id>] [--apply] [--reason <text>]",
           );
         }
         const entryName = flagString(flags, "name")?.trim();
@@ -4092,47 +5169,37 @@ export class MariDbService {
           : [];
         const addOutletName = flagString(flags, "outlet-name")?.trim() ?? "";
         const timestamp = now();
-        const entryRow: Row = {
-          id: flagString(flags, "id") ?? newId(),
+        const addSecondaryKeysRaw = flagString(flags, "secondary-keys") ?? "";
+        const addSecondaryKeys = addSecondaryKeysRaw
+          ? addSecondaryKeysRaw.split(",").map((k) => k.trim()).filter(Boolean)
+          : [];
+        const addSelectiveLogic = flagString(flags, "selective-logic");
+        if (addSelectiveLogic !== undefined && !normalizeSelectiveLogicValue(addSelectiveLogic)) {
+          throw new Error("--selective-logic must be one of: and, and_all, or, not, not_all");
+        }
+        // Reuse buildLorebookEntryCreateRow (the app_data create path) so the CLI and app_data
+        // entry shapes cannot drift; then apply the CLI-only folderId.
+        const entryRow = buildLorebookEntryCreateRow(
+          {
+            name: entryName,
+            content: flagString(flags, "content") ?? "",
+            description: flagString(flags, "description") ?? "",
+            tag: flagString(flags, "tag") ?? "",
+            keys,
+            secondaryKeys: addSecondaryKeys,
+            selective: hasFlag(flags, "selective"),
+            selectiveLogic: addSelectiveLogic,
+            matchWholeWords: hasFlag(flags, "match-whole-words"),
+            caseSensitive: hasFlag(flags, "case-sensitive"),
+            useRegex: hasFlag(flags, "use-regex"),
+            outletName: addOutletName,
+            position: addOutletName ? 7 : 0,
+          },
           lorebookId,
-          folderId: addFolderId ?? null,
-          name: entryName,
-          content: flagString(flags, "content") ?? "",
-          description: flagString(flags, "description") ?? "",
-          tag: flagString(flags, "tag") ?? "",
-          keys,
-          secondaryKeys: [],
-          enabled: "true",
-          constant: "false",
-          selective: "false",
-          selectiveLogic: "and",
-          matchWholeWords: "false",
-          caseSensitive: "false",
-          useRegex: "false",
-          characterFilterMode: "any",
-          characterFilterIds: [],
-          characterTagFilterMode: "any",
-          characterTagFilters: [],
-          generationTriggerFilterMode: "any",
-          generationTriggerFilters: [],
-          additionalMatchingSources: [],
-          position: addOutletName ? 7 : 0,
-          outletName: addOutletName,
-          depth: 4,
-          order: 100,
-          role: "system",
-          group: "",
-          relationships: {},
-          dynamicState: {},
-          activationConditions: [],
-          preventRecursion: "true",
-          excludeRecursion: "false",
-          delayUntilRecursion: "false",
-          excludeFromVectorization: "false",
-          locked: "false",
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        };
+          flagString(flags, "id") ?? newId(),
+          timestamp,
+        );
+        entryRow.folderId = addFolderId ?? null;
         const request: ParsedMutationRequest = {
           kind: "insert",
           table: "lorebook_entries",
@@ -4149,7 +5216,7 @@ export class MariDbService {
         const entryId = parsed.positionals[0];
         if (!entryId) {
           throw new Error(
-            "Usage: mari lorebooks update-entry <entry-id> [--name <name>] [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--outlet-name <name>] [--enable] [--disable] [--constant] [--no-constant] [--order <n>] [--folder-id <folder-id>|none] [--apply] [--reason <text>]",
+            "Usage: mari lorebooks update-entry <entry-id> [--name <name>] [--content <text>] [--keys <k1,k2,...>] [--secondary-keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--outlet-name <name>] [--enable] [--disable] [--constant] [--no-constant] [--selective] [--no-selective] [--selective-logic <and|and_all|or|not|not_all>] [--match-whole-words] [--no-match-whole-words] [--case-sensitive] [--no-case-sensitive] [--use-regex] [--no-use-regex] [--order <n>] [--folder-id <folder-id>|none] [--apply] [--reason <text>]",
           );
         }
         const entryExists = await this.getRawById(getMeta("lorebook_entries"), entryId);
@@ -4170,7 +5237,10 @@ export class MariDbService {
         const keysRaw = flagString(flags, "keys");
         if (keysRaw !== undefined) {
           entryPatch.keys = keysRaw
-            ? keysRaw.split(",").map((k) => k.trim()).filter(Boolean)
+            ? keysRaw
+                .split(",")
+                .map((k) => k.trim())
+                .filter(Boolean)
             : [];
         }
         const orderVal = flagString(flags, "order");
@@ -4183,6 +5253,26 @@ export class MariDbService {
         if (hasFlag(flags, "disable")) entryPatch.enabled = "false";
         if (hasFlag(flags, "constant")) entryPatch.constant = "true";
         if (hasFlag(flags, "no-constant")) entryPatch.constant = "false";
+        if (hasFlag(flags, "selective")) entryPatch.selective = "true";
+        if (hasFlag(flags, "no-selective")) entryPatch.selective = "false";
+        if (hasFlag(flags, "match-whole-words")) entryPatch.matchWholeWords = "true";
+        if (hasFlag(flags, "no-match-whole-words")) entryPatch.matchWholeWords = "false";
+        if (hasFlag(flags, "case-sensitive")) entryPatch.caseSensitive = "true";
+        if (hasFlag(flags, "no-case-sensitive")) entryPatch.caseSensitive = "false";
+        if (hasFlag(flags, "use-regex")) entryPatch.useRegex = "true";
+        if (hasFlag(flags, "no-use-regex")) entryPatch.useRegex = "false";
+        const updateSelectiveLogic = flagString(flags, "selective-logic");
+        if (updateSelectiveLogic !== undefined) {
+          const normalizedLogic = normalizeSelectiveLogicValue(updateSelectiveLogic);
+          if (!normalizedLogic) throw new Error("--selective-logic must be one of: and, and_all, or, not, not_all");
+          entryPatch.selectiveLogic = normalizedLogic;
+        }
+        const updateSecondaryKeysRaw = flagString(flags, "secondary-keys");
+        if (updateSecondaryKeysRaw !== undefined) {
+          entryPatch.secondaryKeys = updateSecondaryKeysRaw
+            ? updateSecondaryKeysRaw.split(",").map((k) => k.trim()).filter(Boolean)
+            : [];
+        }
         const patchFolderId = flagString(flags, "folder-id");
         if (patchFolderId !== undefined) {
           if (!patchFolderId || patchFolderId === "none") {
@@ -4197,7 +5287,7 @@ export class MariDbService {
         }
         if (Object.keys(entryPatch).length <= 1) {
           throw new Error(
-            "Provide at least one field to update (--name, --content, --keys, --description, --tag, --outlet-name, --enable, --disable, --constant, --no-constant, --order, --folder-id)",
+            "Provide at least one field to update (--name, --content, --keys, --secondary-keys, --description, --tag, --outlet-name, --enable, --disable, --constant, --no-constant, --selective, --no-selective, --selective-logic, --match-whole-words, --no-match-whole-words, --case-sensitive, --no-case-sensitive, --use-regex, --no-use-regex, --order, --folder-id)",
           );
         }
         const updateEntryRequest: ParsedMutationRequest = {
@@ -4257,7 +5347,8 @@ export class MariDbService {
         const links = (await this.rawRows("lorebook_character_links")).filter(
           (row) => row.lorebookId === lorebookId && row.characterId === characterId,
         );
-        if (links.length === 0) throw new Error(`No link found between lorebook ${lorebookId} and character ${characterId}`);
+        if (links.length === 0)
+          throw new Error(`No link found between lorebook ${lorebookId} and character ${characterId}`);
         const request: ParsedMutationRequest = {
           kind: "delete",
           table: "lorebook_character_links",
@@ -4286,6 +5377,124 @@ export class MariDbService {
       default:
         return { ok: false, mode: "read", command: context.command, error: this.lorebooksHelpText() };
     }
+  }
+
+  // #4812: `mari presets` CLI parity — a thin flag-parser that delegates to executePresetAction, so
+  // the granular section/group/choice-block edits are available from the shell too.
+  private async executePresetsCommand(
+    args: string[],
+    context: { command: string; sessionId: string; cwd?: string },
+  ): Promise<MariDbCommandResult> {
+    const sub = args[0];
+    const parsed = parseArgs(args.slice(1));
+    const flags = parsed.flags;
+    const apply = hasFlag(flags, "apply");
+    const reason = flagString(flags, "reason") ?? null;
+    if (!sub || sub === "help" || sub === "--help" || sub === "-h" || hasFlag(flags, "help")) {
+      return { ok: true, mode: "read", command: context.command, output: this.presetsHelpText() };
+    }
+    const run = (action: string, extra: Row) => this.executePresetAction(action, extra, context);
+    const need = (index: number, usage: string) => {
+      const value = parsed.positionals[index];
+      if (!value) throw new Error(usage);
+      return value;
+    };
+    switch (sub) {
+      case "list":
+        return run("list", { limit: flagString(flags, "limit"), search: flagString(flags, "search") });
+      case "get":
+        return run("get", { id: need(0, "Usage: mari presets get <preset-id>") });
+      case "sections":
+        return run("sections", {
+          presetId: need(0, "Usage: mari presets sections <preset-id> [--section-id <id>]"),
+          sectionId: flagString(flags, "section-id"),
+        });
+      case "get-section":
+        return run("getsection", { sectionId: need(0, "Usage: mari presets get-section <section-id>") });
+      case "groups":
+        return run("groups", { presetId: need(0, "Usage: mari presets groups <preset-id>") });
+      case "get-group":
+        return run("getgroup", { groupId: need(0, "Usage: mari presets get-group <group-id>") });
+      case "choice-blocks":
+        return run("choiceblocks", { presetId: need(0, "Usage: mari presets choice-blocks <preset-id>") });
+      case "get-choice-block":
+        return run("getchoiceblock", { choiceBlockId: need(0, "Usage: mari presets get-choice-block <choice-block-id>") });
+      case "add-section":
+        return run("addsection", {
+          presetId: need(0, "Usage: mari presets add-section <preset-id> --name <name> [--content <text>] [--role <system|user|assistant>] [--group-id <id>] [--apply]"),
+          data: presetDataFromFlags(flags),
+          apply,
+          reason,
+        });
+      case "update-section":
+        return run("updatesection", {
+          sectionId: need(0, "Usage: mari presets update-section <section-id> [--content <text>] [--name <name>] [--enable|--disable] [--group-id <id>] [--injection-order <n>] [--apply]"),
+          data: presetDataFromFlags(flags),
+          apply,
+          reason,
+        });
+      case "delete-section":
+        return run("deletesection", { sectionId: need(0, "Usage: mari presets delete-section <section-id> [--apply]"), apply, reason });
+      case "add-group":
+        return run("addgroup", {
+          presetId: need(0, "Usage: mari presets add-group <preset-id> --name <name> [--parent-group-id <id>] [--apply]"),
+          data: presetDataFromFlags(flags),
+          apply,
+          reason,
+        });
+      case "update-group":
+        return run("updategroup", {
+          groupId: need(0, "Usage: mari presets update-group <group-id> [--name <name>] [--enable|--disable] [--order <n>] [--parent-group-id <id>] [--apply]"),
+          data: presetDataFromFlags(flags),
+          apply,
+          reason,
+        });
+      case "delete-group":
+        return run("deletegroup", { groupId: need(0, "Usage: mari presets delete-group <group-id> [--apply]"), apply, reason });
+      case "add-choice-block":
+        return run("addchoiceblock", {
+          presetId: need(0, "Usage: mari presets add-choice-block <preset-id> --variable-name <name> --question <text> --options <a,b,c> [--multi-select] [--apply]"),
+          data: presetDataFromFlags(flags),
+          apply,
+          reason,
+        });
+      case "update-choice-block":
+        return run("updatechoiceblock", {
+          choiceBlockId: need(0, "Usage: mari presets update-choice-block <choice-block-id> [--question <text>] [--options <a,b,c>] [--variable-name <name>] [--multi-select] [--apply]"),
+          data: presetDataFromFlags(flags),
+          apply,
+          reason,
+        });
+      case "delete-choice-block":
+        return run("deletechoiceblock", { choiceBlockId: need(0, "Usage: mari presets delete-choice-block <choice-block-id> [--apply]"), apply, reason });
+      case "create": {
+        const json = await resolveJsonInput(flags, context.cwd);
+        if (!json)
+          throw new Error('Usage: mari presets create (--json \'{"name":"...","sections":[...]}\' | --json-file <path>) [--apply]');
+        return run("create", { data: parseRequiredJsonObjectInput(json, "preset json"), apply, reason });
+      }
+      case "update": {
+        const id = need(0, "Usage: mari presets update <preset-id> (--json '<partial-json>' | --json-file <path>) [--apply]");
+        const json = await resolveJsonInput(flags, context.cwd);
+        if (!json)
+          throw new Error("Usage: mari presets update <preset-id> (--json '<partial-json>' | --json-file <path>) [--apply]");
+        return run("update", { id, data: parseRequiredJsonObjectInput(json, "preset json"), apply, reason });
+      }
+      default:
+        return { ok: false, mode: "read", command: context.command, error: `Unknown presets command "${sub}".\n${this.presetsHelpText()}` };
+    }
+  }
+
+  private presetsHelpText() {
+    return [
+      "Usage: mari presets <command>",
+      "Reads:    list [--search <q>] [--limit <n>] | get <preset-id> | sections <preset-id> [--section-id <id>] | get-section <section-id> | groups <preset-id> | get-group <group-id> | choice-blocks <preset-id> | get-choice-block <id>",
+      "Sections: add-section <preset-id> --name <n> [--content <t>] [--role <system|user|assistant>] [--group-id <id>] | update-section <section-id> [--content <t>] [--name <n>] [--enable|--disable] [--injection-order <n>] | delete-section <section-id>",
+      "Groups:   add-group <preset-id> --name <n> [--parent-group-id <id>] | update-group <group-id> [--name <n>] [--enable|--disable] [--order <n>] | delete-group <group-id>",
+      "Choices:  add-choice-block <preset-id> --variable-name <n> --question <t> --options <a,b,c> [--multi-select] | update-choice-block <id> [--question <t>] [--options <a,b,c>] | delete-choice-block <id>",
+      "Whole:    create --json '<preset-json>' | update <preset-id> --json '<partial-json>'",
+      "Writes need --apply to commit (otherwise a dry-run preview); add [--reason <text>]. Edits show an in-chat Keep/Restore review card.",
+    ].join("\n");
   }
 
   private async executeChatsCommand(
@@ -4320,7 +5529,12 @@ export class MariDbService {
         const row = await this.getRawById(getMeta("chats"), id);
         if (!row) return { ok: false, mode: "read", command: context.command, output: null };
         const messageCount = (await this.rawRows("messages")).filter((m) => m.chatId === id).length;
-        return { ok: true, mode: "read", command: context.command, output: { ...parseRow("chats", row), messageCount } };
+        return {
+          ok: true,
+          mode: "read",
+          command: context.command,
+          output: { ...parseRow("chats", row), messageCount },
+        };
       }
       case "messages": {
         const chatId = parsed.positionals[0];
@@ -4345,8 +5559,7 @@ export class MariDbService {
         const numberedMessages = messages.map((message, index) => ({ message, postNumber: index + 1 }));
         let selectedMessages: typeof numberedMessages;
         if (last !== null || afterPost !== null) {
-          const scopedMessages =
-            last !== null ? numberedMessages.slice(-last) : numberedMessages.slice(afterPost ?? 0);
+          const scopedMessages = last !== null ? numberedMessages.slice(-last) : numberedMessages.slice(afterPost ?? 0);
           selectedMessages = scopedMessages.slice(offset, limit !== null ? offset + limit : undefined);
         } else if (tail) {
           const offsetMessages =
@@ -4381,7 +5594,10 @@ export class MariDbService {
     }
   }
 
-  private async executeThemeCommand(args: string[], context: { command: string; sessionId: string; cwd?: string }): Promise<MariDbCommandResult> {
+  private async executeThemeCommand(
+    args: string[],
+    context: { command: string; sessionId: string; cwd?: string },
+  ): Promise<MariDbCommandResult> {
     const sub = args[0];
     const rest = args.slice(1);
     const parsed = parseArgs(rest);
@@ -4397,10 +5613,16 @@ export class MariDbService {
         const rows = (await this.rawRows(THEME_TABLE))
           .filter((row) => !activeOnly || row.isActive === THEME_ACTIVE_TRUE)
           .sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
-        return { ok: true, mode: "read", command: context.command, output: rows.slice(0, limit).map(summarizeThemeRow) };
+        return {
+          ok: true,
+          mode: "read",
+          command: context.command,
+          output: rows.slice(0, limit).map(summarizeThemeRow),
+        };
       }
       case "active": {
-        const row = (await this.rawRows(THEME_TABLE)).find((candidate) => candidate.isActive === THEME_ACTIVE_TRUE) ?? null;
+        const row =
+          (await this.rawRows(THEME_TABLE)).find((candidate) => candidate.isActive === THEME_ACTIVE_TRUE) ?? null;
         return { ok: true, mode: "read", command: context.command, output: row ? parseThemeRow(row) : null };
       }
       case "get": {
@@ -4411,7 +5633,10 @@ export class MariDbService {
       }
       case "create": {
         const name = flagString(flags, "name")?.trim();
-        if (!name) throw new Error("Usage: mari themes create --name <name> (--css <css> | --css-file <path>) [--activate] [--apply]");
+        if (!name)
+          throw new Error(
+            "Usage: mari themes create --name <name> (--css <css> | --css-file <path>) [--activate] [--apply]",
+          );
         const css = await parseCssInput(flags, context.cwd);
         const request: ParsedMutationRequest = {
           kind: "theme-create",
@@ -4430,7 +5655,8 @@ export class MariDbService {
       }
       case "update": {
         const id = parsed.positionals[0];
-        if (!id) throw new Error("Usage: mari themes update <id> [--name <name>] [--css <css> | --css-file <path>] [--apply]");
+        if (!id)
+          throw new Error("Usage: mari themes update <id> [--name <name>] [--css <css> | --css-file <path>] [--apply]");
         const hasCssInput = flags.has("css") || flags.has("css-file") || flags.has("file");
         const name = flagString(flags, "name")?.trim();
         const css = hasCssInput ? await parseCssInput(flags, context.cwd) : undefined;
@@ -4470,7 +5696,10 @@ export class MariDbService {
     }
   }
 
-  private async executeDbCommand(args: string[], context: { command: string; sessionId: string; cwd?: string }): Promise<MariDbCommandResult> {
+  private async executeDbCommand(
+    args: string[],
+    context: { command: string; sessionId: string; cwd?: string },
+  ): Promise<MariDbCommandResult> {
     const sub = args[0];
     const rest = args.slice(1);
     const parsed = parseArgs(rest);
@@ -4479,7 +5708,12 @@ export class MariDbService {
     }
     switch (sub) {
       case "status":
-        return { ok: true, mode: "read", command: context.command, output: { status: "ok", dataDir: getFileStorageDir(), tables: FILE_BACKED_TABLES.length } };
+        return {
+          ok: true,
+          mode: "read",
+          command: context.command,
+          output: { status: "ok", dataDir: getFileStorageDir(), tables: FILE_BACKED_TABLES.length },
+        };
       case "tables":
         return { ok: true, mode: "read", command: context.command, output: [...FILE_BACKED_TABLES] };
       case "schema": {
@@ -4524,7 +5758,13 @@ export class MariDbService {
         return this.searchRows(parsed.positionals[0], parsed.positionals[1], context.command, parsed.flags);
       case "validate": {
         const result = await this.validate(flagString(parsed.flags, "table") ?? null);
-        return { ok: result.status === "passed", mode: "read", command: context.command, validation: result, output: result };
+        return {
+          ok: result.status === "passed",
+          mode: "read",
+          command: context.command,
+          validation: result,
+          output: result,
+        };
       }
       case "insert":
       case "patch":
@@ -4539,7 +5779,11 @@ export class MariDbService {
     }
   }
 
-  private async listRows(table: string | undefined, command: string, flags: Map<string, string | boolean>): Promise<MariDbCommandResult> {
+  private async listRows(
+    table: string | undefined,
+    command: string,
+    flags: Map<string, string | boolean>,
+  ): Promise<MariDbCommandResult> {
     if (!table) throw new Error("Usage: mari db list <table>");
     const rows = (await this.rawRows(table)).map((row) => (hasFlag(flags, "parsed") ? parseRow(table, row) : row));
     const limit = normalizeLimit(flagString(flags, "limit"), 50, 1000);
@@ -4547,14 +5791,28 @@ export class MariDbService {
     return { ok: true, mode: "read", command, output: rows.slice(offset, offset + limit) };
   }
 
-  private async getRow(table: string | undefined, id: string | undefined, command: string, flags: Map<string, string | boolean>): Promise<MariDbCommandResult> {
+  private async getRow(
+    table: string | undefined,
+    id: string | undefined,
+    command: string,
+    flags: Map<string, string | boolean>,
+  ): Promise<MariDbCommandResult> {
     if (!table || !id) throw new Error("Usage: mari db get <table> <id>");
     const meta = getMeta(table);
     const row = await this.getRawById(meta, id);
-    return { ok: Boolean(row), mode: "read", command, output: row && hasFlag(flags, "parsed") ? parseRow(table, row) : row };
+    return {
+      ok: Boolean(row),
+      mode: "read",
+      command,
+      output: row && hasFlag(flags, "parsed") ? parseRow(table, row) : row,
+    };
   }
 
-  private async selectRows(table: string | undefined, command: string, flags: Map<string, string | boolean>): Promise<MariDbCommandResult> {
+  private async selectRows(
+    table: string | undefined,
+    command: string,
+    flags: Map<string, string | boolean>,
+  ): Promise<MariDbCommandResult> {
     if (!table) throw new Error("Usage: mari db select <table> --where <expr>");
     const predicate = createWherePredicate(flagString(flags, "where"));
     const rows = (await this.rawRows(table)).map((row) => parseRow(table, row)).filter(predicate);
@@ -4562,7 +5820,12 @@ export class MariDbService {
     return { ok: true, mode: "read", command, output: rows.slice(0, limit) };
   }
 
-  private async searchRows(tableArg: string | undefined, query: string | undefined, command: string, flags: Map<string, string | boolean>): Promise<MariDbCommandResult> {
+  private async searchRows(
+    tableArg: string | undefined,
+    query: string | undefined,
+    command: string,
+    flags: Map<string, string | boolean>,
+  ): Promise<MariDbCommandResult> {
     if (!tableArg || !query) throw new Error("Usage: mari db search <table|all> <query>");
     const needle = query.toLowerCase();
     const tables = tableArg === "all" ? [...FILE_BACKED_TABLES] : [tableArg];
@@ -4579,7 +5842,12 @@ export class MariDbService {
     return { ok: true, mode: "read", command, output: results };
   }
 
-  private async parseMutation(kind: ParsedMutationRequest["kind"], positionals: string[], flags: Map<string, string | boolean>, cwd?: string): Promise<ParsedMutationRequest> {
+  private async parseMutation(
+    kind: ParsedMutationRequest["kind"],
+    positionals: string[],
+    flags: Map<string, string | boolean>,
+    cwd?: string,
+  ): Promise<ParsedMutationRequest> {
     const apply = hasFlag(flags, "apply");
     const cascade = hasFlag(flags, "cascade");
     const reason = flagString(flags, "reason") ?? null;
@@ -4590,12 +5858,18 @@ export class MariDbService {
     }
     if (kind === "patch") {
       const [table, id] = positionals;
-      if (!table || !id) throw new Error("Usage: mari db patch <table> <id> (--json '<partial-row-json>' | --json-file <path>) [--apply]");
+      if (!table || !id)
+        throw new Error(
+          "Usage: mari db patch <table> <id> (--json '<partial-row-json>' | --json-file <path>) [--apply]",
+        );
       return { kind, table, id, patch: await parseJsonInput(flags, cwd), apply, cascade, reason, cwd };
     }
     if (kind === "replace") {
       const [table, id] = positionals;
-      if (!table || !id) throw new Error("Usage: mari db replace <table> <id> (--json '<full-row-json>' | --json-file <path>) [--apply]");
+      if (!table || !id)
+        throw new Error(
+          "Usage: mari db replace <table> <id> (--json '<full-row-json>' | --json-file <path>) [--apply]",
+        );
       return { kind, table, id, row: await parseJsonInput(flags, cwd), apply, cascade, reason, cwd };
     }
     if (kind === "delete") {
@@ -4604,16 +5878,28 @@ export class MariDbService {
       return { kind, table, id: positionals[1], where: flagString(flags, "where"), apply, cascade, reason, cwd };
     }
     const [table, scriptPath] = positionals;
-    if (!table || !scriptPath) throw new Error("Usage: mari db transform <table|all> <script.mjs> [--dry-run] [--apply]");
+    if (!table || !scriptPath)
+      throw new Error("Usage: mari db transform <table|all> <script.mjs> [--dry-run] [--apply]");
     return { kind, table, scriptPath, apply, cascade: true, reason, cwd };
   }
 
-  private async executeMutation(request: ParsedMutationRequest, command: string, sessionId: string): Promise<MariDbCommandResult> {
+  private async executeMutation(
+    request: ParsedMutationRequest,
+    command: string,
+    sessionId: string,
+  ): Promise<MariDbCommandResult> {
     const planTimestamp = now();
     const plan = await this.planMutation(request, command, planTimestamp);
     if (plan.validation.status === "blocked") {
       await this.recordHistory({ plan, command, sessionId, status: "blocked", journalPath: null });
-      return { ok: false, mode: request.apply ? "apply" : "dry-run", command, summary: plan.summary, validation: plan.validation, error: "Blocking validation failed" };
+      return {
+        ok: false,
+        mode: request.apply ? "apply" : "dry-run",
+        command,
+        summary: plan.summary,
+        validation: plan.validation,
+        error: "Blocking validation failed",
+      };
     }
 
     if (!request.apply) {
@@ -4628,38 +5914,10 @@ export class MariDbService {
       };
     }
 
-    if (request.requiresApproval === false) {
-      try {
-        const journalPath = await this.applyPlan(plan);
-        await this.recordHistory({ plan, command, sessionId, status: "approved", journalPath });
-        return {
-          ok: true,
-          mode: "apply",
-          command,
-          summary: plan.summary,
-          validation: plan.validation,
-          approval: { status: "not_required", operationHash: plan.operationHash },
-          journalPath,
-        };
-      } catch (err) {
-        logger.error(err, "[mari-db] approval-free apply failed");
-        await this.recordHistory({ plan, command, sessionId, status: "failed", journalPath: null });
-        return {
-          ok: false,
-          mode: "apply",
-          command,
-          summary: plan.summary,
-          validation: plan.validation,
-          approval: { status: "not_required", operationHash: plan.operationHash },
-          error: err instanceof Error ? err.message : String(err),
-        };
-      }
-    }
-
     try {
       const journalPath = await this.applyPlan(plan);
       const history = await this.recordHistory({ plan, command, sessionId, status: "approved", journalPath });
-      const review = this.createAppliedReview(plan, command, sessionId, journalPath, history.id);
+      const review = await this.createAppliedReview(plan, command, sessionId, journalPath, history.id);
       return {
         ok: true,
         mode: "apply",
@@ -4684,7 +5942,11 @@ export class MariDbService {
     }
   }
 
-  private async planMutation(request: ParsedMutationRequest, command: string, timestamp: string = now()): Promise<Plan> {
+  private async planMutation(
+    request: ParsedMutationRequest,
+    command: string,
+    timestamp: string = now(),
+  ): Promise<Plan> {
     const issues: MariDbValidationIssue[] = [];
     const allocateId = createRequestIdAllocator(request);
     let changes: PlanChange[] = [];
@@ -4696,6 +5958,8 @@ export class MariDbService {
     else if (request.kind === "theme-update") changes = await this.planThemeUpdate(request, timestamp, issues);
     else if (request.kind === "theme-set-active") changes = await this.planThemeSetActive(request, timestamp, issues);
     else if (request.kind === "character-move-folder") changes = await this.planCharacterMoveFolder(request, timestamp);
+    else if (request.kind === "preset-section-delete") changes = await this.planPresetSectionDelete(request, timestamp);
+    else if (request.kind === "preset-group-delete") changes = await this.planPresetGroupDelete(request, timestamp);
     else changes = await this.planTransform(request, timestamp, allocateId);
 
     const personalExtensionChanges = changes.filter((change) => change.table === "installed_extensions");
@@ -4728,15 +5992,38 @@ export class MariDbService {
     const touchedTables = [...new Set(changes.map((change) => change.table))];
     const validation = await this.validateTouchedRows(changes, touchedTables, issues);
     const summary = summaryForChanges(changes);
-    const operationHash = hash({ command, request, changes: changes.map((change) => ({ table: change.table, id: change.id, action: change.action, beforeRaw: change.beforeRaw ?? null, afterRaw: change.afterRaw ?? null })) });
+    const operationHash = hash({
+      command,
+      request,
+      changes: changes.map((change) => ({
+        table: change.table,
+        id: change.id,
+        action: change.action,
+        beforeRaw: change.beforeRaw ?? null,
+        afterRaw: change.afterRaw ?? null,
+      })),
+    });
     return { changes, validation, summary, operationHash, reason: request.reason, request };
   }
 
-  private async planInsert(request: ParsedMutationRequest, timestamp: string, allocateId: () => string): Promise<PlanChange[]> {
+  private async planInsert(
+    request: ParsedMutationRequest,
+    timestamp: string,
+    allocateId: () => string,
+  ): Promise<PlanChange[]> {
     const meta = getMeta(String(request.table));
     const pk = getPrimary(meta);
     const parsed = { ...(request.row ?? {}) };
     if (parsed[pk] == null || parsed[pk] === "") parsed[pk] = allocateId();
+    // #4813: a create must insert a NEW row. If a row with this id already exists, refuse
+    // rather than overwrite it — an insert records beforeRaw:null, so a later Restore would
+    // delete the pre-existing row too (unrecoverable). Callers changing an existing row use update.
+    const insertPk = String(parsed[pk]);
+    if (await this.getRawById(meta, insertPk)) {
+      throw new Error(
+        `A ${meta.name} row with id "${insertPk}" already exists; a create cannot overwrite it. Use an update instead.`,
+      );
+    }
     this.fillTimestamps(meta, parsed, true, timestamp);
     const afterRaw = serializeRow(meta.name, parsed);
     const changes: PlanChange[] = [
@@ -4751,7 +6038,10 @@ export class MariDbService {
         apply: true,
       },
     ];
-    changes.push(...this.planRelatedInserts(request.relatedInserts, timestamp, allocateId));
+    // Seed the collision set with the primary row's id so a related insert cannot re-claim it.
+    changes.push(
+      ...(await this.planRelatedInserts(request.relatedInserts, timestamp, allocateId, new Set([`${meta.name}:${insertPk}`]))),
+    );
     return changes;
   }
 
@@ -4775,24 +6065,44 @@ export class MariDbService {
         apply: true,
       },
     ];
-    changes.push(...this.planRelatedInserts(request.relatedInserts, timestamp, () => newId()));
+    changes.push(...(await this.planRelatedInserts(request.relatedInserts, timestamp, () => newId())));
     return changes;
   }
 
-  private planRelatedInserts(
+  private async planRelatedInserts(
     relatedInserts: ParsedMutationRequest["relatedInserts"],
     timestamp: string,
     allocateId: () => string,
-  ): PlanChange[] {
+    seenIds: Set<string> = new Set(),
+  ): Promise<PlanChange[]> {
     if (!relatedInserts?.length) return [];
-    return relatedInserts.map((insert) => {
+    const changes: PlanChange[] = [];
+    for (const insert of relatedInserts) {
       const meta = getMeta(insert.table);
       const pk = getPrimary(meta);
       const parsed = { ...insert.row };
       if (parsed[pk] == null || parsed[pk] === "") parsed[pk] = allocateId();
+      // #4813: a related insert (a preset's sections / choice-blocks, whose ids can survive from a
+      // caller payload) must also insert a NEW row. Guard it the same way planInsert guards its
+      // primary row, so the whole insert surface is symmetric and a colliding id fails early with a
+      // clear message instead of a late unique-constraint abort on a deceptively clean dry-run.
+      const insertPk = String(parsed[pk]);
+      if (await this.getRawById(meta, insertPk)) {
+        throw new Error(
+          `A ${meta.name} row with id "${insertPk}" already exists; a create cannot overwrite it. Use an update instead.`,
+        );
+      }
+      // The committed-row lookup above never sees ids that only exist inside THIS plan. A duplicate
+      // child id in one payload (or a child re-using the primary row's id) would otherwise pass a
+      // clean dry-run and abort late at apply, so reject it here too.
+      const seenKey = `${meta.name}:${insertPk}`;
+      if (seenIds.has(seenKey)) {
+        throw new Error(`A ${meta.name} row with id "${insertPk}" is used more than once in this create; each row needs a unique id.`);
+      }
+      seenIds.add(seenKey);
       this.fillTimestamps(meta, parsed, true, timestamp);
       const afterRaw = serializeRow(meta.name, parsed);
-      return {
+      changes.push({
         table: meta.name,
         id: String(afterRaw[pk]),
         action: "insert",
@@ -4801,8 +6111,9 @@ export class MariDbService {
         beforeRaw: null,
         afterRaw,
         apply: true,
-      };
-    });
+      });
+    }
+    return changes;
   }
 
   private async planReplace(request: ParsedMutationRequest, timestamp: string): Promise<PlanChange[]> {
@@ -4813,7 +6124,18 @@ export class MariDbService {
     if (meta.byKey.has("createdAt") && !next.createdAt) next.createdAt = existing.createdAt;
     this.fillTimestamps(meta, next, false, timestamp);
     const afterRaw = serializeRow(meta.name, next);
-    return [{ table: meta.name, id: rowId(meta, existing), action: "replace", before: parseRow(meta.name, existing), after: parseRow(meta.name, afterRaw), beforeRaw: existing, afterRaw, apply: true }];
+    return [
+      {
+        table: meta.name,
+        id: rowId(meta, existing),
+        action: "replace",
+        before: parseRow(meta.name, existing),
+        after: parseRow(meta.name, afterRaw),
+        beforeRaw: existing,
+        afterRaw,
+        apply: true,
+      },
+    ];
   }
 
   private async planCharacterMoveFolder(request: ParsedMutationRequest, timestamp: string): Promise<PlanChange[]> {
@@ -4862,6 +6184,127 @@ export class MariDbService {
       .filter((change): change is PlanChange => change !== null);
   }
 
+  // #4812: deleting a section must also prune its id from the parent's sectionOrder (a dangling id
+  // there is harmless but untidy), all in one reversible plan.
+  private async planPresetSectionDelete(request: ParsedMutationRequest, timestamp: string): Promise<PlanChange[]> {
+    const sectionMeta = getMeta("prompt_sections");
+    const sectionId = String(request.id ?? "");
+    const section = await this.getRawById(sectionMeta, sectionId);
+    if (!section) throw new Error(`Prompt section ${sectionId} not found`);
+    const changes: PlanChange[] = [];
+    const presetMeta = getMeta("prompt_presets");
+    const preset = await this.getRawById(presetMeta, String(section.presetId));
+    if (preset) {
+      const parsed = parseRow(presetMeta.name, preset);
+      const currentOrder = parseJsonArrayValue(parsed.sectionOrder).map(String);
+      const nextOrder = currentOrder.filter((id) => id !== sectionId);
+      if (nextOrder.length !== currentOrder.length) {
+        const afterRaw = serializeRow(presetMeta.name, { ...parsed, sectionOrder: nextOrder, updatedAt: timestamp });
+        changes.push({
+          table: presetMeta.name,
+          id: rowId(presetMeta, preset),
+          action: "update",
+          before: parsed,
+          after: parseRow(presetMeta.name, afterRaw),
+          beforeRaw: preset,
+          afterRaw,
+          apply: true,
+        });
+      }
+    }
+    changes.push({
+      table: sectionMeta.name,
+      id: rowId(sectionMeta, section),
+      action: "delete",
+      before: parseRow(sectionMeta.name, section),
+      after: null,
+      beforeRaw: section,
+      afterRaw: null,
+      apply: true,
+    });
+    return changes;
+  }
+
+  // #4812: deleting a group matches prompts.storage.removeGroup — prune it from groupOrder, ORPHAN
+  // its member sections (groupId -> null), un-nest its child groups (parentGroupId -> null), then
+  // delete the group. All in one reversible plan so nothing is left half-detached.
+  private async planPresetGroupDelete(request: ParsedMutationRequest, timestamp: string): Promise<PlanChange[]> {
+    const groupMeta = getMeta("prompt_groups");
+    const groupId = String(request.id ?? "");
+    const group = await this.getRawById(groupMeta, groupId);
+    if (!group) throw new Error(`Prompt group ${groupId} not found`);
+    const presetId = String(group.presetId);
+    const changes: PlanChange[] = [];
+
+    const presetMeta = getMeta("prompt_presets");
+    const preset = await this.getRawById(presetMeta, presetId);
+    if (preset) {
+      const parsed = parseRow(presetMeta.name, preset);
+      const currentOrder = parseJsonArrayValue(parsed.groupOrder).map(String);
+      const nextOrder = currentOrder.filter((id) => id !== groupId);
+      if (nextOrder.length !== currentOrder.length) {
+        const afterRaw = serializeRow(presetMeta.name, { ...parsed, groupOrder: nextOrder, updatedAt: timestamp });
+        changes.push({
+          table: presetMeta.name,
+          id: rowId(presetMeta, preset),
+          action: "update",
+          before: parsed,
+          after: parseRow(presetMeta.name, afterRaw),
+          beforeRaw: preset,
+          afterRaw,
+          apply: true,
+        });
+      }
+    }
+
+    const sectionMeta = getMeta("prompt_sections");
+    for (const section of (await this.rawRows(sectionMeta.name)).filter(
+      (row) => row.presetId === presetId && row.groupId === groupId,
+    )) {
+      const parsed = parseRow(sectionMeta.name, section);
+      const afterRaw = serializeRow(sectionMeta.name, { ...parsed, groupId: null });
+      changes.push({
+        table: sectionMeta.name,
+        id: rowId(sectionMeta, section),
+        action: "update",
+        before: parsed,
+        after: parseRow(sectionMeta.name, afterRaw),
+        beforeRaw: section,
+        afterRaw,
+        apply: true,
+      });
+    }
+
+    for (const child of (await this.rawRows(groupMeta.name)).filter(
+      (row) => row.presetId === presetId && row.parentGroupId === groupId,
+    )) {
+      const parsed = parseRow(groupMeta.name, child);
+      const afterRaw = serializeRow(groupMeta.name, { ...parsed, parentGroupId: null });
+      changes.push({
+        table: groupMeta.name,
+        id: rowId(groupMeta, child),
+        action: "update",
+        before: parsed,
+        after: parseRow(groupMeta.name, afterRaw),
+        beforeRaw: child,
+        afterRaw,
+        apply: true,
+      });
+    }
+
+    changes.push({
+      table: groupMeta.name,
+      id: rowId(groupMeta, group),
+      action: "delete",
+      before: parseRow(groupMeta.name, group),
+      after: null,
+      beforeRaw: group,
+      afterRaw: null,
+      apply: true,
+    });
+    return changes;
+  }
+
   private withCharacterFolderMutationLock<T>(operation: () => Promise<T>): Promise<T> {
     const run = this.characterFolderMutationQueue.then(operation);
     this.characterFolderMutationQueue = run.then(
@@ -4874,7 +6317,9 @@ export class MariDbService {
   private async planDelete(request: ParsedMutationRequest, issues: MariDbValidationIssue[]): Promise<PlanChange[]> {
     const meta = getMeta(String(request.table));
     const rows = await this.rawRows(meta.name);
-    const predicate = request.id ? (row: Row) => String(row[getPrimary(meta)]) === request.id : createWherePredicate(request.where);
+    const predicate = request.id
+      ? (row: Row) => String(row[getPrimary(meta)]) === request.id
+      : createWherePredicate(request.where);
     const selected = rows.filter((row) => predicate(parseRow(meta.name, row)));
     const changes: PlanChange[] = selected.map((row) => ({
       table: meta.name,
@@ -4889,12 +6334,20 @@ export class MariDbService {
     await this.addCascadeDeletes(changes, request.cascade);
     const cascaded = changes.filter((change) => change.cascadeOf);
     if (cascaded.length > 0 && !request.cascade) {
-      issues.push({ level: "error", table: meta.name, message: `Delete would cascade to ${cascaded.length} child row(s). Re-run with --cascade to confirm.` });
+      issues.push({
+        level: "error",
+        table: meta.name,
+        message: `Delete would cascade to ${cascaded.length} child row(s). Re-run with --cascade to confirm.`,
+      });
     }
     return this.dedupeDeletes(changes);
   }
 
-  private async planTransform(request: ParsedMutationRequest, timestamp: string, allocateId: () => string): Promise<PlanChange[]> {
+  private async planTransform(
+    request: ParsedMutationRequest,
+    timestamp: string,
+    allocateId: () => string,
+  ): Promise<PlanChange[]> {
     const cwd = request.cwd ? resolve(request.cwd) : process.cwd();
     const scriptPath = resolve(cwd, String(request.scriptPath));
     const transform = await importTransform(scriptPath);
@@ -4905,7 +6358,10 @@ export class MariDbService {
       getMeta(table);
       const rawRows = await this.rawRows(table);
       allRaw.set(table, rawRows);
-      allParsed.set(table, rawRows.map((row) => parseRow(table, row)));
+      allParsed.set(
+        table,
+        rawRows.map((row) => parseRow(table, row)),
+      );
     }
     const changes: PlanChange[] = [];
     for (const table of tables) {
@@ -4926,7 +6382,16 @@ export class MariDbService {
         const result = await transform(row, ctx);
         if (result === null || result === false || result === undefined) continue;
         if (isRecord(result) && result.delete === true) {
-          changes.push({ table, id: rowId(meta, raw), action: "delete", before: row, after: null, beforeRaw: raw, afterRaw: null, apply: true });
+          changes.push({
+            table,
+            id: rowId(meta, raw),
+            action: "delete",
+            before: row,
+            after: null,
+            beforeRaw: raw,
+            afterRaw: null,
+            apply: true,
+          });
           continue;
         }
         if (isRecord(result) && Object.prototype.hasOwnProperty.call(result, "insert")) {
@@ -4938,18 +6403,39 @@ export class MariDbService {
             if (insertRow[pk] == null || insertRow[pk] === "") insertRow[pk] = allocateId();
             this.fillTimestamps(meta, insertRow, true, timestamp);
             const afterRaw = serializeRow(table, insertRow);
-            changes.push({ table, id: String(afterRaw[pk]), action: "insert", before: null, after: parseRow(table, afterRaw), beforeRaw: null, afterRaw, apply: true });
+            changes.push({
+              table,
+              id: String(afterRaw[pk]),
+              action: "insert",
+              before: null,
+              after: parseRow(table, afterRaw),
+              beforeRaw: null,
+              afterRaw,
+              apply: true,
+            });
           }
           continue;
         }
-        const resultRow = isRecord(result) && Object.prototype.hasOwnProperty.call(result, "update") ? (deepMerge(row, result.update) as Row) : (result as Row);
+        const resultRow =
+          isRecord(result) && Object.prototype.hasOwnProperty.call(result, "update")
+            ? (deepMerge(row, result.update) as Row)
+            : (result as Row);
         if (!isRecord(resultRow)) continue;
         const next = normalizeWriteRow(table, resultRow);
         next[getPrimary(meta)] = raw[getPrimary(meta)];
         this.fillTimestamps(meta, next, false, timestamp);
         const afterRaw = serializeRow(table, next);
         if (stableJson(afterRaw) !== stableJson(raw)) {
-          changes.push({ table, id: rowId(meta, raw), action: "update", before: row, after: parseRow(table, afterRaw), beforeRaw: raw, afterRaw, apply: true });
+          changes.push({
+            table,
+            id: rowId(meta, raw),
+            action: "update",
+            before: row,
+            after: parseRow(table, afterRaw),
+            beforeRaw: raw,
+            afterRaw,
+            apply: true,
+          });
         }
       }
     }
@@ -4957,7 +6443,11 @@ export class MariDbService {
     return this.dedupeDeletes(changes);
   }
 
-  private async planThemeCreate(request: ParsedMutationRequest, timestamp: string, issues: MariDbValidationIssue[]): Promise<PlanChange[]> {
+  private async planThemeCreate(
+    request: ParsedMutationRequest,
+    timestamp: string,
+    issues: MariDbValidationIssue[],
+  ): Promise<PlanChange[]> {
     const meta = getMeta(THEME_TABLE);
     const pk = getPrimary(meta);
     const id = String(request.id ?? newId());
@@ -4971,7 +6461,12 @@ export class MariDbService {
       issues.push({ level: "error", table: THEME_TABLE, id, message: `Theme id ${id} already exists` });
     }
     if (existingRows.some((row) => row.name === name && row.css === css)) {
-      issues.push({ level: "notice", table: THEME_TABLE, id, message: "A theme with the same name and CSS already exists" });
+      issues.push({
+        level: "notice",
+        table: THEME_TABLE,
+        id,
+        message: "A theme with the same name and CSS already exists",
+      });
     }
 
     const changes = request.activate ? this.planThemeActivationChanges(existingRows, id, timestamp) : [];
@@ -4997,7 +6492,11 @@ export class MariDbService {
     return changes;
   }
 
-  private async planThemeUpdate(request: ParsedMutationRequest, timestamp: string, issues: MariDbValidationIssue[]): Promise<PlanChange[]> {
+  private async planThemeUpdate(
+    request: ParsedMutationRequest,
+    timestamp: string,
+    issues: MariDbValidationIssue[],
+  ): Promise<PlanChange[]> {
     const meta = getMeta(THEME_TABLE);
     const id = String(request.id ?? "");
     const existing = await this.requireRawById(meta, id);
@@ -5025,7 +6524,11 @@ export class MariDbService {
     ];
   }
 
-  private async planThemeSetActive(request: ParsedMutationRequest, timestamp: string, issues: MariDbValidationIssue[]): Promise<PlanChange[]> {
+  private async planThemeSetActive(
+    request: ParsedMutationRequest,
+    timestamp: string,
+    issues: MariDbValidationIssue[],
+  ): Promise<PlanChange[]> {
     const targetId = request.id ? String(request.id) : null;
     const rows = await this.rawRows(THEME_TABLE);
     if (targetId && !rows.some((row) => row.id === targetId)) {
@@ -5041,7 +6544,11 @@ export class MariDbService {
         const id = rowId(meta, row);
         const nextActive = targetId && id === targetId ? THEME_ACTIVE_TRUE : THEME_ACTIVE_FALSE;
         if (row.isActive === nextActive) return null;
-        const afterRaw = serializeRow(THEME_TABLE, { ...parseRow(THEME_TABLE, row), isActive: nextActive, updatedAt: timestamp });
+        const afterRaw = serializeRow(THEME_TABLE, {
+          ...parseRow(THEME_TABLE, row),
+          isActive: nextActive,
+          updatedAt: timestamp,
+        });
         return {
           table: THEME_TABLE,
           id,
@@ -5058,7 +6565,8 @@ export class MariDbService {
 
   private addThemeNameIssues(name: string, id: string, issues: MariDbValidationIssue[]) {
     if (!name) issues.push({ level: "error", table: THEME_TABLE, id, message: "Theme name is required" });
-    if (name.length > 200) issues.push({ level: "error", table: THEME_TABLE, id, message: "Theme name must be 200 characters or fewer" });
+    if (name.length > 200)
+      issues.push({ level: "error", table: THEME_TABLE, id, message: "Theme name must be 200 characters or fewer" });
   }
 
   private fillTimestamps(meta: TableMeta, row: Row, isCreate: boolean, stamp: string) {
@@ -5115,7 +6623,11 @@ export class MariDbService {
     return out;
   }
 
-  private async validateTouchedRows(changes: PlanChange[], tables: string[], priorIssues: MariDbValidationIssue[]): Promise<MariDbValidationResult> {
+  private async validateTouchedRows(
+    changes: PlanChange[],
+    tables: string[],
+    priorIssues: MariDbValidationIssue[],
+  ): Promise<MariDbValidationResult> {
     const issues = [...priorIssues];
     for (const change of changes) {
       if (change.action === "delete") continue;
@@ -5128,7 +6640,12 @@ export class MariDbService {
       }
       for (const column of meta.columns) {
         if (column.notNull && (row[column.key] === null || row[column.key] === undefined)) {
-          issues.push({ level: "error", table: change.table, id: change.id, message: `Missing required column ${column.key}` });
+          issues.push({
+            level: "error",
+            table: change.table,
+            id: change.id,
+            message: `Missing required column ${column.key}`,
+          });
         }
       }
       for (const key of JSON_COLUMNS[change.table] ?? []) {
@@ -5138,7 +6655,12 @@ export class MariDbService {
         try {
           JSON.parse(value);
         } catch {
-          issues.push({ level: "error", table: change.table, id: change.id, message: `Column ${key} is not valid JSON` });
+          issues.push({
+            level: "error",
+            table: change.table,
+            id: change.id,
+            message: `Column ${key} is not valid JSON`,
+          });
         }
       }
       addCharacterDataShapeIssues(change.table, row, change.id, issues);
@@ -5158,12 +6680,15 @@ export class MariDbService {
         const ref = change.afterRaw?.[cascade.childKey];
         if (typeof ref !== "string" || !ref) continue;
         const parentInsertedOrUpdated = changes.some(
-          (entry) => entry.table === cascade.parent && entry.action !== "delete" && entry.afterRaw?.[cascade.parentKey] === ref,
+          (entry) =>
+            entry.table === cascade.parent && entry.action !== "delete" && entry.afterRaw?.[cascade.parentKey] === ref,
         );
         const parentDeleted = changes.some(
-          (entry) => entry.table === cascade.parent && entry.action === "delete" && entry.beforeRaw?.[cascade.parentKey] === ref,
+          (entry) =>
+            entry.table === cascade.parent && entry.action === "delete" && entry.beforeRaw?.[cascade.parentKey] === ref,
         );
-        const parentExists = !parentDeleted && (await parentRows(cascade.parent)).some((row) => row[cascade.parentKey] === ref);
+        const parentExists =
+          !parentDeleted && (await parentRows(cascade.parent)).some((row) => row[cascade.parentKey] === ref);
         if (!parentInsertedOrUpdated && !parentExists) {
           issues.push({
             level: "error",
@@ -5185,90 +6710,119 @@ export class MariDbService {
       const issueId = issue.id == null ? null : String(issue.id);
       return !issueId || !touchedRows.has(`${issue.table}:${issueId}`);
     });
-    return validationFromIssues([...issues, ...scopedExistingErrors, ...fullValidation.notices, ...fullValidation.infos]);
+    return validationFromIssues([
+      ...issues,
+      ...scopedExistingErrors,
+      ...fullValidation.notices,
+      ...fullValidation.infos,
+    ]);
   }
 
   private async applyPlan(plan: Plan): Promise<string> {
     const operationId = newId();
     const journalPath = await this.writeJournal(operationId, plan);
-    await this.db.transaction(async (tx) => {
-      const characterStorage = createCharactersStorage(tx as unknown as DB);
-      for (const change of plan.changes) {
-        if (!change.apply) continue;
-        const meta = getMeta(change.table);
-        const pk = getPrimary(meta);
-        if ((change.action === "update" || change.action === "replace") && change.table === "characters") {
-          await characterStorage.createVersionSnapshot(change.id, {
-            source: "professor-mari-workspace",
-            reason: plan.reason ?? "Professor Mari database change",
-          });
+    const homeWidgetChange = singleHomeWidgetCatalogChange(plan);
+    if (homeWidgetChange) {
+      const before = homeWidgetCatalogFromPlanRow(homeWidgetChange.beforeRaw);
+      const after = homeWidgetCatalogFromPlanRow(homeWidgetChange.afterRaw);
+      await replaceHomeWidgetCatalog(this.db, before.revision, after.widgets);
+    } else {
+      await this.db.transaction(async (tx) => {
+        const characterStorage = createCharactersStorage(tx as unknown as DB);
+        for (const change of plan.changes) {
+          if (!change.apply) continue;
+          const meta = getMeta(change.table);
+          const pk = getPrimary(meta);
+          if ((change.action === "update" || change.action === "replace") && change.table === "characters") {
+            await characterStorage.createVersionSnapshot(change.id, {
+              source: "professor-mari-workspace",
+              reason: plan.reason ?? "Professor Mari database change",
+            });
+          }
+          if (change.action === "insert") {
+            await tx.insert(meta.table as any).values(knownColumnPatch(meta, change.afterRaw ?? {}));
+          } else if (change.action === "update" || change.action === "replace") {
+            await tx
+              .update(meta.table as any)
+              .set(knownColumnPatch(meta, change.afterRaw ?? {}))
+              .where(eq(meta.byKey.get(pk)!.column as any, change.id));
+          } else if (change.action === "delete") {
+            await tx.delete(meta.table as any).where(eq(meta.byKey.get(pk)!.column as any, change.id));
+          }
         }
-        if (change.action === "insert") {
-          await tx.insert(meta.table as any).values(knownColumnPatch(meta, change.afterRaw ?? {}));
-        } else if (change.action === "update" || change.action === "replace") {
-          await tx
-            .update(meta.table as any)
-            .set(knownColumnPatch(meta, change.afterRaw ?? {}))
-            .where(eq(meta.byKey.get(pk)!.column as any, change.id));
-        } else if (change.action === "delete") {
-          await tx.delete(meta.table as any).where(eq(meta.byKey.get(pk)!.column as any, change.id));
-        }
-      }
-    });
+      });
+    }
     const validation = await this.validate();
     if (validation.status === "blocked") {
       const touchedRows = new Set(plan.changes.map((change) => `${change.table}:${change.id}`));
-      const touchedErrors = validation.errors.filter((issue) => issue.table && issue.id != null && touchedRows.has(`${issue.table}:${String(issue.id)}`));
+      const touchedErrors = validation.errors.filter(
+        (issue) => issue.table && issue.id != null && touchedRows.has(`${issue.table}:${String(issue.id)}`),
+      );
       if (touchedErrors.length > 0) {
         throw new Error(`Post-apply validation failed: ${touchedErrors.map((issue) => issue.message).join("; ")}`);
       }
-      logger.warn("[mari-db] post-apply validation still reports unrelated errors: %s", validation.errors.map((issue) => issue.message).join("; "));
+      logger.warn(
+        "[mari-db] post-apply validation still reports unrelated errors: %s",
+        validation.errors.map((issue) => issue.message).join("; "),
+      );
     }
     await flushDB();
     return journalPath;
   }
 
   private async restorePlan(plan: Plan): Promise<void> {
-    await this.db.transaction(async (tx) => {
-      const insertedRows = [...plan.changes].reverse().filter((change) => change.action === "insert");
-      for (const change of insertedRows) {
-        const meta = getMeta(change.table);
-        const pk = getPrimary(meta);
-        await tx.delete(meta.table as any).where(eq(meta.byKey.get(pk)!.column as any, change.id));
-      }
+    const homeWidgetChange = singleHomeWidgetCatalogChange(plan);
+    if (homeWidgetChange) {
+      const before = homeWidgetCatalogFromPlanRow(homeWidgetChange.beforeRaw);
+      const after = homeWidgetCatalogFromPlanRow(homeWidgetChange.afterRaw);
+      await replaceHomeWidgetCatalog(this.db, after.revision, before.widgets);
+    } else {
+      await this.db.transaction(async (tx) => {
+        const insertedRows = [...plan.changes].reverse().filter((change) => change.action === "insert");
+        for (const change of insertedRows) {
+          const meta = getMeta(change.table);
+          const pk = getPrimary(meta);
+          await tx.delete(meta.table as any).where(eq(meta.byKey.get(pk)!.column as any, change.id));
+        }
 
-      const updatedRows = plan.changes.filter((change) => change.action === "update" || change.action === "replace");
-      for (const change of updatedRows) {
-        if (!change.beforeRaw) continue;
-        const meta = getMeta(change.table);
-        const pk = getPrimary(meta);
-        await tx
-          .update(meta.table as any)
-          .set(knownColumnPatch(meta, change.beforeRaw))
-          .where(eq(meta.byKey.get(pk)!.column as any, change.id));
-      }
+        const updatedRows = plan.changes.filter((change) => change.action === "update" || change.action === "replace");
+        for (const change of updatedRows) {
+          if (!change.beforeRaw) continue;
+          const meta = getMeta(change.table);
+          const pk = getPrimary(meta);
+          await tx
+            .update(meta.table as any)
+            .set(knownColumnPatch(meta, change.beforeRaw))
+            .where(eq(meta.byKey.get(pk)!.column as any, change.id));
+        }
 
-      const deletedRows = plan.changes.filter((change) => change.action === "delete");
-      for (const change of [...deletedRows].reverse()) {
-        const meta = getMeta(change.table);
-        const pk = getPrimary(meta);
-        await tx.delete(meta.table as any).where(eq(meta.byKey.get(pk)!.column as any, change.id));
-      }
-      for (const change of deletedRows) {
-        if (!change.beforeRaw) continue;
-        const meta = getMeta(change.table);
-        await tx.insert(meta.table as any).values(knownColumnPatch(meta, change.beforeRaw));
-      }
-    });
+        const deletedRows = plan.changes.filter((change) => change.action === "delete");
+        for (const change of [...deletedRows].reverse()) {
+          const meta = getMeta(change.table);
+          const pk = getPrimary(meta);
+          await tx.delete(meta.table as any).where(eq(meta.byKey.get(pk)!.column as any, change.id));
+        }
+        for (const change of deletedRows) {
+          if (!change.beforeRaw) continue;
+          const meta = getMeta(change.table);
+          await tx.insert(meta.table as any).values(knownColumnPatch(meta, change.beforeRaw));
+        }
+      });
+    }
 
     const validation = await this.validate();
     if (validation.status === "blocked") {
       const touchedRows = new Set(plan.changes.map((change) => `${change.table}:${change.id}`));
-      const touchedErrors = validation.errors.filter((issue) => issue.table && issue.id != null && touchedRows.has(`${issue.table}:${String(issue.id)}`));
+      const touchedErrors = validation.errors.filter(
+        (issue) => issue.table && issue.id != null && touchedRows.has(`${issue.table}:${String(issue.id)}`),
+      );
       if (touchedErrors.length > 0) {
         throw new Error(`Post-restore validation failed: ${touchedErrors.map((issue) => issue.message).join("; ")}`);
       }
-      logger.warn("[mari-db] post-restore validation still reports unrelated errors: %s", validation.errors.map((issue) => issue.message).join("; "));
+      logger.warn(
+        "[mari-db] post-restore validation still reports unrelated errors: %s",
+        validation.errors.map((issue) => issue.message).join("; "),
+      );
     }
     await flushDB();
   }
@@ -5294,20 +6848,19 @@ export class MariDbService {
     return path;
   }
 
-  private createAppliedReview(
+  private async createAppliedReview(
     plan: Plan,
     command: string,
     sessionId: string,
     journalPath: string | null,
     historyId: string | null,
-  ): MariDbPendingApproval {
+  ): Promise<MariDbPendingApproval> {
+    this.ensurePendingHydrated();
     const id = newId();
     const requestedAt = now();
-    const expiresAt = new Date(Date.now() + APPROVAL_TIMEOUT_MS).toISOString();
-    const timer = setTimeout(() => {
-      this.pending.delete(id);
-    }, APPROVAL_TIMEOUT_MS);
-    timer.unref?.();
+    // #4813: the undo card is persisted (writePendingSidecar) and no longer self-evicts on a
+    // timer, so it survives a restart. expiresAt is the retention deadline used when pruning.
+    const expiresAt = new Date(Date.now() + PENDING_REVIEW_RETENTION_MS).toISOString();
     const record: PendingRecord = {
       kind: "applied_review",
       id,
@@ -5325,18 +6878,157 @@ export class MariDbService {
       plan,
       historyId,
       journalPath,
-      timer,
     };
     this.pending.set(id, record);
+    await this.writePendingSidecar(record);
+    await this.enforcePendingRetention();
     return this.pendingView(record);
   }
 
   private pendingView(record: PendingRecord): MariDbPendingApproval {
-    const { plan: _plan, historyId: _historyId, journalPath: _journalPath, timer: _timer, ...view } = record;
+    const { plan: _plan, historyId: _historyId, journalPath: _journalPath, ...view } = record;
     return view;
   }
 
-  private async recordHistory(args: { plan: Plan; command: string; sessionId: string; status: MariDbHistoryEntry["status"]; journalPath: string | null }) {
+  private pendingDir() {
+    return join(this.journalDir(), "pending");
+  }
+
+  private pendingSidecarPath(id: string) {
+    return join(this.pendingDir(), `${id}.json`);
+  }
+
+  private async writePendingSidecar(record: PendingRecord): Promise<void> {
+    const finalPath = this.pendingSidecarPath(record.id);
+    // Write to a temp file then atomically rename into place, so a crash mid-write can't leave a
+    // partial .json that hydration would discard (losing the undo while the change stays applied).
+    // The .tmp suffix keeps an interrupted write out of the .json hydration set.
+    const tempPath = `${finalPath}.${process.pid}.tmp`;
+    try {
+      await mkdir(this.pendingDir(), { recursive: true });
+      await writeFile(tempPath, JSON.stringify(record), "utf8");
+      renameSync(tempPath, finalPath);
+    } catch (err) {
+      this.safeRm(tempPath);
+      // The change is applied and held in memory even if the sidecar write fails; only the
+      // cross-restart durability is lost. Warn rather than fail the user's action.
+      logger.warn(err, "[mari-db] failed to persist pending review %s", record.id);
+    }
+  }
+
+  // rmSync({ force: true }) only swallows ENOENT; on Windows a locked or AV-held file still
+  // throws EPERM/EBUSY/EISDIR. Sidecar cleanup is always best-effort, so never let it propagate.
+  private safeRm(path: string): void {
+    try {
+      rmSync(path, { force: true });
+    } catch (err) {
+      logger.warn(err, "[mari-db] failed to remove pending review file %s", path);
+    }
+  }
+
+  private async deletePendingSidecar(id: string): Promise<void> {
+    const finalPath = this.pendingSidecarPath(id);
+    // Atomically retire the sidecar out of the .json hydration set FIRST. If the subsequent unlink
+    // fails (Windows lock / AV), the retired file is still never rehydrated, so a resolved or
+    // evicted review can't come back and be Restored again over newer data.
+    const retiredPath = `${finalPath}.done`;
+    try {
+      renameSync(finalPath, retiredPath);
+    } catch {
+      this.safeRm(finalPath);
+      return;
+    }
+    this.safeRm(retiredPath);
+  }
+
+  // Load persisted pending reviews on first access so a Keep/Restore card survives a restart.
+  // Prune anything past its retention deadline and keep only the newest PENDING_REVIEW_LIMIT.
+  // This runs synchronously on the getPendingApprovals hot path, so it must NEVER throw: one
+  // unreadable or undeletable file must not 500 the approvals endpoint or wipe the loaded set.
+  private ensurePendingHydrated(): void {
+    if (this.pendingHydrated) return;
+    this.pendingHydrated = true;
+    try {
+      const dir = this.pendingDir();
+      if (!existsSync(dir)) return;
+      const entries = readdirSync(dir);
+      const nowMs = Date.now();
+      const loaded: PendingRecord[] = [];
+      const stale: string[] = [];
+      // Sweep leftover temp/retired files from an interrupted write or delete; they are never
+      // rehydrated (only *.json is) but shouldn't accumulate.
+      for (const file of entries) {
+        if (file.endsWith(".tmp") || file.endsWith(".done")) this.safeRm(join(dir, file));
+      }
+      for (const file of entries) {
+        if (!file.endsWith(".json")) continue;
+        const path = join(dir, file);
+        try {
+          const record = JSON.parse(readFileSync(path, "utf8")) as PendingRecord;
+          const expiresMs = Date.parse(record?.expiresAt ?? "");
+          const requestedMs = Date.parse(record?.requestedAt ?? "");
+          // Reject anything that isn't a well-formed, filename-bound, unexpired review with a usable
+          // plan — prune its sidecar rather than hydrate a record that would break a later action or,
+          // via a forged id, escape journal/pending. record.id MUST match the file it lives in, and
+          // both timestamps must parse (an unparseable requestedAt would also poison the sort).
+          if (
+            !record?.id ||
+            record.id !== basename(file, ".json") ||
+            !Array.isArray(record?.plan?.changes) ||
+            !Number.isFinite(expiresMs) ||
+            !Number.isFinite(requestedMs) ||
+            expiresMs <= nowMs
+          ) {
+            stale.push(path);
+            continue;
+          }
+          if (!this.pending.has(record.id)) loaded.push(record);
+        } catch (err) {
+          logger.warn(err, "[mari-db] discarding unreadable pending review %s", file);
+          stale.push(path);
+        }
+      }
+      // Oldest first so the in-memory Map stays insertion-ordered oldest->newest; keep the newest
+      // PENDING_REVIEW_LIMIT. Populate the Map BEFORE pruning so a failed delete can't cost the
+      // reviews we just loaded.
+      loaded.sort((a, b) => Date.parse(a.requestedAt) - Date.parse(b.requestedAt));
+      const dropCount = Math.max(0, loaded.length - PENDING_REVIEW_LIMIT);
+      loaded.slice(dropCount).forEach((record) => this.pending.set(record.id, record));
+      for (const path of stale) this.safeRm(path);
+      loaded.slice(0, dropCount).forEach((record) => this.safeRm(this.pendingSidecarPath(record.id)));
+      if (dropCount > 0) {
+        logger.info("[mari-db] dropped %d persisted pending review(s) over the %d cap on load", dropCount, PENDING_REVIEW_LIMIT);
+      }
+    } catch (err) {
+      logger.warn(err, "[mari-db] failed to hydrate persisted pending reviews");
+    }
+  }
+
+  // After adding a review, keep the in-memory set and its sidecars within the retention cap.
+  // The oldest reviews past the cap lose their undo (their change stays applied).
+  private async enforcePendingRetention(): Promise<void> {
+    if (this.pending.size <= PENDING_REVIEW_LIMIT) return;
+    // this.pending is insertion-ordered (oldest first after hydration + appends), so the leading
+    // entries are the oldest reviews; evicting them never touches the review that was just added.
+    const evictable = Array.from(this.pending.values()).slice(0, this.pending.size - PENDING_REVIEW_LIMIT);
+    for (const record of evictable) {
+      this.pending.delete(record.id);
+      await this.deletePendingSidecar(record.id);
+      logger.info(
+        "[mari-db] dropped oldest pending review %s to stay within the %d-review cap; its change stays applied",
+        record.id,
+        PENDING_REVIEW_LIMIT,
+      );
+    }
+  }
+
+  private async recordHistory(args: {
+    plan: Plan;
+    command: string;
+    sessionId: string;
+    status: MariDbHistoryEntry["status"];
+    journalPath: string | null;
+  }) {
     const entry: MariDbHistoryEntry = {
       id: newId(),
       sessionId: args.sessionId,
@@ -5371,7 +7063,10 @@ export class MariDbService {
 
   private async getRawById(meta: TableMeta, id: string): Promise<Row | null> {
     const pk = getPrimary(meta);
-    const rows = (await this.db.select().from(meta.table as any).where(eq(meta.byKey.get(pk)!.column as any, id))) as Row[];
+    const rows = (await this.db
+      .select()
+      .from(meta.table as any)
+      .where(eq(meta.byKey.get(pk)!.column as any, id))) as Row[];
     return rows[0] ? { ...rows[0] } : null;
   }
 
@@ -5399,6 +7094,7 @@ export class MariDbService {
       "Creative data:       mari characters list|get|search|create|update|delete",
       "Creative data:       mari personas list|active|get|search|create|update|delete",
       "Creative data:       mari lorebooks list|get|get-entry <entry-id>|entries <lorebook-id>|search|create|update <lorebook-id>|add-entry <lorebook-id>|update-entry <entry-id>|delete-entry <entry-id>|link-character|unlink-character|delete",
+      "Creative data:       mari presets list|get|sections <preset-id>|get-section <id>|groups|get-group|choice-blocks|get-choice-block|add-section|update-section|delete-section|add-group|update-group|delete-group|add-choice-block|update-choice-block|delete-choice-block|create|update",
       "Chats (read-only):   mari chats list|get|messages|search",
       "Fandom/Wikipedia:    mari wiki find-wikis|search-all|search|get-page|sections|category|site-info",
       "Discovery:           mari <group> --help or mari <group> <command> --help",
@@ -5444,8 +7140,8 @@ export class MariDbService {
       "Read:  search <query> [--limit <n>]",
       "Write: create --name <name> [--description <text>] [--category <text>] [--global] [--apply] [--reason <text>]",
       "Write: update <id> [--name <name>] [--description <text>] [--category <text>] [--tags <t1,t2,...>] [--global] [--enable] [--disable] [--apply] [--reason <text>]",
-      "Write: add-entry <lorebook-id> --name <name> [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--outlet-name <name>] [--folder-id <folder-id>] [--apply] [--reason <text>]",
-      "Write: update-entry <entry-id> [--name <name>] [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--outlet-name <name>] [--enable] [--disable] [--constant] [--no-constant] [--order <n>] [--folder-id <folder-id>|none] [--apply] [--reason <text>]",
+      "Write: add-entry <lorebook-id> --name <name> [--content <text>] [--keys <k1,k2,...>] [--secondary-keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--selective] [--selective-logic <and|and_all|or|not|not_all>] [--match-whole-words] [--case-sensitive] [--use-regex] [--outlet-name <name>] [--folder-id <folder-id>] [--apply] [--reason <text>]",
+      "Write: update-entry <entry-id> [--name <name>] [--content <text>] [--keys <k1,k2,...>] [--secondary-keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--outlet-name <name>] [--enable] [--disable] [--constant] [--no-constant] [--selective] [--no-selective] [--selective-logic <and|and_all|or|not|not_all>] [--match-whole-words] [--no-match-whole-words] [--case-sensitive] [--no-case-sensitive] [--use-regex] [--no-use-regex] [--order <n>] [--folder-id <folder-id>|none] [--apply] [--reason <text>]",
       "Write: delete-entry <entry-id> [--apply] [--reason <text>]",
       "Write: link-character <lorebook-id> --character <character-id> [--apply] [--reason <text>]",
       "Write: unlink-character <lorebook-id> --character <character-id> [--apply] [--reason <text>]",
@@ -5481,7 +7177,7 @@ export class MariDbService {
       "  mari code status",
       "  mari code diff --patch",
       "  mari code check",
-      "  mari code reload request --kind server --reason \"Server route changed\" --resume",
+      '  mari code reload request --kind server --reason "Server route changed" --resume',
     ].join("\n");
   }
 

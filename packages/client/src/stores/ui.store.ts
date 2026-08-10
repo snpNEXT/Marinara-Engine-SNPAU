@@ -14,11 +14,12 @@ import {
   type QuoteFormat,
   type ScenePromptPreferences,
 } from "@marinara-engine/shared";
-import type { NoodleNavigationState } from "../components/noodle/noodle-navigation.types";
+import type { LegacyNoodleNavigationState as NoodleNavigationState } from "../lib/legacy-noodle-navigation";
 import { isCssGradient, RAINBOW_GRADIENT_PRESET } from "../lib/css-colors";
 import { announceChatFloatingUiDismiss } from "../lib/chat-floating-ui-events";
 import { detectConversationTimeZone, normalizeConversationTimeZone } from "../lib/conversation-time-zone";
 import { BASIC_PANEL_SORT_OPTIONS, normalizeBasicPanelSort, type BasicPanelSort } from "../lib/panel-sort";
+import { resetProfessorMariNavigator } from "../lib/professor-mari-navigation";
 import { DEFAULT_APP_LANGUAGE, type AppLanguage } from "../localization/locale-types";
 
 export type Panel =
@@ -36,6 +37,7 @@ export type ChatModeShortcut = "conversation" | "roleplay" | "game";
 export const CHARACTER_LIBRARY_SORT_OPTIONS = ["name-asc", "name-desc", "newest", "oldest", "favorites"] as const;
 export type CharacterLibrarySort = (typeof CHARACTER_LIBRARY_SORT_OPTIONS)[number];
 export type CardLibraryKind = "characters" | "personas";
+export const MOBILE_SHELL_MEDIA_QUERY = "(max-width: 767px), (max-width: 1366px) and (any-pointer: coarse)";
 export const CHARACTER_PANEL_FAVORITE_FILTER_OPTIONS = ["all", "favorites", "non-favorites"] as const;
 export type CharacterPanelFavoriteFilter = (typeof CHARACTER_PANEL_FAVORITE_FILTER_OPTIONS)[number];
 export const LOREBOOK_PANEL_CATEGORY_OPTIONS = [
@@ -191,8 +193,7 @@ function shouldFlushUiStorageImmediately(previousValue: string | null, nextValue
   const previous = readImmediateUiStorageSnapshot(previousValue);
   const next = readImmediateUiStorageSnapshot(nextValue);
   return (
-    previous.customCursorEnabled !== next.customCursorEnabled ||
-    previous.echoChamberSizes !== next.echoChamberSizes
+    previous.customCursorEnabled !== next.customCursorEnabled || previous.echoChamberSizes !== next.echoChamberSizes
   );
 }
 export const TRACKER_PANEL_WIDTH_DEFAULT = TRACKER_PANEL_SIZE_PROFILE_WIDTHS.standard;
@@ -315,7 +316,7 @@ function normalizeScrollTop(value: unknown) {
 }
 
 function isMobileShellViewport() {
-  return typeof window !== "undefined" && window.innerWidth < 768;
+  return typeof window !== "undefined" && window.matchMedia(MOBILE_SHELL_MEDIA_QUERY).matches;
 }
 
 function dismissChatFloatingUiForMobilePanel(open: boolean) {
@@ -528,7 +529,7 @@ interface UIState {
   trackerPanelSectionOrder: TrackerPanelSectionOrder;
   settingsTab: string;
   /** Transient control id that the Settings panel should reveal and focus. */
-  settingsTargetControlId: typeof QUICK_REPLIES_SETTINGS_CONTROL_ID | null;
+  settingsTargetControlId: string | null;
   modal: { type: string; props?: Record<string, unknown> } | null;
   theme: "dark" | "light";
   appBackgroundColor: string;
@@ -725,6 +726,8 @@ interface UIState {
   chibiProfessorMariEnabled: boolean;
   /** When true, Professor Mari shows generated suggestion chips and guided-plan options. */
   professorMariSuggestionsEnabled: boolean;
+  /** When true, Professor Mari's deterministic Home navigator is available. */
+  professorMariNavigationEnabled: boolean;
   /** When true, achievements appear on Home and announce unlocks. Backend tracking stays silent either way. */
   achievementsEnabled: boolean;
   /** When true, show the global Music Player surface. */
@@ -903,7 +906,7 @@ interface UIState {
   closeRightPanel: () => void;
   toggleRightPanel: (panel: Panel) => void;
   setSettingsTab: (tab: string) => void;
-  setSettingsTargetControlId: (controlId: typeof QUICK_REPLIES_SETTINGS_CONTROL_ID | null) => void;
+  setSettingsTargetControlId: (controlId: string | null) => void;
   openModal: (type: string, props?: Record<string, unknown>) => void;
   closeModal: () => void;
   setTheme: (theme: "dark" | "light") => void;
@@ -1032,6 +1035,7 @@ interface UIState {
   setTTSLineVolume: (v: number) => void;
   setChibiProfessorMariEnabled: (v: boolean) => void;
   setProfessorMariSuggestionsEnabled: (v: boolean) => void;
+  setProfessorMariNavigationEnabled: (v: boolean) => void;
   setAchievementsEnabled: (v: boolean) => void;
   setMusicPlayerEnabled: (v: boolean) => void;
   setMusicPlayerSource: (v: MusicPlayerSource) => void;
@@ -1241,6 +1245,7 @@ export function pickSyncedSettings(state: UIState) {
     ttsLineVolume: state.ttsLineVolume,
     chibiProfessorMariEnabled: state.chibiProfessorMariEnabled,
     professorMariSuggestionsEnabled: state.professorMariSuggestionsEnabled,
+    professorMariNavigationEnabled: state.professorMariNavigationEnabled,
     achievementsEnabled: state.achievementsEnabled,
     musicPlayerEnabled: state.musicPlayerEnabled,
     musicPlayerSource: state.musicPlayerSource,
@@ -1441,6 +1446,7 @@ export const useUIStore = create<UIState>()(
       ttsLineVolume: 50,
       chibiProfessorMariEnabled: true,
       professorMariSuggestionsEnabled: true,
+      professorMariNavigationEnabled: true,
       achievementsEnabled: true,
       musicPlayerEnabled: true,
       musicPlayerSource: "youtube" as MusicPlayerSource,
@@ -1579,8 +1585,7 @@ export const useUIStore = create<UIState>()(
       setTrackerPanelUseExpressionSprites: (enabled) => set({ trackerPanelUseExpressionSprites: enabled }),
       setTrackerPanelThoughtBubbleDisplay: (display) =>
         set({ trackerPanelThoughtBubbleDisplay: normalizeTrackerThoughtBubbleDisplay(display) }),
-      setTrackerStatDisplayMode: (display) =>
-        set({ trackerStatDisplayMode: normalizeTrackerStatDisplayMode(display) }),
+      setTrackerStatDisplayMode: (display) => set({ trackerStatDisplayMode: normalizeTrackerStatDisplayMode(display) }),
       setTrackerPanelDockedThoughtsAlwaysVisible: (visible) =>
         set({ trackerPanelDockedThoughtsAlwaysVisible: visible }),
       setTrackerPanelSizeProfile: (profile) =>
@@ -2223,6 +2228,11 @@ export const useUIStore = create<UIState>()(
       setTTSLineVolume: (v) => set({ ttsLineVolume: Math.max(0, Math.min(100, Math.round(v))) }),
       setChibiProfessorMariEnabled: (v) => set({ chibiProfessorMariEnabled: v }),
       setProfessorMariSuggestionsEnabled: (v) => set({ professorMariSuggestionsEnabled: v }),
+      setProfessorMariNavigationEnabled: (v) => {
+        const wasEnabled = get().professorMariNavigationEnabled;
+        set({ professorMariNavigationEnabled: v });
+        if (v && !wasEnabled) resetProfessorMariNavigator();
+      },
       setAchievementsEnabled: (v) => set({ achievementsEnabled: v }),
       setMusicPlayerEnabled: (v) => set({ musicPlayerEnabled: v }),
       setMusicPlayerSource: (v) =>
@@ -2434,7 +2444,7 @@ export const useUIStore = create<UIState>()(
     }),
     {
       name: "marinara-engine-ui",
-      version: 90,
+      version: 92,
       // Debounce localStorage writes to avoid sync I/O on every state change
       storage: createJSONStorage(() => {
         let timer: ReturnType<typeof setTimeout> | null = null;
@@ -2479,6 +2489,10 @@ export const useUIStore = create<UIState>()(
         };
       }),
       migrate: (persisted: any, version: number) => {
+        if (version <= 91 && persisted.rightPanel === "bot-browser") {
+          persisted.rightPanel = "characters";
+          persisted.rightPanelOpen = false;
+        }
         if (version === 0 && persisted.fontSize === 14) {
           persisted.fontSize = 17;
         }
@@ -3035,6 +3049,10 @@ export const useUIStore = create<UIState>()(
           if (persisted.imageNoodleWidth === undefined) persisted.imageNoodleWidth = 1024;
           if (persisted.imageNoodleHeight === undefined) persisted.imageNoodleHeight = 1536;
         }
+        // v90 -> v91: make the Home navigation assistant an explicit, default-on preference.
+        if (version <= 90 && persisted.professorMariNavigationEnabled === undefined) {
+          persisted.professorMariNavigationEnabled = true;
+        }
         // v84 -> v85: keep the historical blank-line behavior for /continue by default.
         if (version <= 84 && persisted.continueAddsNewline === undefined) {
           persisted.continueAddsNewline = true;
@@ -3043,6 +3061,7 @@ export const useUIStore = create<UIState>()(
         persisted.customCursorEnabled = persisted.customCursorEnabled !== false;
         persisted.reduceAmbientEffects = persisted.reduceAmbientEffects === true;
         persisted.professorMariSuggestionsEnabled = persisted.professorMariSuggestionsEnabled !== false;
+        persisted.professorMariNavigationEnabled = persisted.professorMariNavigationEnabled !== false;
         persisted.includeReasoningInExports = persisted.includeReasoningInExports === true;
         persisted.roleplayReducedPaintEffects = persisted.roleplayReducedPaintEffects === true;
         persisted.roleplayNarratorAvatarCycling = persisted.roleplayNarratorAvatarCycling !== false;
@@ -3171,6 +3190,7 @@ export const useUIStore = create<UIState>()(
         ttsLineVolume: state.ttsLineVolume,
         chibiProfessorMariEnabled: state.chibiProfessorMariEnabled,
         professorMariSuggestionsEnabled: state.professorMariSuggestionsEnabled,
+        professorMariNavigationEnabled: state.professorMariNavigationEnabled,
         achievementsEnabled: state.achievementsEnabled,
         musicPlayerEnabled: state.musicPlayerEnabled,
         musicPlayerSource: state.musicPlayerSource,

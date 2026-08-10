@@ -11,10 +11,6 @@ import {
   isNativeGlmEndpoint,
 } from "../../packages/server/src/services/llm/providers/glm-request-compat.js";
 import {
-  NOODLE_JSON_OUTPUT_HEADING,
-  noodleResponseFormat,
-} from "../../packages/server/src/services/noodle/noodle-response-format.js";
-import {
   AnthropicProvider,
   supportsAnthropicThinkingDisable,
 } from "../../packages/server/src/services/llm/providers/anthropic.provider.js";
@@ -62,6 +58,7 @@ import {
 } from "../../packages/server/src/services/image/image-generation.js";
 import { resolveImageCaptioningRuntime } from "../../packages/server/src/services/generation/image-captioning-runtime.js";
 import { resolveImageConnectionFallback } from "../../packages/server/src/services/generation/media-connection-fallback.js";
+import { resolveConnectionImageQuality } from "../../packages/server/src/services/image/image-generation-defaults.js";
 import {
   BACKGROUND_CONNECTION_IDLE_MS,
   ConnectionAttemptRejectedError,
@@ -714,38 +711,38 @@ try {
   );
 }
 
-function assertStrictObjects(value: unknown): void {
-  if (!value || typeof value !== "object") return;
-  const record = value as Record<string, unknown>;
-  if (record.type === "object") assert.equal(record.additionalProperties, false);
-  for (const nested of Object.values(record)) {
-    if (Array.isArray(nested)) nested.forEach(assertStrictObjects);
-    else assertStrictObjects(nested);
-  }
-}
-
-assert.match(NOODLE_JSON_OUTPUT_HEADING, /JSON/u);
-assert.deepEqual(noodleResponseFormat("gpt-4o", "timeline"), { type: "json_object" });
-const solTimelineFormat = noodleResponseFormat("gpt-5.6-sol", "timeline");
-assert.equal(solTimelineFormat.type, "json_schema");
-assert.equal(solTimelineFormat.name, "noodle_timeline");
-assert.equal(solTimelineFormat.strict, true);
-assertStrictObjects(solTimelineFormat.schema);
-assert.deepEqual(normalizeOpenAIChatCompletionsResponseFormat(solTimelineFormat), {
+const strictSchemaFormat = {
+  type: "json_schema" as const,
+  name: "provider_contract",
+  strict: true,
+  schema: {
+    type: "object",
+    properties: { value: { type: "string" } },
+    required: ["value"],
+    additionalProperties: false,
+  },
+};
+assert.deepEqual(normalizeOpenAIChatCompletionsResponseFormat(strictSchemaFormat), {
   type: "json_schema",
   json_schema: {
-    name: "noodle_timeline",
-    schema: solTimelineFormat.schema,
+    name: "provider_contract",
+    schema: strictSchemaFormat.schema,
     strict: true,
   },
 });
 assert.deepEqual(normalizeOpenAIChatCompletionsResponseFormat({ type: "json_object" }), {
   type: "json_object",
 });
-const solProfileFormat = noodleResponseFormat("gpt-5.6-sol", "profiles");
-assert.equal(solProfileFormat.name, "noodle_profiles");
-assertStrictObjects(solProfileFormat.schema);
-
+assert.equal(normalizeOpenAIChatCompletionsResponseFormat(undefined), undefined);
+const nestedStrictSchemaFormat = {
+  type: "json_schema" as const,
+  json_schema: {
+    name: "nested_provider_contract",
+    schema: strictSchemaFormat.schema,
+    strict: true,
+  },
+};
+assert.equal(normalizeOpenAIChatCompletionsResponseFormat(nestedStrictSchemaFormat), nestedStrictSchemaFormat);
 const glm52 = findKnownModel("custom", "glm-5.2");
 assert.equal(glm52?.context, 1_000_000);
 assert.equal(glm52?.maxOutput, 128_000);
@@ -1210,6 +1207,62 @@ try {
   assert.deepEqual(arliRequest?.body.init_images, [onePixelPng]);
 } finally {
   await new Promise<void>((resolve, reject) => arliImageServer.close((error) => (error ? reject(error) : resolve())));
+}
+
+assert.equal(resolveConnectionImageQuality({ imageGenerationQuality: "high" }), "high");
+assert.equal(resolveConnectionImageQuality({ imageGenerationQuality: "unsupported" }), "auto");
+assert.equal(resolveConnectionImageQuality({}), "auto");
+
+const openAIImageRequests: Array<{ contentType: string; body: string }> = [];
+const openAIImageServer = createServer(async (request, response) => {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  openAIImageRequests.push({
+    contentType: request.headers["content-type"] ?? "",
+    body: Buffer.concat(chunks).toString("utf8"),
+  });
+  response.writeHead(200, { "content-type": "application/json" });
+  response.end(JSON.stringify({ data: [{ b64_json: onePixelPng }] }));
+});
+await new Promise<void>((resolve) => openAIImageServer.listen(0, "127.0.0.1", resolve));
+try {
+  const address = openAIImageServer.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}/v1`;
+
+  await generateImage("openai", baseUrl, "openai-secret", "openai", {
+    prompt: "a careful experiment",
+    model: "gpt-image-2",
+    quality: "high",
+    allowLocalUrls: true,
+  });
+  const generationBody = JSON.parse(openAIImageRequests[0]?.body ?? "{}") as Record<string, unknown>;
+  assert.equal(generationBody.quality, "high", "GPT Image generations must send the connection quality");
+
+  await generateImage("openai", baseUrl, "openai-secret", "openai", {
+    prompt: "add cyan lighting",
+    model: "gpt-image-2",
+    quality: "medium",
+    referenceImage: `data:image/png;base64,${onePixelPng}`,
+    allowLocalUrls: true,
+  });
+  assert.match(openAIImageRequests[1]?.contentType ?? "", /^multipart\/form-data;/u);
+  assert.match(
+    openAIImageRequests[1]?.body ?? "",
+    /name="quality"\r\n\r\nmedium/u,
+    "GPT Image edits must send the connection quality",
+  );
+
+  await generateImage("openai", baseUrl, "openai-secret", "openai", {
+    prompt: "a legacy illustration",
+    model: "dall-e-3",
+    quality: "high",
+    allowLocalUrls: true,
+  });
+  const legacyBody = JSON.parse(openAIImageRequests[2]?.body ?? "{}") as Record<string, unknown>;
+  assert.equal(legacyBody.quality, undefined, "non-GPT Image models must not receive GPT Image quality");
+} finally {
+  await new Promise<void>((resolve, reject) => openAIImageServer.close((error) => (error ? reject(error) : resolve())));
 }
 
 const failingImageServer = createServer((_request, response) => {

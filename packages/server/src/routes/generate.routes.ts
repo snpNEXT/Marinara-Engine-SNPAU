@@ -113,7 +113,10 @@ import {
   resolveChatSummaryConnection,
   resolveChatSummaryTemperatureOptions,
 } from "../services/chat-summary/connection-resolution.js";
-import { resolveConnectionImageDefaults } from "../services/image/image-generation-defaults.js";
+import {
+  resolveConnectionImageDefaults,
+  resolveConnectionImageQuality,
+} from "../services/image/image-generation-defaults.js";
 import { generateIllustratorImageVariants } from "../services/image/illustrator-image-variants.js";
 import {
   loadImageGenerationUserSettings,
@@ -343,7 +346,7 @@ import {
 } from "./generate/spatial-transition-request.js";
 import { runTurnGameBotTurns } from "../services/turn-games/turn-game-bot-runner.service.js";
 import { getTurnGameContextBuilder } from "../services/turn-games/turn-game-runner.service.js";
-import { buildRecentSocialMediaActivityBlock } from "../services/noodle/noodle-context.js";
+import { getCapabilityService } from "../services/capability-packages/capability-service-registry.service.js";
 import { normalizeContextInjections } from "./generate/agent-normalizers.js";
 import {
   buildGenerationPromptPresetCandidates,
@@ -2785,13 +2788,29 @@ export async function generateRoutes(app: FastifyInstance) {
           finalMessages,
         });
 
-        const recentSocialMediaActivityBlock = await buildRecentSocialMediaActivityBlock({
-          db: app.db,
-          chatMode,
-          characterIds: promptCharacterIds,
-          personaId,
-          wrapFormat,
-        });
+        const noodlePromptContext = getCapabilityService<{
+          build(input: {
+            db: typeof app.db;
+            chatMode: typeof chatMode;
+            characterIds: string[];
+            personaId: string | null;
+            wrapFormat: typeof wrapFormat;
+          }): Promise<string | null>;
+        }>("noodle:prompt-context");
+        let recentSocialMediaActivityBlock: string | null = null;
+        if (noodlePromptContext) {
+          try {
+            recentSocialMediaActivityBlock = await noodlePromptContext.build({
+              db: app.db,
+              chatMode,
+              characterIds: promptCharacterIds,
+              personaId,
+              wrapFormat,
+            });
+          } catch (err) {
+            logger.warn(err, "Optional Noodle prompt context failed; continuing without social activity");
+          }
+        }
         if (recentSocialMediaActivityBlock) {
           const firstUserIdx = finalMessages.findIndex((m) => m.role === "user" || m.role === "assistant");
           const insertAt = firstUserIdx >= 0 ? firstUserIdx : finalMessages.length;
@@ -8400,6 +8419,7 @@ export async function generateRoutes(app: FastifyInstance) {
                               imageEndpointId: imgConnFull.imageEndpointId || undefined,
                               comfyWorkflow: imgConnFull.comfyuiWorkflow || undefined,
                               imageDefaults,
+                              quality: resolveConnectionImageQuality(imgConnFull),
                               debugMode: input.debugMode,
                               fallback: imageFallback,
                               onFallback,
@@ -9168,6 +9188,8 @@ export async function generateRoutes(app: FastifyInstance) {
                       let illustratorRefImages: string[] | undefined;
                       const referenceResolution = await resolveIllustratorCharacterReferences({
                         charactersStore: chars,
+                        characterGallery,
+                        personaGallery,
                         chatCharacters: charInfo.map((character) => ({
                           id: character.id,
                           name: character.name,
@@ -9180,6 +9202,11 @@ export async function generateRoutes(app: FastifyInstance) {
                               name: personaName,
                               avatarPath: persona.avatarPath as string | null,
                               appearance: personaFields.appearance,
+                              characterSheetImageId:
+                                typeof persona.characterSheetImageId === "string"
+                                  ? persona.characterSheetImageId
+                                  : null,
+                              useCharacterSheetAsReference: persona.useCharacterSheetAsReference === "true",
                             }
                           : null,
                         requestedNames: illCharacters.filter((name): name is string => typeof name === "string"),
@@ -9287,6 +9314,7 @@ export async function generateRoutes(app: FastifyInstance) {
                             imageEndpointId: imgConnFull.imageEndpointId || undefined,
                             comfyWorkflow: imgConnFull.comfyuiWorkflow || undefined,
                             imageDefaults,
+                            quality: resolveConnectionImageQuality(imgConnFull),
                             referenceImages: illustratorRefImages,
                             debugMode: input.debugMode,
                             fallback: providerAwareImageFallback,

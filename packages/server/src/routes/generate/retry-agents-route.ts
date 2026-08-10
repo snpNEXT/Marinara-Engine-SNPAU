@@ -73,7 +73,10 @@ import { createPersonaGalleryStorage } from "../../services/storage/persona-gall
 import { createPromptsStorage } from "../../services/storage/prompts.storage.js";
 import { findLastUserMessageIdBefore } from "../../services/generation/message-history.js";
 import { textRewriteDropsProtectedMarkup } from "../../services/generation/text-rewrite-safety.js";
-import { resolveConnectionImageDefaults } from "../../services/image/image-generation-defaults.js";
+import {
+  resolveConnectionImageDefaults,
+  resolveConnectionImageQuality,
+} from "../../services/image/image-generation-defaults.js";
 import { injectMemoryRecallContext } from "../../services/generation/memory-recall-context.js";
 import { resolveMemoryRecallEmbeddingSource } from "../../services/memory-recall-embedding.js";
 import {
@@ -3360,8 +3363,13 @@ async function applyRetryResultEffects(args: {
               projection: retryOwnerSpatialProjection?.ownerMode === "roleplay" ? retryOwnerSpatialProjection : null,
             });
             let referenceImages: string[] | undefined;
+            const retryPersonaId =
+              typeof agentContext.memory._personaId === "string" ? agentContext.memory._personaId : null;
+            const retryPersonaReference = retryPersonaId ? await chars.getPersona(retryPersonaId) : null;
             const referenceResolution = await resolveIllustratorCharacterReferences({
               charactersStore: chars,
+              characterGallery: createCharacterGalleryStorage(app.db),
+              personaGallery: createPersonaGalleryStorage(app.db),
               chatCharacters: agentContext.characters.map((character) => ({
                 id: character.id,
                 name: character.name,
@@ -3369,13 +3377,20 @@ async function applyRetryResultEffects(args: {
               })),
               persona: agentContext.persona
                 ? {
-                    id: typeof agentContext.memory._personaId === "string" ? agentContext.memory._personaId : null,
+                    id: retryPersonaId,
                     name: agentContext.persona.name,
                     avatarPath:
-                      typeof agentContext.memory._personaAvatarPath === "string"
+                      typeof retryPersonaReference?.avatarPath === "string"
+                        ? retryPersonaReference.avatarPath
+                        : typeof agentContext.memory._personaAvatarPath === "string"
                         ? agentContext.memory._personaAvatarPath
                         : null,
                     appearance: agentContext.persona.appearance,
+                    characterSheetImageId:
+                      typeof retryPersonaReference?.characterSheetImageId === "string"
+                        ? retryPersonaReference.characterSheetImageId
+                        : null,
+                    useCharacterSheetAsReference: retryPersonaReference?.useCharacterSheetAsReference === "true",
                   }
                 : null,
               requestedNames: illCharacters.filter((name): name is string => typeof name === "string"),
@@ -3556,6 +3571,7 @@ async function applyRetryResultEffects(args: {
                       imageEndpointId: imgConnFull.imageEndpointId || undefined,
                       comfyWorkflow: (imgConnFull as any).comfyuiWorkflow || undefined,
                       imageDefaults,
+                      quality: resolveConnectionImageQuality(imgConnFull),
                       referenceImages,
                       signal: agentContext.signal,
                       fallback: providerAwareImageFallback,

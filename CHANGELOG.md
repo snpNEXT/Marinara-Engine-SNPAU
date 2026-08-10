@@ -6,6 +6,14 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Added
 
+- Added batch selection to Character and Persona image galleries so selected images can be downloaded or deleted together after confirmation (#4832).
+- Added a persisted Auto, Low, Medium, or High output-quality choice to GPT Image generation connections (#4831).
+- Added optional character and persona reference sheets under Sprites, with upload, size-bounded AI creation, safe selection cleanup, and an explicit generation-reference toggle that falls back to existing likeness art; both Galleries include the same AI creation entrypoint (#4786).
+- Gave Professor Mari granular preset editing: she can now read a preset's individual sections, groups, and choice-blocks with content previews and add, update, or delete any one of them in place through the Keep/Restore review, instead of only creating or replacing a whole preset — also exposed through a new `mari presets` CLI (#4812).
+- Let Professor Mari propose safe data-only custom Home widgets for explicit confirmation, with persistent responsive cards that users can reorder, hide, restore, and delete from the Widgets manager (#4801).
+- Added the **Please Handle With Care** achievement for dragging the Home navigation Professor Mari around the screen (#4805).
+- Rebuilt Home as a full-width, Firefox-inspired Marinara browser with theme-matched chrome, generated bookmark and tab artwork, a responsive draggable and hideable widget desk with equal spatial slots, space-aware large-widget packing, fine-pointer hover lift and illumination, and a focused five-widget first-run composition, Community shortcuts, compact mobile chrome with fitted destination tabs and a Bookmarks menu, a live timezone-aware cyan-accented clock and calendar, visit-ordered mode-colored recent chats with band-free scene backgrounds, expression sprites, and a fitted three-card mobile view, latest-unlock and nearest-goal achievement previews with distinct shelf and launcher copy, a generated trophy bookmark that follows the master Achievements setting, separate FAQ and widget-manager windows, a highlighted Home onboarding tour, mobile-fitted Guide and Character of the Day cards, and an optional Professor Mari navigator that finds Engine destinations and named resource editors locally without AI, remembers its bounded desktop position, and dangles by her hoodie in a generated pixel animation while dragged (#4763).
+- Moved Noodle into an optional downloadable package that keeps its familiar interface in a Home tab with its paired Noodle/NoodleR logo, blue/pink mobile navigation, and a persistent new-refresh badge, automatically preserves availability for existing profiles, follows the staging Agent catalog during feature review, and leaves timeline data ready for reinstall after removal (#4763, Pasta-Devs/Marinara-Agents#278).
 - Added Arli AI as a built-in text provider for chat connections, using OpenAI-compatible chat completions with models loaded from the Arli AI `/models` endpoint.
 - Added a custom 1–40 place target to the New Game wizard's AI world-map draft options (#4783).
 - Added a compact context-budget indicator to Professor Mari Workspace when message token usage is enabled (#4752).
@@ -16,9 +24,53 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Guided package onboarding can open the active Roleplay chat's Summary popover and assigned prompt preset Sections editor directly.
 - Added explicit step-by-step and immediate World Maps travel modes, with one committed movement per accepted Roleplay or Game turn and recoverable queued routes (#4618).
 - Added a single setting that reduces ambient animations and effects throughout the interface, including automatic support for the operating system's reduced-motion preference (#4631).
+- Added per-chat image-connection overrides and an on-demand snapshot button for image-generating custom agents (#4686).
+- Added a downgrade guard that blocks launches and updates onto an older build once chat data has been sharded, plus an offline `unshard` escape hatch to recover access to chat history (#4738).
+- Added a one-time notice explaining the storage migration after upgrading, with a plain-language summary, a technical-details toggle, and a link to the storage troubleshooting guide (#4762).
+- Added tiered exact, substring, and semantic resolution to Professor Mari's fetch command, letting her find characters, personas, chats, and lorebooks by partial name or description instead of an exact match only (#4778).
+- Added lorebook-authoring guidance for workspace Professor Mari, exposing selective, whole-word, case-sensitive, and regex matching fields and walking her through a user-gated fidelity review so generated entries are no longer skeletal (#4796).
+- Added mari CLI flags for lorebook entry secondary keys, selective matching, selective logic, whole-word matching, case sensitivity, and regex on `add-entry` and `update-entry`, matching the app-data entry editor (#4811).
+- Added lorebook-authoring strategy guidance, a worked multi-control example, and macro/recursion documentation to the lorebook entries guide (#4814).
+- Made Professor Mari's Keep/Restore undo durable across restarts, persisting pending reviews to disk with a 14-day retention window and a 50-item cap (#4828).
+
+### Changed
+
+- Localized achievement definitions and official capability-package Home metadata through stable locale-aware contracts with English fallback, and refreshed Home's welcome copy (#4803, #4806).
+- Positioned Professor Mari's navigation helper at the bottom-left on her first appearance while preserving every remembered user placement.
+- Removed the standalone Browser tab and its tutorial step, moved card downloads into split Download/Open Library controls in Characters and Personas, and replaced browser-native card destination and embedded-lorebook prompts with a themed Marinara import flow.
+- Sharded stored messages and message swipes into per-chat files instead of rewriting a chat's entire history on every saved message, migrating existing installs automatically on first boot (#4735).
+- Sharded fourteen more chat-keyed tables (memory, agent runs, game state, calls, gallery, influences, and notes) into per-chat files, cutting write amplification on every turn (#4754).
+- Moved Home Professor Mari's available-name lists out of the system prompt into a per-turn message, stabilizing prompt caching and capping each category at 100 entries (#4771).
+- Ranked Home Professor Mari's available-names list by relevance to the current conversation instead of an alphabetical slice, falling back to alphabetical when relevance data isn't available (#4779).
 
 ### Fixed
 
+- Kept Professor Mari's Home navigator enabled by default and visible with reduced effects, reset her to the default position when re-enabled, centered her drag handle, contained compact Field Notes and Community actions, and presented iPad sidebars as full-width overlays (#4826, #4827, #4829, #4830).
+- Sharpened Professor Mari's read-only guardrail so a "how do I…" question is answered or offered rather than performed, even when it names the change as its goal (for example "how do I make X have Y") — while a plainly-worded request to make that change, including a polite question form like "can you set X to Y", is still carried out — so she keys on intent rather than grammar and no longer edits without a clear instruction (#4838).
+- Reduced background autonomous-message polling to a lightweight candidate-id lookup instead of re-fetching the full chat list every 30 seconds (#4715).
+- Stopped the server's autonomous-messaging scheduler from sweeping every 60 seconds when no chats had changed, cutting idle load on self-hosted installs (#4716).
+- Stopped chat message history from being fully re-downloaded on reconnects, background generations, and Professor Mari workspace changes (#4719).
+- Replaced the `.env` config watcher's 2-second stat-poll with an event-driven directory watch (falling back to a slower 30-second poll only if needed), cutting a constant idle-wakeup cost on phone and Termux installs (#4723).
+- Moved the Chat Settings secret-plot reader off the shared chat transcript query, so **Load More** no longer disappears while older messages still exist and the secret-plot panel stays current after new messages arrive (#4725).
+- Replaced fixed 25ms Personal Extension sandbox polling with an adaptive cadence that idles down once traffic quiets, cutting background wakeups and flash writes for every running server extension on phone and Termux installs (#4727).
+- Bounded Professor Mari's workspace data reads so oversized character/lorebook fields are elided with a readable note and recoverable via drill-down, instead of being silently truncated mid-JSON (#4776).
+- Stopped Professor Mari from making unrequested changes when only asked to inspect, explain, or get how-to guidance, answering informational requests without modifying anything (#4816).
+- Routed every Professor Mari workspace create through the same Keep/Restore review as edits and deletes, so an unwanted creation can be undone in chat, and blocked creates from overwriting existing rows with colliding IDs (#4825).
+- Corrected Home and Appearance presentation regressions affecting semantic chat-mode colors, the Square avatar preview, Noodle notification placement, compact mobile Achievements, Discovery Desk spacing, mobile Bookmarks motion, and consistent widget-manager labels (#4809, #4817, #4818, #4819, #4820, #4821, #4823).
+- Restored Game party portrait file selection for Character, Persona, and NPC sheets whether or not the sheet editor is active (#4793).
+- Kept legacy reaction payloads out of rendered message content, accepted `/title <name>` in Professor Mari chats, and let her navigator open an exact saved chat title (#4782, #4794, #4800).
+- Standardized gradient-stop editing on Marinara's owned color controls and tightened Home responsiveness, including Guide overflow, deleted Recent Chats, semantic mode colors, decorative browser refresh behavior, larger Mari drag targeting, and pausing Home animations while the app is unfocused (#4797, #4799, #4802, #4804, #4807, #4808, #4809).
+- Kept blank messages and hidden command anchors out of Home's Recent Chats previews, counted paginated chat histories without materializing every message ID, stabilized history cursors across deletions, and rejected malformed cursors.
+- Applied the selected tag-import mode when a downloaded character card is imported as a persona.
+- Matched the Character and Persona Download/Open Library launchers to the Chats segmented controls with an exact centered split, fixed icon sizing, and single-line labels.
+- Kept Professor Mari's held navigation animation mounted, frame-snapped, paint-batched, and slightly wider so repeated grabs no longer flash the wrong sprite frame, stutter under pointer movement, or squash her proportions.
+- Mirrored Professor Mari's navigation speech-bubble tail from one canonical shape when her dialog switches sides and seated it flush against either dialog edge.
+- Centered the desktop **Ask Me Where Things Are** tutorial card and spotlighted Professor Mari's actual navigation bubble instead of her full-screen drag surface.
+- Standardized chat-mode icons across Home, Chats, creation flows, shortcuts, and linked chats: Conversation keeps its message bubble, Roleplay uses theater masks, and Game uses a gamepad without colliding with Lorebooks.
+- Kept mobile Chats, Settings, and tracker panels above the Home browser chrome so their controls remain tappable.
+- Stopped hidden Home and Professor surfaces from retaining navigation timers, pending focus frames, message-history requests, Discovery rotation, and workspace-status polling after their lifecycle ended.
+- Kept Professor Mari's navigation dialog controls clickable when her draggable sprite overlaps the dialog.
+- Kept Professor Mari suggestion chips visible after entering her Home tab instead of briefly showing them before loaded chat history made the composer jump.
 - Kept NovelAI V4.5 style-plate file selection inside the Connection editor across Chromium platforms (#4777).
 - Deactivated and revealed lorebooks that lose their final owner, replaced Lorebook Keeper entry bodies without stacking duplicates, and added sandbox-safe structured file copy, move, and removal tools for Android/Termux (#4775).
 - Let readers scroll through Professor Mari history while her response is still streaming (#4774).

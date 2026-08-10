@@ -21,6 +21,9 @@ export type APIProvider =
   | "image_generation"
   | "video_generation";
 
+export const IMAGE_GENERATION_QUALITIES = ["auto", "low", "medium", "high"] as const;
+export type ImageGenerationQuality = (typeof IMAGE_GENERATION_QUALITIES)[number];
+
 /** An API connection configuration. */
 export interface APIConnection {
   id: string;
@@ -70,6 +73,8 @@ export interface APIConnection {
    *  Use this to tell the model exactly how to format prompts for this backend
    *  (e.g. danbooru tag style, required quality tokens, negative-prompt conventions, etc.). */
   imagePromptHint: string | null;
+  /** OpenAI GPT Image quality saved for this connection. */
+  imageGenerationQuality: ImageGenerationQuality;
   /** Explicit video backend selection for video-generation connections (e.g. Gemini Omni). */
   videoGenerationSource: string | null;
   /** Explicitly selected video generation service ID. Overrides URL/model inference when set. */

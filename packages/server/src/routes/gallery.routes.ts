@@ -35,7 +35,10 @@ import {
 import { resolveGameVideoRuntime } from "../services/video/game-video-runtime.js";
 import { generateImage, removeSavedImageFromDisk, saveImageToDisk } from "../services/image/image-generation.js";
 import { resolveGalleryImagePath } from "../services/image/gallery-image-path.js";
-import { resolveConnectionImageDefaults } from "../services/image/image-generation-defaults.js";
+import {
+  resolveConnectionImageDefaults,
+  resolveConnectionImageQuality,
+} from "../services/image/image-generation-defaults.js";
 import { loadImageGenerationUserSettings } from "../services/image/image-generation-settings.js";
 import {
   compileImagePrompt,
@@ -1324,6 +1327,7 @@ export async function galleryRoutes(app: FastifyInstance) {
     if (selfieUseAvatarReferences || selfieIncludeCharacterAppearance) {
       const referenceResolution = await resolveIllustratorCharacterReferences({
         charactersStore: characters,
+        characterGallery,
         chatCharacters: [
           {
             id: character.id,
@@ -1433,6 +1437,7 @@ export async function galleryRoutes(app: FastifyInstance) {
                 imageEndpointId: imageConn.imageEndpointId || undefined,
                 comfyWorkflow: imageConn.comfyuiWorkflow || undefined,
                 imageDefaults,
+                quality: resolveConnectionImageQuality(imageConn),
                 referenceImages,
                 signal: selfieAbortSignal,
                 fallback: imageFallback,
@@ -1594,6 +1599,7 @@ export async function galleryRoutes(app: FastifyInstance) {
               imageEndpointId: context.imageConnection.imageEndpointId || undefined,
               comfyWorkflow: context.imageConnection.comfyuiWorkflow || undefined,
               imageDefaults: context.imageDefaults,
+              quality: resolveConnectionImageQuality(context.imageConnection),
               signal,
               fallback: context.imageFallback,
             },
