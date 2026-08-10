@@ -3648,31 +3648,34 @@ export async function generateRoutes(app: FastifyInstance) {
           agentContext.memory._personaAvatarPath =
             persona && typeof persona.avatarPath === "string" ? persona.avatarPath : null;
         }
-<<<<<<< HEAD
         // Inject connection-specific image prompt guidance into agent memory.
-        if (resolvedAgents.some((entry) => entry.type === "illustrator")) {
-          const illustratorAgentForHint = resolvedAgents.find((a) => a.type === "illustrator");
-=======
-        if (resolvedAgents.some((entry) => entry.type === "illustrator")) {
-          const illustratorAgentForInstructions = resolvedAgents.find((a) => a.type === "illustrator");
->>>>>>> be35ad112 (Address code review)
-          const imageConnectionId = resolveIllustratorImageConnectionId(
-            requestChatMode,
-            chatMeta,
-            illustratorAgentForHint?.settings?.imageConnectionId,
-          );
-          let imgConnForHint = imageConnectionId
+        const imagePromptAgentForInstructions = resolvedAgents.find(
+          (entry) =>
+            entry.type === "illustrator" ||
+            (entry.isCustomAgent === true && customAgentHasCapability(entry.settings, "trigger_image_generation")),
+        );
+        if (imagePromptAgentForInstructions) {
+          const imageConnectionId =
+            imagePromptAgentForInstructions.type === "illustrator"
+              ? resolveIllustratorImageConnectionId(
+                  requestChatMode,
+                  chatMeta,
+                  imagePromptAgentForInstructions.settings?.imageConnectionId,
+                )
+              : typeof imagePromptAgentForInstructions.settings?.imageConnectionId === "string"
+                ? imagePromptAgentForInstructions.settings.imageConnectionId.trim()
+                : "";
+          let imageConnectionForInstructions = imageConnectionId
             ? await connections.getById(imageConnectionId).catch(() => null)
             : null;
-          imgConnForHint ??= await connections.getDefaultForImageGeneration().catch(() => null);
+          imageConnectionForInstructions ??= await connections.getDefaultForImageGeneration().catch(() => null);
           const hint =
-            imgConnForHint && typeof (imgConnForHint as any).imagePromptHint === "string"
-              ? ((imgConnForHint as any).imagePromptHint as string).trim()
+            imageConnectionForInstructions && typeof (imageConnectionForInstructions as any).imagePromptHint === "string"
+              ? ((imageConnectionForInstructions as any).imagePromptHint as string).trim()
               : "";
           if (hint) agentContext.memory._imagePromptHint = hint;
-
           const imagePromptInstructions = normalizeImagePromptInstructions(
-            imgConnForHint?.imagePromptInstructions,
+            imageConnectionForInstructions?.imagePromptInstructions,
           );
           if (imagePromptInstructions) agentContext.memory._imagePromptInstructions = imagePromptInstructions;
         }
