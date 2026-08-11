@@ -62,6 +62,8 @@ import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packa
 import { showConfirmDialog, showPromptDialog } from "../../lib/app-dialogs";
 import { formatCardVersionTimestamp, getCardVersionTitle } from "../../lib/card-version-history";
 import { dataImageUrlToFile } from "../../lib/data-image-file";
+import { mergeEmbeddedCharacterCardFields } from "../../lib/character-import";
+import { parsePngCharacterCard } from "../../lib/png-parser";
 import { SpriteGenerationModal } from "../ui/SpriteGenerationModal";
 import { AvatarGenerationModal } from "../ui/AvatarGenerationModal";
 import { AvatarCropWidget } from "../ui/AvatarCropWidget";
@@ -557,6 +559,7 @@ export function CharacterEditor() {
     const shouldClearAvatarCrop = fallbackAvatarCrop !== undefined;
     const fallbackDirty = dirtyRef.current;
     const editRevisionAtUploadStart = editRevisionRef.current;
+    const formDataAtUploadStart = formData;
 
     const reader = new FileReader();
     reader.onload = async () => {
@@ -573,7 +576,30 @@ export function CharacterEditor() {
         setDirtyState(true);
       }
       try {
-        await uploadAvatar.mutateAsync({ id: uploadCharacterId, avatar: dataUrl });
+        let replacementData: CharacterData | undefined;
+        if ((file.type === "image/png" || file.name.toLowerCase().endsWith(".png")) && formDataAtUploadStart) {
+          try {
+            const card = await parsePngCharacterCard(file);
+            const baseData = shouldClearAvatarCrop
+              ? {
+                  ...formDataAtUploadStart,
+                  extensions: { ...formDataAtUploadStart.extensions, avatarCrop: null },
+                }
+              : formDataAtUploadStart;
+            replacementData = mergeEmbeddedCharacterCardFields(baseData, card.json) ?? undefined;
+          } catch {
+            // Ordinary PNG avatars carry no card metadata and keep the current character fields.
+          }
+        }
+        await uploadAvatar.mutateAsync({ id: uploadCharacterId, avatar: dataUrl, data: replacementData });
+        if (
+          replacementData &&
+          isCurrentAvatarUpload(uploadToken, uploadCharacterId) &&
+          editRevisionRef.current === editRevisionAtUploadStart
+        ) {
+          setFormData(replacementData);
+          setDirtyState(false);
+        }
       } catch {
         if (!isCurrentAvatarUpload(uploadToken, uploadCharacterId)) return;
         setAvatarPreview(fallbackAvatarPreview);
@@ -748,7 +774,7 @@ export function CharacterEditor() {
 
     const rpgStats = formData.extensions.rpgStats as RPGStatsConfig | undefined;
     const personaStats = rpgStats
-      ? JSON.stringify({
+      ? {
           enabled: !!rpgStats.enabled,
           bars: [
             { name: "Satiety", value: 100, max: 100, color: "#f59e0b" },
@@ -757,8 +783,8 @@ export function CharacterEditor() {
             { name: "Mood", value: 100, max: 100, color: "#eab308" },
           ],
           rpgStats,
-        })
-      : "";
+        }
+      : null;
 
     try {
       const created = (await createPersona.mutateAsync({
@@ -775,11 +801,9 @@ export function CharacterEditor() {
         nameColor: (formData.extensions.nameColor as string) ?? "",
         dialogueColor: (formData.extensions.dialogueColor as string) ?? "",
         boxColor: (formData.extensions.boxColor as string) ?? "",
-        trackerCardColors: serializeTrackerCardColorConfig(
-          parseTrackerCardColorConfig(formData.extensions.trackerCardColors),
-        ),
+        trackerCardColors: parseTrackerCardColorConfig(formData.extensions.trackerCardColors),
         personaStats,
-        tags: JSON.stringify(formData.tags ?? []),
+        tags: formData.tags ?? [],
       })) as { id?: string };
 
       const personaId = created?.id;

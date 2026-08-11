@@ -320,7 +320,8 @@ export function normalizeChatForResponse<T extends { metadata?: unknown; charact
 type SummaryEntriesPatchBody =
   | { operation: "replace"; entry: Partial<ChatSummaryEntry> & { id: string; content: string } }
   | { operation: "delete"; entryId: string }
-  | { operation: "toggle"; entryId: string; enabled: boolean };
+  | { operation: "toggle"; entryId: string; enabled: boolean }
+  | { operation: "reorder"; entryIds: string[] };
 
 async function loadLatestChatGameSnapshot(
   app: FastifyInstance,
@@ -1268,10 +1269,50 @@ export async function chatsRoutes(app: FastifyInstance) {
       if (typeof body.entryId !== "string" || !body.entryId.trim() || typeof body.enabled !== "boolean") {
         return reply.status(400).send({ error: "toggle requires entryId and enabled" });
       }
+    } else if (body.operation === "reorder") {
+      if (
+        !Array.isArray(body.entryIds) ||
+        body.entryIds.length === 0 ||
+        !body.entryIds.every((id) => typeof id === "string" && id.trim()) ||
+        new Set(body.entryIds).size !== body.entryIds.length
+      ) {
+        return reply.status(400).send({ error: "reorder requires unique entryIds" });
+      }
     } else {
       return reply.status(400).send({ error: "Unsupported summary entry operation" });
     }
 
+    // For delete: restore visibility of the messages this entry covered (except
+    // any still covered by another enabled entry) BEFORE removing the entry.
+    // Unhiding first is what keeps this safe without a transaction: if the
+    // metadata write below fails, the messages are visible and the entry still
+    // exists (a benign, self-consistent state) — never hidden with no entry to
+    // justify them. So no rollback bookkeeping is needed.
+    if (body.operation === "delete") {
+      const current = await storage.getById(req.params.id);
+      if (!current) return reply.status(404).send({ error: "Chat not found" });
+      const currentMeta = parseExtra(current.metadata) as Record<string, unknown>;
+      const currentEntries = normalizeChatSummaryEntries(currentMeta.summaryEntries, {
+        legacySummary: typeof currentMeta.summary === "string" ? currentMeta.summary : null,
+      });
+      const target = currentEntries.find((entry) => entry.id === body.entryId);
+      if (target) {
+        // Restore exactly what this entry hid. `hiddenMessageIds` records the
+        // precise hidden subset; older entries without it fall back to messageIds.
+        const covered = target.hiddenMessageIds ?? target.messageIds ?? [];
+        const stillCovered = new Set<string>();
+        for (const entry of currentEntries) {
+          if (entry.id === body.entryId || !entry.enabled) continue;
+          for (const id of entry.hiddenMessageIds ?? entry.messageIds ?? []) stillCovered.add(id);
+        }
+        const toUnhide = covered.filter((id) => !stillCovered.has(id));
+        if (toUnhide.length > 0) {
+          await storage.bulkSetHiddenFromAI(req.params.id, toUnhide, false);
+        }
+      }
+    }
+
+    let reorderConflict = false;
     const updated = await storage.patchMetadata(req.params.id, (freshMeta) => {
       const entries = normalizeChatSummaryEntries(freshMeta.summaryEntries, {
         legacySummary: typeof freshMeta.summary === "string" ? freshMeta.summary : null,
@@ -1302,6 +1343,14 @@ export async function chatsRoutes(app: FastifyInstance) {
         nextEntries = entries.map((entry) =>
           entry.id === body.entryId ? { ...entry, enabled: body.enabled, updatedAt: now } : entry,
         );
+      } else if (body.operation === "reorder") {
+        const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+        if (body.entryIds.length !== entries.length || body.entryIds.some((id) => !entriesById.has(id))) {
+          reorderConflict = true;
+          nextEntries = entries;
+        } else {
+          nextEntries = body.entryIds.map((id) => entriesById.get(id)!);
+        }
       } else {
         nextEntries = entries;
       }
@@ -1312,6 +1361,9 @@ export async function chatsRoutes(app: FastifyInstance) {
       };
     });
 
+    if (reorderConflict) {
+      return reply.status(409).send({ error: "Summary entries changed before they could be reordered" });
+    }
     if (!updated) return reply.status(404).send({ error: "Chat not found" });
     return normalizeChatForResponse(updated);
   });
@@ -4242,12 +4294,21 @@ export async function chatsRoutes(app: FastifyInstance) {
     // summarized set minus the protected tail, so manual hiding honors
     // `summaryTailMessages` like the automatic path. Persisted on the entry (when
     // hiding is enabled) so deletion restores exactly what was hidden.
-    const hideEnabled = chatMeta.hideSummarisedMessages === true;
+    const [latestChatBeforeHide, latestMessagesBeforeHide] = await Promise.all([
+      storage.getById(req.params.id),
+      storage.listMessages(req.params.id),
+    ]);
+    const latestMetaBeforeHide = latestChatBeforeHide
+      ? (parseExtra(latestChatBeforeHide.metadata) as Record<string, unknown>)
+      : chatMeta;
+    const hideEnabled = latestMetaBeforeHide.hideSummarisedMessages === true;
+    // Keep ownership tied to the exact messages sent to the provider, but use
+    // the live list to protect the real current tail if messages arrived while it ran.
     const eligibleToHide = hideEnabled
       ? computeSummaryHideIds({
-          messages: allMessages,
+          messages: latestMessagesBeforeHide,
           entryMessageIds: messageIds,
-          tail: resolveRoleplaySummaryTail(chatMeta.summaryTailMessages),
+          tail: resolveRoleplaySummaryTail(latestMetaBeforeHide.summaryTailMessages),
         })
       : [];
     const hideMessageIds = eligibleToHide;
