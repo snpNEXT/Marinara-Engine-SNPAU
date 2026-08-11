@@ -642,6 +642,7 @@ import {
   sanitizeNpcPortraitAppearanceText,
   selectLatestGameTurnNarration,
   selectStoryboardAppearanceCharacterNames,
+  shouldUseDynamicGameImagePromptGenerator,
 } from "../../packages/server/src/routes/game.routes.js";
 import { buildLegacyDefaultAgentConfigUpdate } from "../../packages/server/src/services/agents/default-prompt-migration.js";
 import { buildMemoryRecallBlock } from "../../packages/server/src/services/generation/memory-recall-context.js";
@@ -718,6 +719,7 @@ import {
   lorebookSimilarityBaseline,
 } from "../../packages/server/src/services/lorebook/embeddings.js";
 import {
+  filterRelevantLorebooks,
   resolveAndBudgetActivatedLorebookEntries,
   scopeLorebookScanResultToCharacterContext,
 } from "../../packages/server/src/services/lorebook/index.js";
@@ -883,6 +885,49 @@ const keywordOptions = {
 };
 
 const cases: RegressionCase[] = [
+  {
+    name: "explicitly selected persona lorebooks remain usable outside their owner persona",
+    run() {
+      const personaLinkedBook = {
+        id: "persona-lorebook",
+        name: "Persona lorebook",
+        enabled: true,
+        scanDepth: 2,
+        tokenBudget: 2048,
+        entryLimit: 0,
+        recursiveScanning: false,
+        maxRecursionDepth: 3,
+        vectorScoreThreshold: 0.35,
+        vectorMaxResults: 8,
+        isGlobal: false,
+        characterId: null,
+        characterIds: [],
+        personaId: "owner-persona",
+        personaIds: ["owner-persona"],
+        chatId: null,
+        scope: { mode: "all" as const, chatIds: [] },
+        sourceAgentId: null,
+      } satisfies Parameters<typeof filterRelevantLorebooks>[0][number];
+
+      assert.deepEqual(
+        filterRelevantLorebooks([personaLinkedBook], {
+          personaId: "different-persona",
+          activeLorebookIds: [personaLinkedBook.id],
+        }),
+        [personaLinkedBook],
+      );
+      assert.deepEqual(filterRelevantLorebooks([personaLinkedBook], { personaId: "different-persona" }), []);
+      assert.deepEqual(filterRelevantLorebooks([personaLinkedBook], { personaId: "owner-persona" }), [personaLinkedBook]);
+      const lorebookStorageSource = readFileSync(
+        new URL("../../packages/server/src/services/storage/lorebooks.storage.ts", import.meta.url),
+        "utf8",
+      );
+      assert.match(
+        lorebookStorageSource,
+        /function activeLorebookMatchesFilters[\s\S]{0,220}return filters\.activeLorebookIds\?\.includes\(book\.id\) === true;/u,
+      );
+    },
+  },
   {
     name: "Storyboard chat settings override agent defaults for Game and Roleplay",
     async run() {
@@ -5261,7 +5306,7 @@ const cases: RegressionCase[] = [
       assert.match(retryAgentsRouteSource, /writeManualIllustratorPromptPlan/u);
       assert.match(retryAgentsRouteSource, /_styleProfileInstructionApplied:\s*true/u);
       assert.match(retryAgentsRouteSource, /force:\s*isManualIllustratorBackgroundRequest/u);
-      assert.match(retryAgentsRouteSource, /await executeRetryBatches\(agentContext/u);
+      assert.match(retryAgentsRouteSource, /await executeRetryBatches\(\s*agentContext/u);
       assert.ok(
         generationRoutesSource.indexOf("const illustratorPromptAgent") >
           generationRoutesSource.indexOf("const illustratorAgentForInterval"),
@@ -6580,6 +6625,7 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       } satisfies PromptOverridesStorage;
       const messages = await buildDynamicGameImagePromptMessages({
         promptOverridesStorage,
+        illustratorPromptTemplate: "Always include the distinctive tag chromatic_aberration_test.",
         request: {
           kind: "portrait",
           title: "Sentinel",
@@ -6593,7 +6639,8 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         latestTurnNarration: "This must not be added to a portrait prompt.",
       });
 
-      assert.equal(messages[0]?.content, override);
+      assert.match(messages[0]?.content ?? "", new RegExp(override));
+      assert.match(messages[0]?.content ?? "", /chromatic_aberration_test/);
       assert.match(messages[1]?.content ?? "", /Appearance traits: towering alien/);
       assert.doesNotMatch(messages[1]?.content ?? "", /latest_gm_turn|must not be added/i);
       assert.doesNotMatch(messages[1]?.content ?? "", /copy the Required canonical NPC visual profile/i);
@@ -6601,6 +6648,30 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
 
       const requestOptions = dynamicGameImagePromptRequestOptions("portrait");
       assert.equal("responseFormat" in requestOptions, false);
+      assert.equal(
+        shouldUseDynamicGameImagePromptGenerator({
+          enabled: false,
+          hasCustomizedIllustratorPrompt: true,
+          hasEnabledPromptDirectorOverride: false,
+        }),
+        true,
+      );
+      assert.equal(
+        shouldUseDynamicGameImagePromptGenerator({
+          enabled: false,
+          hasCustomizedIllustratorPrompt: false,
+          hasEnabledPromptDirectorOverride: true,
+        }),
+        true,
+      );
+      assert.equal(
+        shouldUseDynamicGameImagePromptGenerator({
+          enabled: false,
+          hasCustomizedIllustratorPrompt: false,
+          hasEnabledPromptDirectorOverride: false,
+        }),
+        false,
+      );
     },
   },
   {

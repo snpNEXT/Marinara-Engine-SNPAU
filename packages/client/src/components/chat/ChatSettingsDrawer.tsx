@@ -3136,6 +3136,12 @@ export function ChatSettingsDrawer({
     },
     [chat.id, isRoleplayMode, updateChat],
   );
+  const assignEditablePresetCopy = useCallback(
+    (presetId: string) => {
+      updateChat.mutate({ id: chat.id, promptPresetId: presetId });
+    },
+    [chat.id, updateChat],
+  );
 
   const setConnection = (connectionId: string | null) => {
     updateChat.mutate({ id: chat.id, connectionId });
@@ -3939,7 +3945,9 @@ export function ChatSettingsDrawer({
       const text = await file.text();
       const envelope = JSON.parse(text);
       const created = await importChatPreset.mutateAsync(envelope);
-      if (created?.id) applyChatPreset.mutate({ presetId: created.id, chatId: chat.id });
+      if (created?.id && created.mode === chat.mode) {
+        applyChatPreset.mutate({ presetId: created.id, chatId: chat.id });
+      }
     } catch (err) {
       await showAlertDialog({
         title: localizeUi("chat.settingsProfile.import.failedTitle"),
@@ -4519,6 +4527,7 @@ export function ChatSettingsDrawer({
                       <QuickPresetSectionsEditor
                         presetId={chat.promptPresetId}
                         parentChatHasLorebook={activeLorebooks.length > 0}
+                        onEditableCopyCreated={assignEditablePresetCopy}
                       />
                     </Suspense>
                   ) : null
@@ -9721,6 +9730,33 @@ function MemoryRecallMemoriesModal({
     if (ok) clearMemories.mutate();
   };
 
+  const handleRevectorize = async () => {
+    if (memories.length > 0) {
+      const confirmed = await showConfirmDialog({
+        title: localizeUi("ui.chat.memoryrecallmemoriesmodal.reVectorizeAllMemories"),
+        message: localizeUi("ui.chat.memoryrecallmemoriesmodal.reVectorizeAllMemoriesDescription"),
+        confirmLabel: localizeUi("ui.chat.memoryrecallmemoriesmodal.reVectorizeAll"),
+        tone: "default",
+      });
+      if (!confirmed) return;
+    }
+
+    try {
+      const result = await refreshMemories.mutateAsync();
+      toast.success(
+        localizeUi("ui.chat.memoryrecallmemoriesmodal.reVectorizedValue1MemoryChunks", {
+          value1: result.rebuilt,
+        }),
+      );
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? localizeUi("ui.chat.memoryrecallmemoriesmodal.reVectorizationFailedValue1", { value1: error.message })
+          : localizeUi("ui.chat.memoryrecallmemoriesmodal.reVectorizationFailed"),
+      );
+    }
+  };
+
   return (
     <Modal
       open={open}
@@ -9776,15 +9812,17 @@ function MemoryRecallMemoriesModal({
             </button>
             <button
               type="button"
-              onClick={() => refreshMemories.mutate()}
+              onClick={() => void handleRevectorize()}
               disabled={memoriesQuery.isFetching || refreshMemories.isPending || importMemories.isPending}
-              className="rounded-lg p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-50"
-              title={localizeUi("ui.chat.memoryrecallmemoriesmodal.rebuildMemoriesFromCurrentChatMessages")}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-2 py-1.5 text-[0.625rem] font-medium text-[var(--foreground)] transition-colors hover:bg-[var(--accent)]/80 disabled:opacity-50"
+              title={localizeUi("ui.chat.memoryrecallmemoriesmodal.reVectorizeAllMemoriesDescription")}
+              aria-label={localizeUi("ui.chat.memoryrecallmemoriesmodal.reVectorizeAllMemories")}
             >
               <RefreshCw
                 size="0.8125rem"
                 className={cn((memoriesQuery.isFetching || refreshMemories.isPending) && "animate-spin")}
               />
+              <span>{localizeUi("ui.chat.memoryrecallmemoriesmodal.reVectorizeAll")}</span>
             </button>
             <button
               type="button"

@@ -27,6 +27,7 @@ import {
 import { eq } from "../../packages/server/src/db/file-query.js";
 import { parseBuildMeta, resolveBuildBranch } from "../../packages/server/src/config/build-info.js";
 import { createSerializedMutationQueue } from "../../packages/client/src/lib/serialized-mutation-queue.js";
+import { estimateGameSessionHistoryTokens } from "../../packages/client/src/lib/game-session-history.js";
 
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 import {
@@ -230,6 +231,7 @@ import { createLorebooksStorage } from "../../packages/server/src/services/stora
 import { createNoodleStorage } from "../../packages/server/src/services/storage/noodle.storage.js";
 import { createChatPresetsStorage } from "../../packages/server/src/services/storage/chat-presets.storage.js";
 import { buildGoogleModelsPageUrl } from "../../packages/server/src/routes/connections.routes.js";
+import { normalizeGoogleGenerativeLanguageBaseUrl } from "../../packages/server/src/services/llm/providers/google.provider.js";
 import {
   buildReferencedCharacterContext,
   MAX_REFERENCED_CHARACTERS,
@@ -282,11 +284,16 @@ import {
   ATLAS_CLOUD_IMAGE_MODELS,
   ATLAS_CLOUD_VIDEO_MODELS,
   IMAGE_GENERATION_SOURCES,
+  VIDEO_GENERATION_SOURCES,
   ZAI_IMAGE_MODELS,
   inferImageSource,
   inferVideoSource,
 } from "../../packages/shared/src/constants/model-lists.js";
 import { resolveSceneVideoPrompt } from "../../packages/server/src/services/video/scene-video-prompt-review.js";
+import {
+  buildSwarmUiVideoGenerationBody,
+  parseSwarmUiVideoReference,
+} from "../../packages/server/src/services/video/video-generation.js";
 import {
   buildLorebookEntryCreateRow,
   buildPersonaCreateRow,
@@ -299,6 +306,7 @@ import {
   replaceHomeWidgetCatalog,
 } from "../../packages/server/src/services/home-widget-catalog.service.js";
 import {
+  isAppDataActionName,
   isMutatingWorkspaceCommand,
   PROFESSOR_MARI_APP_DATA_ACTIONS,
 } from "../../packages/server/src/services/professor-mari/workspace-agent.service.js";
@@ -507,6 +515,33 @@ assert.equal(
   }),
   true,
 );
+
+// F6: the direct-JSON compatibility recovery parser (isAppDataActionName) must recognize the
+// instruction.* family, or a small/custom model's bare {"action":"instruction.get",...} is dropped
+// instead of normalized to app_data. Pin the regex directly (isMutatingWorkspaceCommand bypasses
+// the recovery path, so it can't catch a regression at that anchor).
+assert.equal(isAppDataActionName("instruction.get"), true, "the recovery parser recognizes instruction.get");
+assert.equal(isAppDataActionName("instruction.list"), true, "the recovery parser recognizes instruction.list");
+assert.equal(isAppDataActionName("instructions.remember"), true, "the recovery parser tolerates the lenient plural instructions.*");
+assert.equal(isAppDataActionName("post_history_instructions"), false, "a field name that merely contains 'instructions' is not an action (anchored match)");
+// And read/write classification (suffix-based) is correct for the new family.
+assert.equal(
+  isMutatingWorkspaceCommand({ id: "i-get", name: "app_data", arguments: { action: "instruction.get" } }),
+  false,
+  "instruction.get classifies as a read",
+);
+assert.equal(
+  isMutatingWorkspaceCommand({ id: "i-list", name: "app_data", arguments: { action: "instruction.list" } }),
+  false,
+  "instruction.list classifies as a read",
+);
+for (const action of ["instruction.remember", "instruction.update", "instruction.forget"]) {
+  assert.equal(
+    isMutatingWorkspaceCommand({ id: `i-${action}`, name: "app_data", arguments: { action, apply: true } }),
+    true,
+    `${action} classifies as a mutation`,
+  );
+}
 
 assert.deepEqual(
   normalizeHydratedMessage({
@@ -1053,6 +1088,48 @@ try {
     1,
     "Default settings profile repair must be idempotent",
   );
+  await db.insert(chatPresets).values({
+    id: "legacy-branch-profile",
+    name: "Legacy branch profile",
+    mode: "roleplay",
+    isDefault: "false",
+    isActive: "false",
+    settings: JSON.stringify({
+      metadata: {
+        enableAgents: false,
+        branchName: "Foreign branch",
+        branchParentChatId: "foreign-chat",
+        branchParentMessageId: "foreign-message",
+        branchMessageId: "foreign-copy",
+      },
+    }),
+    createdAt: "2026-08-10T09:00:00.000Z",
+    updatedAt: "2026-08-10T09:00:00.000Z",
+  });
+  await db.insert(chats).values({
+    id: "legacy-profile-target-chat",
+    name: "Legacy profile target",
+    mode: "roleplay",
+    characterIds: "[]",
+    metadata: JSON.stringify({ enableAgents: true }),
+    sortOrder: 0,
+    createdAt: "2026-08-10T09:00:00.000Z",
+    updatedAt: "2026-08-10T09:00:00.000Z",
+  });
+  const legacyProfileTarget = await chatPresetStorage.applyToChat(
+    "legacy-branch-profile",
+    "legacy-profile-target-chat",
+  );
+  assert.ok(legacyProfileTarget, "A same-mode legacy profile must remain applicable");
+  const legacyProfileTargetMetadata = JSON.parse(legacyProfileTarget.metadata) as Record<string, unknown>;
+  assert.equal(legacyProfileTargetMetadata.enableAgents, false);
+  for (const key of ["branchName", "branchParentChatId", "branchParentMessageId", "branchMessageId"]) {
+    assert.equal(
+      Object.hasOwn(legacyProfileTargetMetadata, key),
+      false,
+      `Legacy profile application must strip ${key}`,
+    );
+  }
   const storageTrimFixture = await characterStorage.create({
     ...characterDataSchema.parse({ name: "Storage trim fixture" }),
     name: "  Storage trim fixture  ",
@@ -2550,6 +2627,24 @@ const googleModelsPageUrl = buildGoogleModelsPageUrl(
   "next page/token",
 );
 assert.equal(
+  normalizeGoogleGenerativeLanguageBaseUrl("https://generativelanguage.googleapis.com/v1"),
+  "https://generativelanguage.googleapis.com/v1beta",
+  "Legacy Gemini v1 connection URLs must use the supported v1beta endpoint",
+);
+assert.equal(
+  normalizeGoogleGenerativeLanguageBaseUrl("https://generativelanguage.googleapis.com"),
+  "https://generativelanguage.googleapis.com/v1beta",
+);
+assert.equal(
+  normalizeGoogleGenerativeLanguageBaseUrl("https://generativelanguage.googleapis.com/v1beta"),
+  "https://generativelanguage.googleapis.com/v1beta",
+);
+assert.equal(
+  normalizeGoogleGenerativeLanguageBaseUrl("https://generativelanguage.googleapis.com/v1?key=legacy#models"),
+  "https://generativelanguage.googleapis.com/v1beta",
+  "Gemini base URL query and fragment text must not become part of appended model paths",
+);
+assert.equal(
   googleModelsPageUrl,
   "https://gemini-proxy.example.test/v1beta/models?pageSize=1000&pageToken=next%20page%2Ftoken",
 );
@@ -2928,6 +3023,63 @@ assert.deepEqual(JSON.parse(String(swarmUiBody.comfyworkflowraw)), {
 });
 assert.equal(parseSwarmUiImageReference({ images: ["View/local/raw/output.png"] }), "View/local/raw/output.png");
 assert.throws(() => parseSwarmUiImageReference({ error: "queue unavailable" }), /queue unavailable/u);
+assert.equal(inferVideoSource("", "http://127.0.0.1:7801"), "swarmui");
+assert.ok(VIDEO_GENERATION_SOURCES.some((source) => source.id === "swarmui"));
+const swarmUiVideoBody = buildSwarmUiVideoGenerationBody(
+  {
+    prompt: "a blue fox waves",
+    durationSeconds: 5,
+    aspectRatio: "9:16",
+    resolution: "720p",
+    model: "wan-video.safetensors",
+    referenceImage: { base64: "data:image/png;base64,cG5n", mimeType: "image/png" },
+    comfyWorkflow: JSON.stringify({
+      "1": {
+        class_type: "VideoNode",
+        inputs: {
+          prompt: "%prompt%",
+          width: "%width%",
+          height: "%height%",
+          frames: "%length%",
+          fps: "%fps%",
+          image: "%reference_image%",
+        },
+      },
+    }),
+    fps: 16,
+  },
+  "video-session",
+  42,
+);
+assert.equal(swarmUiVideoBody.session_id, "video-session");
+assert.equal(swarmUiVideoBody.width, 720);
+assert.equal(swarmUiVideoBody.height, 1280);
+assert.deepEqual(JSON.parse(String(swarmUiVideoBody.comfyworkflowraw)), {
+  "1": {
+    class_type: "VideoNode",
+    inputs: {
+      prompt: "a blue fox waves",
+      width: 720,
+      height: 1280,
+      frames: 80,
+      fps: 16,
+      image: "cG5n",
+    },
+  },
+});
+assert.equal(parseSwarmUiVideoReference({ images: ["View/local/raw/output.mp4"] }), "View/local/raw/output.mp4");
+assert.throws(
+  () => buildSwarmUiVideoGenerationBody(
+    {
+      prompt: "video",
+      durationSeconds: 5,
+      aspectRatio: "16:9",
+      comfyWorkflow: '{"image":"%reference_image_name%"}',
+    },
+    "video-session",
+  ),
+  /must use %reference_image%/u,
+);
 assert.deepEqual(
   ZAI_IMAGE_MODELS.map((model) => model.id),
   ["glm-image", "cogview-4-250304"],
@@ -3538,6 +3690,11 @@ const chatRowPeekSource = readFileSync(
 assert.match(assignedSweepChatAreaSource, /export const ChatArea = memo\(function ChatArea/u);
 assert.doesNotMatch(assignedSweepChatAreaSource, /updateMessage(?:Extra)?\.mutate/u);
 assert.match(chatMessageSource, /mari-chrome-accent-progress mari-accent-animated mb-1\.5 h-0\.5/u);
+assert.match(
+  chatMessageSource,
+  /isConversationStart && \(\s*<div className="mb-1 w-full px-1">/u,
+  "Roleplay New Start dividers must span user and assistant message bodies",
+);
 assert.match(chatMessageSource, /pointer-events-auto relative z-30 flex h-11 w-11/u);
 assert.match(chatRowPeekSource, /mari-chrome-accent-text-muted mari-accent-animated text-\[0\.6875rem\]/u);
 assert.match(assignedSweepChatAreaSource, /mari-chrome-accent-text-muted mari-accent-animated max-w-sm text-xs/u);
@@ -4039,6 +4196,10 @@ const chatGallerySource = readFileSync(
   new URL("../../packages/client/src/components/chat/ChatGallery.tsx", import.meta.url),
   "utf8",
 );
+const recentChatsSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/RecentChats.tsx", import.meta.url),
+  "utf8",
+);
 const galleryHooksSource = readFileSync(
   new URL("../../packages/client/src/hooks/use-gallery.ts", import.meta.url),
   "utf8",
@@ -4079,6 +4240,24 @@ assert.match(
 assert.match(galleryHooksSource, /api\.delete\(`\/gallery\/scene-videos\/\$\{chatId\}\/\$\{videoId\}`\)/u);
 assert.match(chatGallerySource, /handleDeleteVideo\(video\)/u);
 assert.match(chatGallerySource, /ui\.chat\.chatgallery\.deleteSceneVideo/u);
+assert.match(chatGallerySource, /const \[selectingImages, setSelectingImages\] = useState\(false\)/u);
+assert.match(chatGallerySource, /const selectableImageIds = useMemo/u);
+assert.match(chatGallerySource, /handleBatchDownload/u);
+assert.match(chatGallerySource, /handleBatchDelete/u);
+assert.match(chatGallerySource, /ui\.gallery\.batch\.deletePartial/u);
+assert.match(chatGallerySource, /batchOperationPendingRef\.current/u);
+assert.equal(
+  chatGallerySource.match(/disabled=\{selectedImages\.length === 0 \|\| batchOperationPending\}/gu)?.length,
+  2,
+  "both chat Gallery batch actions remain disabled while an operation is pending",
+);
+assert.match(chatGallerySource, /ui\.gallery\.batch\.toggleImageNamed/u);
+assert.match(chatGallerySource, /asset\.id\.startsWith\("chat-gallery:"\)[\s\S]{0,120}: asset\.id/u);
+assert.match(recentChatsSource, /data-narrow-desktop-limit="4"/u);
+assert.match(recentChatsSource, /md:auto-rows-fr md:grid-rows-none/u);
+assert.match(recentChatsSource, /index === 3 && "hidden md:block"/u);
+assert.match(recentChatsSource, /index >= 4 && "hidden"/u);
+assert.match(globalStyles, /@container \(min-width: 36rem\)[\s\S]*data-component="RecentChats"/u);
 for (const editorSource of [characterEditorSource, personaEditorSource]) {
   assert.match(editorSource, /grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3 md:grid-cols-4/u);
   assert.match(editorSource, /onClick=\{\(\) => void handleDelete\(lightbox\)\}/u);
@@ -4828,6 +5007,169 @@ assert.match(
   /hadMissingSyncedSettings[\s\S]*pickSyncedSettings\(useUIStore\.getState\(\)\)/u,
   "Incomplete server settings blobs must be rewritten with newly synced preferences",
 );
+
+const gameHistoryMessage = (content: string, extra?: unknown) => ({ content, extra });
+const objectGameHistoryMetadata = [gameHistoryMessage("ignored", { tokenCount: 37 })];
+const jsonGameHistoryMetadata = [gameHistoryMessage("ignored", '{"tokenCount":37}')];
+assert.equal(estimateGameSessionHistoryTokens(objectGameHistoryMetadata), 37);
+assert.equal(
+  estimateGameSessionHistoryTokens(jsonGameHistoryMetadata),
+  estimateGameSessionHistoryTokens(objectGameHistoryMetadata),
+  "JSON-string metadata must use the same valid token count as object metadata",
+);
+
+const latestObjectGameHistoryMarker = [
+  gameHistoryMessage("ignored", { tokenCount: 101 }),
+  gameHistoryMessage("ignored", { tokenCount: 23, isConversationStart: true }),
+  gameHistoryMessage("ignored", { tokenCount: 19 }),
+  gameHistoryMessage("ignored", { tokenCount: 7, isConversationStart: true }),
+];
+const latestJsonGameHistoryMarker = [
+  gameHistoryMessage("ignored", '{"tokenCount":101}'),
+  gameHistoryMessage("ignored", '{"tokenCount":23,"isConversationStart":true}'),
+  gameHistoryMessage("ignored", '{"tokenCount":19}'),
+  gameHistoryMessage("ignored", '{"tokenCount":7,"isConversationStart":true}'),
+];
+assert.equal(estimateGameSessionHistoryTokens(latestObjectGameHistoryMarker), 7);
+assert.equal(
+  estimateGameSessionHistoryTokens(latestJsonGameHistoryMarker),
+  estimateGameSessionHistoryTokens(latestObjectGameHistoryMarker),
+  "the latest JSON-string conversation-start marker must determine session history",
+);
+
+const falseStringObjectGameHistoryMarker = [
+  gameHistoryMessage("ignored", { tokenCount: 23, isConversationStart: true }),
+  gameHistoryMessage("ignored", { tokenCount: 19 }),
+  gameHistoryMessage("ignored", { tokenCount: 7, isConversationStart: "false" }),
+];
+const falseStringJsonGameHistoryMarker = [
+  gameHistoryMessage("ignored", '{"tokenCount":23,"isConversationStart":true}'),
+  gameHistoryMessage("ignored", '{"tokenCount":19}'),
+  gameHistoryMessage("ignored", '{"tokenCount":7,"isConversationStart":"false"}'),
+];
+assert.equal(
+  estimateGameSessionHistoryTokens(falseStringObjectGameHistoryMarker),
+  49,
+  "a string false-valued object marker must not start a Game session",
+);
+assert.equal(
+  estimateGameSessionHistoryTokens(falseStringJsonGameHistoryMarker),
+  49,
+  "a string false-valued JSON marker must not start a Game session",
+);
+
+const fallbackGameHistoryMessages = [
+  gameHistoryMessage("one two", "{not valid JSON"),
+  gameHistoryMessage("three four"),
+];
+assert.equal(
+  estimateGameSessionHistoryTokens(fallbackGameHistoryMessages),
+  14,
+  "malformed and absent metadata must retain the full history with text estimates",
+);
+
+// The UI store needs browser storage while Zustand initializes its persisted state.
+// Supply an isolated in-memory implementation so these checks exercise its real
+// migration and projection functions in this Node-based regression lane.
+const uiStorage = new Map<string, string>();
+Object.defineProperty(globalThis, "localStorage", {
+  configurable: true,
+  value: {
+    getItem: (key: string) => uiStorage.get(key) ?? null,
+    setItem: (key: string, value: string) => uiStorage.set(key, value),
+    removeItem: (key: string) => uiStorage.delete(key),
+  },
+});
+const { pickSyncedSettings, useUIStore } = await import("../../packages/client/src/stores/ui.store.js");
+const migrateUiSettings = useUIStore.persist.getOptions().migrate;
+assert.ok(migrateUiSettings, "The UI store must retain its persisted-state migration");
+
+const representativeTrackerSettings = {
+  trackerPanelCollapsedSections: { world: true, invalid: true },
+  trackerPanelUseExpressionSprites: undefined,
+  trackerPanelSectionOrder: ["quests", "world", "world", "invalid"],
+  summaryPopoverSettings: {
+    sourceMode: "range",
+    contextSize: 11.8,
+    rangeStart: 4.2,
+    rangeEnd: 9.7,
+    hideSummarisedMessages: true,
+    collapseHiddenMessages: false,
+  },
+  trackerPanelThoughtBubbleDisplay: "floating",
+  trackerPanelSizeProfile: "invalid",
+  trackerPanelWidth: 280,
+  trackerTemperatureUnit: "kelvin",
+  trackerPanelDockedThoughtsAlwaysVisible: undefined,
+  quoteFormat: "invalid",
+  trackerPanelBackgroundColor: "  #123456  ",
+};
+const migrateRepresentativeTrackerSettings = async (version: number) =>
+  (await migrateUiSettings(structuredClone(representativeTrackerSettings), version)) as Record<string, unknown>;
+const oldTrackerSettings = await migrateRepresentativeTrackerSettings(0);
+const currentTrackerSettings = await migrateRepresentativeTrackerSettings(92);
+const trackerMigrationProjection = (settings: Record<string, unknown>) => ({
+  trackerPanelCollapsedSections: settings.trackerPanelCollapsedSections,
+  trackerPanelUseExpressionSprites: settings.trackerPanelUseExpressionSprites,
+  trackerPanelSectionOrder: settings.trackerPanelSectionOrder,
+  summaryPopoverSettings: settings.summaryPopoverSettings,
+  trackerPanelThoughtBubbleDisplay: settings.trackerPanelThoughtBubbleDisplay,
+  trackerPanelSizeProfile: settings.trackerPanelSizeProfile,
+  trackerTemperatureUnit: settings.trackerTemperatureUnit,
+  trackerPanelDockedThoughtsAlwaysVisible: settings.trackerPanelDockedThoughtsAlwaysVisible,
+  quoteFormat: settings.quoteFormat,
+  trackerPanelBackgroundColor: settings.trackerPanelBackgroundColor,
+});
+assert.deepEqual(
+  trackerMigrationProjection(oldTrackerSettings),
+  trackerMigrationProjection(currentTrackerSettings),
+  "Old and current persisted tracker settings must share the unconditional canonicalizers",
+);
+assert.deepEqual(trackerMigrationProjection(currentTrackerSettings), {
+  trackerPanelCollapsedSections: { world: true },
+  trackerPanelUseExpressionSprites: false,
+  trackerPanelSectionOrder: ["quests", "world", "persona", "characters", "custom"],
+  summaryPopoverSettings: {
+    sourceMode: "range",
+    contextSize: 12,
+    rangeStart: 4,
+    rangeEnd: 10,
+    hideSummarisedMessages: true,
+    collapseHiddenMessages: false,
+  },
+  trackerPanelThoughtBubbleDisplay: "floating",
+  trackerPanelSizeProfile: "compact",
+  trackerTemperatureUnit: "celsius",
+  trackerPanelDockedThoughtsAlwaysVisible: false,
+  quoteFormat: "straight",
+  trackerPanelBackgroundColor: "#123456",
+});
+assert.match(
+  uiStoreSource,
+  /if \(version <= 37\) \{[\s\S]*IMAGE_STYLE_PROFILES_STORAGE_KEY\] \?\? persisted\.imageStyleProfiles/u,
+  "The image-style legacy-key fallback must remain version-specific",
+);
+const projectionState = { ...useUIStore.getState(), enterToSendGame: false, gameTutorialDisabled: true };
+assert.equal(
+  pickSyncedSettings(projectionState).enterToSendGame,
+  false,
+  "Game's Send on Enter preference must be server-synced",
+);
+assert.equal(
+  pickSyncedSettings(projectionState).gameTutorialDisabled,
+  true,
+  "The tutorial dismissal must be server-synced",
+);
+const localProjection = useUIStore.persist.getOptions().partialize(projectionState) as Record<string, unknown>;
+const syncedSettingsMissingFromLocalPersistence = Object.keys(pickSyncedSettings(projectionState)).filter(
+  (key) => !Object.prototype.hasOwnProperty.call(localProjection, key),
+);
+assert.deepEqual(
+  syncedSettingsMissingFromLocalPersistence,
+  [],
+  "Every server-synced setting must also be browser-local persisted",
+);
+assert.equal(localProjection.gameTutorialDisabled, true, "The tutorial dismissal must be browser-local persisted");
 assert.match(chatAreaPromptReviewSource, /MEDIA_PROMPT_PREVIEW_TIMEOUT_MS/);
 assert.match(chatAreaPromptReviewSource, /confirmRoleplayVideoPromptReview/);
 assert.match(chatAreaPromptReviewSource, /confirmConversationSelfiePromptReview/);
@@ -6359,7 +6701,7 @@ try {
   );
   assert.match(
     connectionEditorSource,
-    /const swarmUiWorkflowError =\s*selectedImageService === "swarmui"[\s\S]{0,180}%reference_image_name/u,
+    /const swarmUiWorkflowError =\s*\(selectedImageService === "swarmui" \|\| selectedVideoProvider === "swarmui"\)[\s\S]{0,180}%reference_image_name/u,
     "SwarmUI workflow validation must reject backend-local reference-image filenames before save",
   );
   assert.match(connectionEditorSource, /if \(swarmUiWorkflowError\) \{[\s\S]{0,180}throw new Error/u);

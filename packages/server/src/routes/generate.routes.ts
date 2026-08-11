@@ -40,6 +40,7 @@ import {
   DEFAULT_AGENT_MAX_TOKENS,
   DEFAULT_CONVERSATION_PROMPT,
   DEFAULT_GENERATION_PARAMS,
+  extractLeadingThinkingBlocks,
   unwrapConversationInstructions,
   findKnownModel,
   LOCAL_SIDECAR_CONNECTION_ID,
@@ -133,7 +134,6 @@ import {
 import { persistGeneratedImageToEntityGalleries } from "../services/image/generated-image-entity-gallery.js";
 import { resolveImageConnectionFallback } from "../services/generation/media-connection-fallback.js";
 import { resolveCustomAgentStyleProfileId } from "../services/generation/custom-agent-image-settings.js";
-import { extractLeadingThinkingBlocks } from "../services/llm/inline-thinking.js";
 import { buildSpotifyDjConstraints } from "../services/spotify/spotify-dj-constraints.js";
 import {
   assemblePrompt,
@@ -438,8 +438,8 @@ import {
   replaceRoleplayDmCommandText,
   resolveRoleplayDmTarget,
 } from "../services/generation/roleplay-dm-utils.js";
+import { cardPromptText } from "../services/prompt/card-text.js";
 import {
-  cardPromptText,
   getHiddenCompletionTokens,
   getVisibleCompletionTokens,
   stripSpacesBeforeLineBreaks,
@@ -1049,6 +1049,7 @@ export async function generateRoutes(app: FastifyInstance) {
       input.impersonate && input.impersonateConnectionId ? input.impersonateConnectionId : null;
     const fallbackConnectionId = input.connectionId || chat.connectionId;
     let connId = impersonateConnectionOverride || fallbackConnectionId;
+    let memoryRecallConnectionId = connId === "random" ? "random" : undefined;
 
     // ── Random connection: pick one from the random pool ──
     if (connId === "random") {
@@ -1077,6 +1078,7 @@ export async function generateRoutes(app: FastifyInstance) {
         impersonateConnectionOverride,
       );
       connId = fallbackConnectionId;
+      memoryRecallConnectionId = connId === "random" ? "random" : undefined;
       if (connId === "random") {
         const pool = await connections.listRandomPool().catch(releaseActiveGenerationAndRethrow);
         if (!pool.length) {
@@ -1136,6 +1138,7 @@ export async function generateRoutes(app: FastifyInstance) {
     try {
       memoryRecallEmbeddingSource = await resolveMemoryRecallEmbeddingSource(app.db, {
         chatMetadata: chatMeta,
+        connectionId: memoryRecallConnectionId,
         activeConnection: conn,
         activeBaseUrl: baseUrl,
       });
@@ -1147,6 +1150,7 @@ export async function generateRoutes(app: FastifyInstance) {
       try {
         memoryRecallVectorizerAvailable = await isMemoryRecallVectorizerAvailable(app.db, {
           chatMetadata: chatMeta,
+          connectionId: memoryRecallConnectionId,
           activeConnection: conn,
           activeBaseUrl: baseUrl,
         });
@@ -2827,6 +2831,10 @@ export async function generateRoutes(app: FastifyInstance) {
           });
         }
 
+        let generationProviderOrigin: { model: string; provider: string } = {
+          model: conn.model,
+          provider: conn.provider,
+        };
         const providerRuntime = resolveGenerationProviderRuntime({
           connectionId: connId ?? "",
           connection: conn,
@@ -2834,6 +2842,12 @@ export async function generateRoutes(app: FastifyInstance) {
           fallbackConnection: mainFallbackConnection,
           fallbackBaseUrl: mainFallbackBaseUrl,
           onFallback,
+          onProviderUsed: (origin) => {
+            generationProviderOrigin =
+              origin.kind === "fallback"
+                ? { model: origin.model, provider: origin.provider }
+                : { model: conn.model, provider: conn.provider };
+          },
           chatMode,
           isSceneChat,
           chatParameters: chatMeta.chatParameters,
@@ -5454,6 +5468,7 @@ export async function generateRoutes(app: FastifyInstance) {
           oocMessages: string[];
           characterId: string | null;
         } | null> => {
+          generationProviderOrigin = { model: conn.model, provider: conn.provider };
           let recoveredAlreadyAppliedSpatialTurn = false;
           const targetCharacterProfile = targetCharId ? characterMacroProfilesById.get(targetCharId) : undefined;
           const deferredTargetCharacterProfile = deferCharacterMacros ? targetCharacterProfile : undefined;
@@ -6958,8 +6973,8 @@ export async function generateRoutes(app: FastifyInstance) {
           } else if (savedMsg?.id) {
             const extraUpdate: Record<string, unknown> = {
               generationInfo: {
-                model: conn.model,
-                provider: conn.provider,
+                model: generationProviderOrigin.model,
+                provider: generationProviderOrigin.provider,
                 temperature: temperature ?? null,
                 maxTokens: effectiveMaxTokensForSend ?? null,
                 maxContext: suppressModelParameters ? null : (effectiveMaxContext ?? connectionMaxContext ?? null),
