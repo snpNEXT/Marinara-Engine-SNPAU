@@ -17,6 +17,12 @@ import { getFileStorageDir, getMonorepoRoot, isCustomToolScriptEnabled } from ".
 import { logger } from "../../lib/logger.js";
 import { createCharactersStorage } from "../storage/characters.storage.js";
 import {
+  clearCharacterEmbeddedLorebook,
+  embedLorebookIntoCharacter,
+  resolveEmbeddedCharacterId,
+  syncCharacterBookFromLorebook,
+} from "../lorebook/character-book-sync.js";
+import {
   createMariInstructionsStorage,
   MAX_INSTRUCTION_CONTENT_LENGTH,
   MAX_INSTRUCTION_DESCRIPTION_LENGTH,
@@ -71,6 +77,7 @@ type PlanChange = MariDbRowChange & {
   afterRaw?: Row | null;
   apply: boolean;
   cascadeOf?: string;
+  embeddedCharacterId?: string;
 };
 type Plan = {
   changes: PlanChange[];
@@ -822,6 +829,11 @@ function normalizeAppDataActionName(action: string): string {
     "lorebook.entries.get": "lorebook.getentry",
     "lorebook.entry.update": "lorebook.updateentry",
     "lorebook.entries.update": "lorebook.updateentry",
+    "lorebook.entry.delete": "lorebook.deleteentry",
+    "lorebook.entries.delete": "lorebook.deleteentry",
+    "lorebook.entry.remove": "lorebook.deleteentry",
+    "lorebook.entries.remove": "lorebook.deleteentry",
+    "lorebook.removeentry": "lorebook.deleteentry",
     "theme.set": "theme.setactive",
     "theme.activate": "theme.setactive",
     "promptpreset.list": "preset.list",
@@ -1027,6 +1039,16 @@ export function normalizeCharacterActionData(input: Row): Row {
 }
 
 const SELECTIVE_LOGIC_VALUES = new Set(["and", "and_all", "or", "not", "not_all"]);
+const LOREBOOK_FILTER_MODE_VALUES = new Set(["any", "include", "exclude"]);
+const LOREBOOK_MATCHING_SOURCE_VALUES = new Set([
+  "character_name",
+  "character_description",
+  "character_personality",
+  "character_scenario",
+  "character_tags",
+  "persona_description",
+  "persona_tags",
+]);
 
 /** Validate a selectiveLogic string against the stored enum; undefined if absent or invalid. */
 function normalizeSelectiveLogicValue(raw: string | undefined): string | undefined {
@@ -1643,6 +1665,62 @@ function assignListField(target: Row, source: Row, sourceKeys: string[], targetK
   if (value === undefined) return false;
   target[targetKey] = value;
   return true;
+}
+
+/**
+ * Assign a nullable numeric field: an explicit `null` clears it to its default, a finite number (or
+ * numeric string) sets it — optionally truncated to an integer and/or clamped to [min, max] — and an
+ * absent or non-numeric value is ignored. Lets Mari both set and clear the entry's nullable numbers.
+ */
+function assignNullableNumberField(
+  target: Row,
+  source: Row,
+  sourceKeys: string[],
+  targetKey: string,
+  bounds?: { min?: number; max?: number; integer?: boolean },
+): boolean {
+  for (const key of sourceKeys) {
+    if (!(key in source)) continue;
+    const raw = source[key];
+    if (raw === null) {
+      target[targetKey] = null;
+      return true;
+    }
+    let value: number | undefined;
+    if (typeof raw === "number" && Number.isFinite(raw)) value = raw;
+    else if (typeof raw === "string" && raw.trim() && Number.isFinite(Number(raw))) value = Number(raw);
+    if (value === undefined) continue;
+    if (bounds?.integer) value = Math.trunc(value);
+    if (bounds?.min !== undefined) value = Math.max(bounds.min, value);
+    if (bounds?.max !== undefined) value = Math.min(bounds.max, value);
+    target[targetKey] = value;
+    return true;
+  }
+  return false;
+}
+
+/** Assign a lorebook filter mode, validated against the stored enum (invalid values are ignored). */
+function assignFilterModeField(target: Row, source: Row, sourceKeys: string[], targetKey: string): boolean {
+  const value = firstString(source, sourceKeys);
+  if (value === undefined) return false;
+  const normalized = value.trim().toLowerCase();
+  if (!LOREBOOK_FILTER_MODE_VALUES.has(normalized)) return false;
+  target[targetKey] = normalized;
+  return true;
+}
+
+/** Assign the additional-matching-sources array, keeping only known source names. */
+function assignMatchingSourcesField(target: Row, source: Row, sourceKeys: string[], targetKey: string): boolean {
+  for (const key of sourceKeys) {
+    const value = source[key];
+    if (!Array.isArray(value)) continue;
+    target[targetKey] = value
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter((entry) => LOREBOOK_MATCHING_SOURCE_VALUES.has(entry));
+    return true;
+  }
+  return false;
 }
 
 function assignBooleanTextField(target: Row, source: Row, sourceKeys: string[], targetKey: string): boolean {
@@ -2934,7 +3012,97 @@ export class MariDbService {
       assignBooleanTextField(target, source, ["matchWholeWords", "match_whole_words"], "matchWholeWords") || changed;
     changed = assignBooleanTextField(target, source, ["caseSensitive", "case_sensitive"], "caseSensitive") || changed;
     changed = assignBooleanTextField(target, source, ["useRegex", "use_regex"], "useRegex") || changed;
+    // #4791 follow-up: the remaining user-editable entry settings — activation chance, timing,
+    // recursion, grouping, matching filters, and per-entry vectorization. Nullable numbers accept an
+    // explicit null to clear; filter modes and matching sources are validated against their enums.
+    // (folderId is validated against the entry's own lorebook in the add/update handlers below, which
+    // have DB access; it cannot be resolved from this synchronous helper.)
+    changed =
+      assignNullableNumberField(target, source, ["probability"], "probability", { min: 0, max: 100, integer: true }) ||
+      changed;
+    changed = assignNullableNumberField(target, source, ["scanDepth", "scan_depth"], "scanDepth") || changed;
+    changed = assignNullableNumberField(target, source, ["sticky"], "sticky") || changed;
+    changed = assignNullableNumberField(target, source, ["cooldown"], "cooldown") || changed;
+    changed = assignNullableNumberField(target, source, ["delay"], "delay") || changed;
+    changed = assignNullableNumberField(target, source, ["ephemeral"], "ephemeral", { min: 0, integer: true }) || changed;
+    changed = assignNullableNumberField(target, source, ["groupWeight", "group_weight"], "groupWeight") || changed;
+    changed = assignBooleanTextField(target, source, ["preventRecursion", "prevent_recursion"], "preventRecursion") || changed;
+    changed = assignBooleanTextField(target, source, ["excludeRecursion", "exclude_recursion"], "excludeRecursion") || changed;
+    changed =
+      assignBooleanTextField(target, source, ["delayUntilRecursion", "delay_until_recursion"], "delayUntilRecursion") ||
+      changed;
+    changed =
+      assignBooleanTextField(
+        target,
+        source,
+        ["excludeFromVectorization", "exclude_from_vectorization"],
+        "excludeFromVectorization",
+      ) || changed;
+    changed = assignBooleanTextField(target, source, ["locked"], "locked") || changed;
+    changed =
+      assignFilterModeField(target, source, ["characterFilterMode", "character_filter_mode"], "characterFilterMode") ||
+      changed;
+    changed =
+      assignListField(target, source, ["characterFilterIds", "character_filter_ids"], "characterFilterIds") || changed;
+    changed =
+      assignFilterModeField(
+        target,
+        source,
+        ["characterTagFilterMode", "character_tag_filter_mode"],
+        "characterTagFilterMode",
+      ) || changed;
+    changed =
+      assignListField(target, source, ["characterTagFilters", "character_tag_filters"], "characterTagFilters") ||
+      changed;
+    changed =
+      assignFilterModeField(
+        target,
+        source,
+        ["generationTriggerFilterMode", "generation_trigger_filter_mode"],
+        "generationTriggerFilterMode",
+      ) || changed;
+    changed =
+      assignListField(
+        target,
+        source,
+        ["generationTriggerFilters", "generation_trigger_filters"],
+        "generationTriggerFilters",
+      ) || changed;
+    changed =
+      assignMatchingSourcesField(
+        target,
+        source,
+        ["additionalMatchingSources", "additional_matching_sources"],
+        "additionalMatchingSources",
+      ) || changed;
     return changed;
+  }
+
+  /**
+   * Resolve and validate a folderId change for a lorebook entry. The add/update handlers own this
+   * (not the synchronous field helper) because it needs a DB lookup: an explicit null / empty / "none"
+   * clears placement, otherwise the folder must exist and belong to the entry's own lorebook — mirroring
+   * the CLI (`mari lorebooks add-entry/update-entry --folder-id`) and the storage layer.
+   */
+  private async assignEntryFolderId(target: Row, source: Row, lorebookId: string): Promise<void> {
+    for (const key of ["folderId", "folder_id"]) {
+      if (!(key in source)) continue;
+      const value = source[key];
+      if (value === null || (typeof value === "string" && (!value.trim() || value.trim().toLowerCase() === "none"))) {
+        target.folderId = null;
+        return;
+      }
+      if (typeof value === "string") {
+        const folderId = value.trim();
+        const folderRow = await this.getRawById(getMeta("lorebook_folders"), folderId);
+        if (!folderRow || String(folderRow.lorebookId) !== String(lorebookId)) {
+          throw new Error(`Folder ${folderId} not found in lorebook ${lorebookId}`);
+        }
+        target.folderId = folderId;
+        return;
+      }
+      return;
+    }
   }
 
   // #4851: Professor Mari's persistent standing instructions ("memories").
@@ -3188,13 +3356,17 @@ export class MariDbService {
         };
         this.assignLorebookActionFields(row, data);
         const entries = Array.isArray(data.entries) ? data.entries : [];
-        const relatedInserts = entries.map((entry, index) => {
-          if (!isRecord(entry)) throw new Error(`lorebook entry ${index + 1} must be an object`);
-          return {
-            table: "lorebook_entries",
-            row: buildLorebookEntryCreateRow(entry, id, newId(), timestamp, (index + 1) * 100),
-          };
-        });
+        const relatedInserts = await Promise.all(
+          entries.map(async (entry, index) => {
+            if (!isRecord(entry)) throw new Error(`lorebook entry ${index + 1} must be an object`);
+            // Give embedded entries the same coverage as lorebook.addEntry: build the base row, then
+            // apply every user-editable setting and validate folder placement against this lorebook.
+            const entryRow = buildLorebookEntryCreateRow(entry, id, newId(), timestamp, (index + 1) * 100);
+            this.assignLorebookEntryActionFields(entryRow, entry);
+            await this.assignEntryFolderId(entryRow, entry, id);
+            return { table: "lorebook_entries", row: entryRow };
+          }),
+        );
         return this.executeMutation(
           {
             kind: "insert",
@@ -3289,12 +3461,33 @@ export class MariDbService {
             "matchWholeWords",
             "caseSensitive",
             "useRegex",
+            "probability",
+            "scanDepth",
+            "sticky",
+            "cooldown",
+            "delay",
+            "ephemeral",
+            "groupWeight",
+            "preventRecursion",
+            "excludeRecursion",
+            "delayUntilRecursion",
+            "excludeFromVectorization",
+            "locked",
+            "characterFilterMode",
+            "characterFilterIds",
+            "characterTagFilterMode",
+            "characterTagFilters",
+            "generationTriggerFilterMode",
+            "generationTriggerFilters",
+            "additionalMatchingSources",
+            "folderId",
           ],
         );
         const timestamp = now();
         const id = firstString(args, ["entryId", "id"]) ?? newId();
         const row = buildLorebookEntryCreateRow(data, lorebookId, id, timestamp);
         this.assignLorebookEntryActionFields(row, data);
+        await this.assignEntryFolderId(row, data, lorebookId);
         return this.executeMutation(
           {
             kind: "insert",
@@ -3339,10 +3532,31 @@ export class MariDbService {
             "matchWholeWords",
             "caseSensitive",
             "useRegex",
+            "probability",
+            "scanDepth",
+            "sticky",
+            "cooldown",
+            "delay",
+            "ephemeral",
+            "groupWeight",
+            "preventRecursion",
+            "excludeRecursion",
+            "delayUntilRecursion",
+            "excludeFromVectorization",
+            "locked",
+            "characterFilterMode",
+            "characterFilterIds",
+            "characterTagFilterMode",
+            "characterTagFilters",
+            "generationTriggerFilterMode",
+            "generationTriggerFilters",
+            "additionalMatchingSources",
+            "folderId",
           ],
         );
         const patch: Row = { updatedAt: now() };
         this.assignLorebookEntryActionFields(patch, data);
+        await this.assignEntryFolderId(patch, data, String(entryExists.lorebookId));
         if (Object.keys(patch).length <= 1) {
           throw new Error(
             "lorebook.updateEntry needs entryId plus a patch field such as name, content, keys, description, enabled, constant, or order",
@@ -3354,6 +3568,26 @@ export class MariDbService {
             table: "lorebook_entries",
             id: entryId,
             patch,
+            apply: firstBoolean(args, ["apply"]) === true,
+            cascade: false,
+            reason: firstString(args, ["reason"]) ?? null,
+            cwd: context.cwd,
+          },
+          context.command,
+          context.sessionId,
+        );
+      }
+      case "deleteentry": {
+        // A safe, scoped single-entry delete so Mari never reaches for a raw `mari db delete --where`
+        // (which can match — and remove — far more rows than intended).
+        const entryId = requiredString(args, ["entryId", "id"], "lorebook entry id");
+        const entryExists = await this.getRawById(getMeta("lorebook_entries"), entryId);
+        if (!entryExists) throw new Error(`Lorebook entry ${entryId} not found`);
+        return this.executeMutation(
+          {
+            kind: "delete",
+            table: "lorebook_entries",
+            id: entryId,
             apply: firstBoolean(args, ["apply"]) === true,
             cascade: false,
             reason: firstString(args, ["reason"]) ?? null,
@@ -4475,6 +4709,9 @@ export class MariDbService {
       }
       throw err;
     }
+    // #4927: the restore reverted the lorebook rows, so rebuild any embedded character_book from the
+    // restored state (no-op for standalone lorebooks).
+    await this.syncAffectedCharacterBooks(record.plan.changes);
     this.pending.delete(id);
     await this.deletePendingSidecar(id);
     const history = await this.recordHistory({
@@ -6158,6 +6395,53 @@ export class MariDbService {
     return { kind, table, scriptPath, apply, cascade: true, reason, cwd };
   }
 
+  private async captureDeletedLorebookEmbeddings(changes: PlanChange[]): Promise<void> {
+    for (const change of changes) {
+      if (!change.apply || change.table !== "lorebooks" || change.action !== "delete") continue;
+      change.embeddedCharacterId = (await resolveEmbeddedCharacterId(this.db, change.id)) ?? undefined;
+    }
+  }
+
+  // #4927/#4932: keep an embedded character's data.character_book in sync after Mari mutates a lorebook
+  // through the generic mutation path — which, unlike the HTTP routes, never called the sync, so
+  // add/update/delete of an embedded lorebook's entries left the derived copy stale. Safe for
+  // standalone lorebooks: syncCharacterBookFromLorebook no-ops when the lorebook isn't embedded, and
+  // swallows its own errors, so a sync failure never breaks the mutation.
+  private async syncAffectedCharacterBooks(changes: PlanChange[]): Promise<void> {
+    const lorebookIds = new Set<string>();
+    const collect = (value: unknown) => {
+      if (typeof value === "string" && value) lorebookIds.add(value);
+    };
+    for (const change of changes) {
+      if (!change.apply) continue;
+      if (change.table === "lorebook_entries") {
+        // Collect BOTH sides: an entry reparented between lorebooks (a raw patch of its
+        // lorebookId) leaves its former lorebook stale too, not just the destination.
+        collect(change.before?.lorebookId);
+        collect(change.after?.lorebookId);
+      } else if (change.table === "lorebooks" && change.id) {
+        if (change.action === "delete") {
+          if (!change.embeddedCharacterId) continue;
+          const restored = await this.getRawById(getMeta("lorebooks"), change.id);
+          if (restored) {
+            try {
+              await embedLorebookIntoCharacter(this.db, change.embeddedCharacterId, change.id);
+            } catch (err) {
+              logger.error(err, "[mari-db] failed to restore embedded lorebook %s", change.id);
+            }
+          } else {
+            await clearCharacterEmbeddedLorebook(this.db, change.embeddedCharacterId, change.id);
+          }
+        } else {
+          collect(change.id);
+        }
+      }
+    }
+    for (const lorebookId of lorebookIds) {
+      await syncCharacterBookFromLorebook(this.db, lorebookId);
+    }
+  }
+
   private async executeMutation(
     request: ParsedMutationRequest,
     command: string,
@@ -6190,7 +6474,9 @@ export class MariDbService {
     }
 
     try {
+      await this.captureDeletedLorebookEmbeddings(plan.changes);
       const journalPath = await this.applyPlan(plan);
+      await this.syncAffectedCharacterBooks(plan.changes);
       const history = await this.recordHistory({ plan, command, sessionId, status: "approved", journalPath });
       const review = await this.createAppliedReview(plan, command, sessionId, journalPath, history.id);
       return {
