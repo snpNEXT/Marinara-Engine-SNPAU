@@ -6,6 +6,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Added
 
+- Added literal message search to Conversation and Roleplay chat headers, with compact results that jump to matching messages anywhere in the current chat (#4922).
 - Added a Roleplay Agents-menu stop control that appears only while the current chat has an active generation and can cancel server-side work that survived navigation or a reload (#4942).
 - Added a persisted Send on Enter toggle for Professor Mari and a reusable setup download on New Game's final step before the game starts (#4928, #4930).
 - Added Markdown previews to Conversation, Game, and section content in the preset editor, matching character and lorebook authoring (#4916).
@@ -63,6 +64,16 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Fixed
 
+- Imported preset regex entries even when they contain unsupported SillyTavern placements, warning about ignored placement values instead of discarding the entire regex, and let Music DJ try the next candidate when Spotify accepts but cannot verify the first selected track (#4959, #4960).
+- Refreshed stale same-version browser clients when the server commit changes, so staging fixes such as NovelAI generation-setting saves and connection imports no longer remain hidden behind an older cached interface (#4957).
+- Kept the Termux-hosted server awake while the launcher is running and released the Android wake lock when it stops, preventing backgrounded Termux sessions from freezing until the terminal is reopened (#4956).
+- Kept Professor Mari's generated continuation suggestions available after opening and closing a lorebook (#4953).
+- Made SwarmUI image requests honor the configured ComfyUI timeout instead of inheriting a shorter transport timeout (#4954).
+- Kept canceled Professor Mari prompts out of the composer, made the first message edit persist, and retained retry for the latest response (#4947).
+- Preserved the complete provider-ready prompt produced by Game Mode's dynamic image prompt generator through prompt review and image submission (#4948).
+- Stopped Professor Mari's workspace verification guard from treating ordinary task-completion wording as an unverified data mutation (#4949).
+- Enforced each connection's Max Parallel Agent Jobs limit across separate post-processing Agent batches (#4950).
+- Removed deleted lorebooks from the active chat context immediately instead of leaving a stale cached attachment label (#4951).
 - Made turn-game bot move prompts visible when UI debug mode or `DEBUG_AGENTS` is enabled (follow-up to #4945).
 - Included custom world fields and persona inventory in Agent Suite tracker editing without replacing adjacent tracker data (#4937).
 - Exposed active custom image agents in Conversation Gallery's Illustrate picker, matching the existing Roleplay and Game action (#4940).
