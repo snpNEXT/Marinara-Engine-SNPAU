@@ -4,8 +4,15 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+## [2.4.2]
+
 ### Added
 
+- Added the v2.4.2 in-app What's New message with bundled images and looping videos so its update overview remains available without external media requests.
+- Let Game setup enable Illustrator's Dynamic LLM Prompt Generation before the first image request (#4964).
+- Added always-visible activation and vectorization status to lorebook entries in Professor Mari's Easy Viewer review cards: each entry now shows whether it is Constant, Selective, or Normal (using the lorebook editor's dot colors) and whether it is Vectorized, Not vectorized, or Vector excluded, with the before and after shown when Mari's edit changes them, so an entry's kind is clear at a glance instead of only when a setting happens to change (#4931).
+- Added a per-entry Reject control to Professor Mari's Easy Viewer: revert a single lorebook entry of a multi-entry change while keeping the rest applied, instead of only being able to Restore the whole change. Rejecting is refused for anything that could leave a dangling reference (an entry removed as part of deleting its lorebook, or a non-entry row), and the review card shrinks to the entries that remain (#4931).
+- Added a "View as prompt" preview to Professor Mari's Easy Viewer for character and preset edits: a before/after view of how the edit appears in the assembled prompt, with additions in green and removals in red. It is a synthetic preview assembled on its own (default preset, no persona or chat history), not a live chat prompt (#4931).
 - Added literal message search to Conversation and Roleplay chat headers, with compact results that jump to matching messages anywhere in the current chat (#4922).
 - Added a Roleplay Agents-menu stop control that appears only while the current chat has an active generation and can cancel server-side work that survived navigation or a reload (#4942).
 - Added a persisted Send on Enter toggle for Professor Mari and a reusable setup download on New Game's final step before the game starts (#4928, #4930).
@@ -49,9 +56,16 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Added mari CLI flags for lorebook entry secondary keys, selective matching, selective logic, whole-word matching, case sensitivity, and regex on `add-entry` and `update-entry`, matching the app-data entry editor (#4811).
 - Added lorebook-authoring strategy guidance, a worked multi-control example, and macro/recursion documentation to the lorebook entries guide (#4814).
 - Made Professor Mari's Keep/Restore undo durable across restarts, persisting pending reviews to disk with a 14-day retention window and a 50-item cap (#4828).
+- Added optional, quota-limited synthetic audience activity for public NoodleR posts, with separate likes, replies, reposts, and a manual refresh action.
+- Added a persisted local-day NoodleR fan activity plan with four deterministic platform runs and resumable activity application state.
+- Preserved creator-level fan audience inheritance when editing individual archetype weights, and surfaced source-action failures in NoodleR profile controls.
+- Added a configurable automatic audience-run count, kept manual audience runs available outside that daily budget, and prevented malformed generated activities from failing an entire run.
+- Exposed **Max Parallel Agent Jobs** in local-model runtime settings and used it for agent scheduling and llama-server parallel slots while retaining the configured context budget per request (#4609).
 
 ### Changed
 
+- Expanded profile-import previews and quarantine to cover executable tools, personal extensions, persistent Professor Mari memories, and active themes, preserving their contents for deliberate review and re-enabling.
+- Bound downloaded Agent installs and updates to the version and checksum the user reviewed, quarantined imported executable tools until review, and moved custom scripts plus Professor Mari transforms into terminable or OS-sandboxed workers while retaining an explicit reviewed-script fallback on unsupported systems.
 - Repeated local checks now reuse native TypeScript and ESLint caches for unchanged client files (#4938).
 - Manual Agent retries now resolve the same current settings, custom tools, and permitted built-in tools as normal Agent generation while retaining retry-specific historical context and Spotify playback verification (#4894).
 - Localized achievement definitions and official capability-package Home metadata through stable locale-aware contracts with English fallback, and refreshed Home's welcome copy (#4803, #4806).
@@ -61,9 +75,28 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Sharded fourteen more chat-keyed tables (memory, agent runs, game state, calls, gallery, influences, and notes) into per-chat files, cutting write amplification on every turn (#4754).
 - Moved Home Professor Mari's available-name lists out of the system prompt into a per-turn message, stabilizing prompt caching and capping each category at 100 entries (#4771).
 - Ranked Home Professor Mari's available-names list by relevance to the current conversation instead of an alphabetical slice, falling back to alphabetical when relevance data isn't available (#4779).
+- Advanced the stable release identity to v2.4.2 across the Engine, PWA manifest, Windows installer, Android bootstrap APK, update checks, Home page, and release references. Android uses `versionName` `2.4.2` with `versionCode` `43` so it updates over every previously published APK (#4610).
+- Required AI-agent contributions to update the Unreleased changelog for every bug fix, behavior change, and new feature, keeping release notes aligned with the implementation that introduced each change (#4613).
 
 ### Fixed
 
+- Included Noodle in Professor Mari's official 32-package catalog knowledge and corrected the current downloadable-package documentation for the v2.4.2 Agent catalog (#4992).
+- Kept version-tagged Docker release images on the stable Marinara Agents catalog instead of following staging after publication.
+- Kept dependency security updates pinned to patched resolutions and made the existing pnpm launcher handoff checks a required pull-request gate, protecting upgrades without forcing users onto a new package-manager major version (#4988).
+- Kept inline Game dialogue and group character macros responsive on malformed or very large generated text without limiting valid authored content (#4984).
+- Removed the 2 GiB application ceiling from automatic and downloadable full backups, using streamed ZIP64 archives so larger local libraries remain restorable without weakening safety limits for ordinary profile imports (#4982).
+- Hardened imported and model-authored content against pathological parsing inputs and reserved metadata keys without removing supported import formats or local tools.
+- Kept automatic and downloadable backups working when local media exceeds the profile importer's ordinary per-file limit, while preserving bounded streaming imports and omitting only an individual unreadable or unarchivable asset instead of failing the whole backup; any omissions are listed in `RESTORE.txt` and automatic-backup status.
+- Kept visible Android browsers connected to a same-device Termux server responsive with a lightweight loopback-only heartbeat, without restoring hidden-tab or remote-client polling (#4968).
+- Kept long-running SwarmUI image requests alive across idle container networking while retaining the configured ComfyUI generation deadline (#4969).
+- Restored Professor Mari preset creation while keeping Engine-owned preset identifiers protected from user input.
+- Updated Roleplay message-edit shortcut hints to mention Ctrl+Enter on Windows as well as Cmd+Enter on macOS (#4965).
+- Kept the Message Avatar Scale and related art-size sliders wide enough to remain visible and repeatedly adjustable in Chrome, including at larger interface display sizes (#4974).
+- Kept an already-installed Noodle Agent visible and usable after downloading an update while its replacement waits for the required Marinara Engine restart (#4976).
+- Prevented crafted profile archives from retargeting saved credentials, serving active files as trusted app content, escaping asset directories through imported metadata, reconstructing blocked theme CSS, or exhausting the importer with oversized metadata.
+- Kept Professor Mari suggestion chips in a single horizontally scrollable row on mobile instead of stacking them above the composer.
+- Hardened local security without removing extension or remote-access capabilities: made Professor Mari filters data-only, encrypted webhook credentials, bounded ZIP extraction and rich-chat network/CSS behavior, restricted automatic network trust to detected runtimes, privatized local data and backups, verified downloads and release commits, and patched audited dependencies.
+- Authenticated APK-managed Android localhost sessions without restricting manual Termux or LAN use, verified the pinned F-Droid Termux APK before install, bound native bridge calls to the exact Engine origin, and made release signing and bootstrap source commits fail closed.
 - Imported preset regex entries even when they contain unsupported SillyTavern placements, warning about ignored placement values instead of discarding the entire regex, and let Music DJ try the next candidate when Spotify accepts but cannot verify the first selected track (#4959, #4960).
 - Refreshed stale same-version browser clients when the server commit changes, so staging fixes such as NovelAI generation-setting saves and connection imports no longer remain hidden behind an older cached interface (#4957).
 - Kept the Termux-hosted server awake while the launcher is running and released the Android wake lock when it stops, preventing backgrounded Termux sessions from freezing until the terminal is reopened (#4956).
@@ -225,27 +258,6 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Moved full Docker images to Debian Trixie so ARM64 sidecars can load the required glibc and libstdc++ symbols (#4638).
 - Matched the **Add character to active chat** button to the neighboring Character row actions in folders and standalone rows on desktop and mobile.
 - Stopped the NoodleR reserve poll from scanning the prepared-post and Noodle post tables every minute when automatic posting is off and no reserve posts exist, and backed the automatic timeline-refresh poll off to 15 minutes while refreshes are disabled, cutting idle CPU wake-ups on phone and Termux installs (#4630).
-
-### Added
-
-- Added optional, quota-limited synthetic audience activity for public NoodleR posts, with separate likes, replies, reposts, and a manual refresh action.
-- Added a persisted local-day NoodleR fan activity plan with four deterministic platform runs and resumable activity application state.
-- Preserved creator-level fan audience inheritance when editing individual archetype weights, and surfaced source-action failures in NoodleR profile controls.
-- Added a configurable automatic audience-run count, kept manual audience runs available outside that daily budget, and prevented malformed generated activities from failing an entire run.
-
-## [2.4.2]
-
-### Added
-
-- Exposed **Max Parallel Agent Jobs** in local-model runtime settings and used it for agent scheduling and llama-server parallel slots while retaining the configured context budget per request (#4609).
-
-### Changed
-
-- Advanced the stable release identity to v2.4.2 across the Engine, PWA manifest, Windows installer, Android bootstrap APK, update checks, Home page, and release references. Android uses `versionName` `2.4.2` with `versionCode` `43` so it updates over every previously published APK (#4610).
-- Required AI-agent contributions to update the Unreleased changelog for every bug fix, behavior change, and new feature, keeping release notes aligned with the implementation that introduced each change (#4613).
-
-### Fixed
-
 - Removed duplicate safe-area padding from Noodle's mobile setup footer so the shared shell remains the single owner of spacing above Android navigation controls (#4586).
 - Kept the first edit to a sent user message after canceling generation instead of discarding it when transient swipe cleanup changes the active index (#4608).
 - Matched the **Add character to active chat** action to neighboring controls in folders and standalone Character rows, including a visible consistently sized icon on desktop and mobile (#4611).

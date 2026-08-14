@@ -157,6 +157,7 @@ import {
   parseTrackerHiddenFields,
   normalizeRpgStatPools,
   normalizeIllustratorImagesPerGeneration,
+  resolveGameImageDynamicPromptEnabled,
   resolveGameSetupArtStylePrompt,
   BUILT_IN_AGENT_IDS,
   STORYBOARD_AGENT_ID,
@@ -297,6 +298,7 @@ import { resolveSceneVideoPrompt, SceneVideoPromptReviewError } from "../service
 import { now } from "../utils/id-generator.js";
 import { DATA_DIR } from "../utils/data-dir.js";
 import { assertInsideDir } from "../utils/security.js";
+import { sendValidatedMediaFile, validateVideoAssetFile } from "../utils/media-file-security.js";
 import {
   buildGameSpotifySceneQuery,
   getGameSpotifyCandidates,
@@ -1742,6 +1744,7 @@ const gameSetupConfigSchema = z.object({
   sceneConnectionId: z.string().optional(),
   enableAgents: z.boolean().optional(),
   enableSpriteGeneration: z.boolean().optional(),
+  gameImageDynamicPromptEnabled: z.boolean().optional(),
   imageConnectionId: z.string().optional(),
   videoConnectionId: z.string().optional(),
   gameStoryboardAutoIllustrationsEnabled: z.boolean().optional(),
@@ -6436,6 +6439,7 @@ export async function gameRoutes(app: FastifyInstance) {
       enableAgents: setupConfig.enableAgents === true,
       activeAgentIds: setupActiveAgentIds,
       enableSpriteGeneration: setupConfig.enableSpriteGeneration || false,
+      gameImageDynamicPromptEnabled: resolveGameImageDynamicPromptEnabled(setupConfig),
       gameImageConnectionId: setupConfig.imageConnectionId || null,
       gameVideoConnectionId: setupConfig.videoConnectionId || null,
       gameSceneVideosEnabled: false,
@@ -11921,10 +11925,14 @@ export async function gameRoutes(app: FastifyInstance) {
 
       const filePath = assertInsideDir(GAME_SCENE_VIDEOS_ROOT, join(GAME_SCENE_VIDEOS_ROOT, chatId, filename));
       if (!existsSync(filePath)) return reply.status(404).send({ error: "Scene video file not found" });
+      const video = await validateVideoAssetFile(filePath, filename);
+      if (!video) return reply.status(404).send({ error: "Scene video file not found" });
 
-      return reply
-        .header("Content-Type", "video/mp4")
-        .sendFile(filename, join(GAME_SCENE_VIDEOS_ROOT, chatId), { maxAge: "1y", immutable: true });
+      return sendValidatedMediaFile(reply, video, {
+        method: req.method,
+        rangeHeader: req.headers.range,
+        cacheControl: "public, max-age=31536000, immutable",
+      });
     },
   );
 

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import AdmZip from "adm-zip";
 import {
@@ -34,8 +34,64 @@ const HIERARCHICAL_MAPS_SELECTION_CORRECTION = join(ROOT, "hierarchical-maps-sel
 const NON_DOWNLOADABLE_CORE_PACKAGE_IDS = new Set(["about-me-keeper"]);
 const OFFICIAL_AGENT_RAW_ROOT = "https://raw.githubusercontent.com/Pasta-Devs/Marinara-Agents";
 type OfficialAgentBranch = "main" | "staging";
+
+function isCanonicalSemverIdentifier(value: string, numericLeadingZeroAllowed: boolean): boolean {
+  if (!value) return false;
+  let numeric = true;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    const digit = code >= 48 && code <= 57;
+    const letter = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+    if (!digit && !letter && code !== 45) return false;
+    if (!digit) numeric = false;
+  }
+  return numericLeadingZeroAllowed || !numeric || value === "0" || value.charCodeAt(0) !== 48;
+}
+
+function isCanonicalSemver(value: string): boolean {
+  const buildSeparator = value.indexOf("+");
+  if (buildSeparator !== -1 && value.indexOf("+", buildSeparator + 1) !== -1) return false;
+  const withoutBuild = buildSeparator === -1 ? value : value.slice(0, buildSeparator);
+  const build = buildSeparator === -1 ? "" : value.slice(buildSeparator + 1);
+  if (buildSeparator !== -1 && !build.split(".").every((part) => isCanonicalSemverIdentifier(part, true))) {
+    return false;
+  }
+
+  const prereleaseSeparator = withoutBuild.indexOf("-");
+  const core = prereleaseSeparator === -1 ? withoutBuild : withoutBuild.slice(0, prereleaseSeparator);
+  const prerelease = prereleaseSeparator === -1 ? "" : withoutBuild.slice(prereleaseSeparator + 1);
+  if (prereleaseSeparator !== -1 && !prerelease.split(".").every((part) => isCanonicalSemverIdentifier(part, false))) {
+    return false;
+  }
+
+  const coreParts = core.split(".");
+  return (
+    coreParts.length === 3 &&
+    coreParts.every((part) => {
+      if (!part || (part.length > 1 && part.charCodeAt(0) === 48)) return false;
+      for (let index = 0; index < part.length; index += 1) {
+        const code = part.charCodeAt(index);
+        if (code < 48 || code > 57) return false;
+      }
+      return true;
+    })
+  );
+}
+
+function isEngineReleaseTagRef(value: string): boolean {
+  const tag = value.startsWith("refs/tags/") ? value.slice("refs/tags/".length) : value;
+  return tag.startsWith("v") && isCanonicalSemver(tag.slice(1));
+}
+
 export function resolveOfficialAgentBranch(engineBranch: string | null = getBuildBranch()): OfficialAgentBranch {
-  if (!engineBranch || engineBranch === "main" || engineBranch.startsWith("hotfix/")) return "main";
+  if (
+    !engineBranch ||
+    engineBranch === "main" ||
+    engineBranch.startsWith("hotfix/") ||
+    isEngineReleaseTagRef(engineBranch)
+  ) {
+    return "main";
+  }
   return "staging";
 }
 function officialCatalogRoot(branch: OfficialAgentBranch): string {
@@ -47,6 +103,18 @@ function officialArtifactRoot(branch: OfficialAgentBranch): string {
 function officialArtworkRoot(branch: OfficialAgentBranch): string {
   return `${OFFICIAL_AGENT_RAW_ROOT}/${branch}/artwork/agent-covers`;
 }
+function isOfficialCatalogUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.protocol === "https:" &&
+      parsed.hostname === "raw.githubusercontent.com" &&
+      /^\/Pasta-Devs\/Marinara-Agents\/(?:main|staging)\/catalog(?:\/|$)/u.test(parsed.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
 const ENGINE_RELEASE_VERSION_PATTERN = /^v?(\d+)\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
 export function resolveCapabilityCatalogUrl(
   engineVersion: string = APP_VERSION,
@@ -57,13 +125,12 @@ export function resolveCapabilityCatalogUrl(
   if (override) return override;
   const match = ENGINE_RELEASE_VERSION_PATTERN.exec(engineVersion.trim());
   const catalogRoot = officialCatalogRoot(branch);
-  return match
-    ? `${catalogRoot}/v${Number(match[1])}/catalog.json`
-    : `${catalogRoot}/catalog.json`;
+  return match ? `${catalogRoot}/v${Number(match[1])}/catalog.json` : `${catalogRoot}/catalog.json`;
 }
 const CATALOG_URL = resolveCapabilityCatalogUrl();
 const MAX_ARTIFACT_BYTES = 100 * 1024 * 1024;
 const MAX_EXPANDED_BYTES = 250 * 1024 * 1024;
+const MAX_ARCHIVE_ENTRIES = 8_192;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const BROWSER_TAB_ASSET_CONTENT_TYPES = new Map([
   [".gif", "image/gif"],
@@ -72,6 +139,17 @@ const BROWSER_TAB_ASSET_CONTENT_TYPES = new Map([
   [".png", "image/png"],
   [".webp", "image/webp"],
 ]);
+interface VerifiedBrowserTabAsset {
+  packageId: string;
+  expectedBytes: number;
+  expectedSha256: string;
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+}
+const verifiedBrowserTabAssets = new Map<string, VerifiedBrowserTabAsset>();
 const KNOWN_INCOMPATIBLE_RUNTIMES = new Map<string, string>([
   ...["1.0.0", "1.0.3", "1.0.6"].map(
     (version) =>
@@ -102,7 +180,9 @@ function isSymlink(entry: AdmZip.IZipEntry): boolean {
 }
 
 export function validatePackageArchiveEntries(zip: AdmZip, maximumExpandedBytes = MAX_EXPANDED_BYTES) {
-  const entries = zip.getEntries().filter((item) => !item.isDirectory);
+  const archiveEntries = zip.getEntries();
+  if (archiveEntries.length > MAX_ARCHIVE_ENTRIES) throw new Error("Package contains too many files");
+  const entries = archiveEntries.filter((item) => !item.isDirectory);
   const names = new Set<string>();
   let expandedBytes = 0;
   for (const item of entries) {
@@ -336,10 +416,7 @@ function getOfficialAgentBranchFromCatalogUrl(catalogUrl: string): OfficialAgent
   return null;
 }
 
-export function resolveCapabilityPackageArtifactUrl(
-  entry: CapabilityCatalogPackage,
-  catalogUrl = CATALOG_URL,
-): string {
+export function resolveCapabilityPackageArtifactUrl(entry: CapabilityCatalogPackage, catalogUrl = CATALOG_URL): string {
   const branch = getOfficialAgentBranchFromCatalogUrl(catalogUrl);
   if (!branch) return entry.artifact.url;
   return `${officialArtifactRoot(branch)}/${entry.manifest.id}-${entry.manifest.version}.zip`;
@@ -357,8 +434,117 @@ export function resolveCapabilityPackageIconUrl(
 async function readInstalledAgentDefinitions(installed: InstalledCapabilityPackage) {
   const entrypoint = installed.manifest.entrypoints.agents;
   if (!entrypoint) return [];
-  const file = inside(VERSIONS, join(VERSIONS, installed.id, installed.version, normalizeArchivePath(entrypoint)));
+  const file = await verifyInstalledPackageFile(installed, entrypoint);
   return packagedAgentDefinitionsSchema.parse(JSON.parse(await readFile(file, "utf8")));
+}
+
+type VerifiedInstalledPackageFile = { file: string; data: Buffer };
+
+async function readVerifiedInstalledPackageFile(
+  installed: InstalledCapabilityPackage,
+  relativePath: string,
+): Promise<VerifiedInstalledPackageFile> {
+  const normalized = normalizeArchivePath(relativePath);
+  const declaration = installed.manifest.files.find((item) => normalizeArchivePath(item.path) === normalized);
+  if (!declaration) throw new Error(`Package ${installed.id} requested undeclared file ${normalized}`);
+  const packageRoot = inside(VERSIONS, join(VERSIONS, installed.id, installed.version));
+  const file = inside(packageRoot, join(packageRoot, normalized));
+  const [canonicalRoot, canonicalFile, before] = await Promise.all([
+    realpath(packageRoot),
+    realpath(file),
+    lstat(file, { bigint: true }),
+  ]);
+  if (!before.isFile() || canonicalFile !== inside(canonicalRoot, join(canonicalRoot, normalized))) {
+    throw new Error(`Installed package ${installed.id} contains a non-canonical file for ${normalized}`);
+  }
+  const data = await readFile(file);
+  const after = await lstat(file, { bigint: true });
+  if (
+    !after.isFile() ||
+    before.dev !== after.dev ||
+    before.ino !== after.ino ||
+    before.size !== after.size ||
+    before.mtimeNs !== after.mtimeNs ||
+    before.ctimeNs !== after.ctimeNs ||
+    data.byteLength !== declaration.bytes ||
+    createHash("sha256").update(data).digest("hex") !== declaration.sha256
+  ) {
+    throw new Error(`Installed package ${installed.id} failed integrity verification for ${normalized}`);
+  }
+  return { file, data };
+}
+
+async function verifyInstalledPackageFile(
+  installed: InstalledCapabilityPackage,
+  relativePath: string,
+): Promise<string> {
+  return (await readVerifiedInstalledPackageFile(installed, relativePath)).file;
+}
+
+function invalidateBrowserTabAssetVerifications(packageId: string) {
+  for (const [key, cached] of verifiedBrowserTabAssets) {
+    if (cached.packageId === packageId) verifiedBrowserTabAssets.delete(key);
+  }
+}
+
+async function verifyBrowserTabAsset(installed: InstalledCapabilityPackage, relativePath: string): Promise<string> {
+  const normalized = normalizeArchivePath(relativePath);
+  const declaration = installed.manifest.files.find((item) => normalizeArchivePath(item.path) === normalized);
+  if (!declaration) throw new Error(`Package ${installed.id} requested undeclared file ${normalized}`);
+  const file = inside(VERSIONS, join(VERSIONS, installed.id, installed.version, normalized));
+  const key = `${installed.id}\0${installed.version}\0${normalized}`;
+  const before = await stat(file, { bigint: true });
+  const cached = verifiedBrowserTabAssets.get(key);
+  if (
+    cached &&
+    cached.expectedBytes === declaration.bytes &&
+    cached.expectedSha256 === declaration.sha256 &&
+    cached.dev === before.dev &&
+    cached.ino === before.ino &&
+    cached.size === before.size &&
+    cached.mtimeNs === before.mtimeNs &&
+    cached.ctimeNs === before.ctimeNs
+  ) {
+    return file;
+  }
+  const data = await readFile(file);
+  const after = await stat(file, { bigint: true });
+  if (
+    before.dev !== after.dev ||
+    before.ino !== after.ino ||
+    before.size !== after.size ||
+    before.mtimeNs !== after.mtimeNs ||
+    before.ctimeNs !== after.ctimeNs ||
+    data.byteLength !== declaration.bytes ||
+    createHash("sha256").update(data).digest("hex") !== declaration.sha256
+  ) {
+    verifiedBrowserTabAssets.delete(key);
+    throw new Error(`Installed package ${installed.id} failed integrity verification for ${normalized}`);
+  }
+  verifiedBrowserTabAssets.set(key, {
+    packageId: installed.id,
+    expectedBytes: declaration.bytes,
+    expectedSha256: declaration.sha256,
+    dev: after.dev,
+    ino: after.ino,
+    size: after.size,
+    mtimeNs: after.mtimeNs,
+    ctimeNs: after.ctimeNs,
+  });
+  return file;
+}
+
+async function verifyInstalledPackageFiles(
+  installed: InstalledCapabilityPackage,
+): Promise<Map<string, VerifiedInstalledPackageFile>> {
+  const verified = new Map<string, VerifiedInstalledPackageFile>();
+  for (const declaration of installed.manifest.files) {
+    verified.set(
+      normalizeArchivePath(declaration.path),
+      await readVerifiedInstalledPackageFile(installed, declaration.path),
+    );
+  }
+  return verified;
 }
 
 async function readInstalledAgentIds(installed: InstalledCapabilityPackage): Promise<string[]> {
@@ -428,6 +614,7 @@ export function findPendingCapabilityPackageUpdates(
       name: entry.manifest.name,
       installedVersion: installed.version,
       version: entry.manifest.version,
+      artifactSha256: entry.artifact.sha256,
       restartRequired: entry.manifest.restartRequired,
     }));
 }
@@ -512,6 +699,7 @@ async function installCatalogPackage(entry: CapabilityCatalogPackage, activateDu
     await mkdir(dirname(destination), { recursive: true });
     await rm(destination, { recursive: true, force: true });
     await rename(temporary, destination);
+    invalidateBrowserTabAssetVerifications(manifest.id);
     const registry = await readRegistry();
     const previous = registry.packages.find((item) => item.id === manifest.id);
     assertNotDowngrade(previous, manifest.version);
@@ -564,6 +752,7 @@ export const capabilityPackageManager = {
     }
     return {
       ...catalog,
+      provenance: { kind: isOfficialCatalogUrl(CATALOG_URL) ? "official" : "custom", url: CATALOG_URL },
       packages: catalog.packages
         .filter((entry) => !NON_DOWNLOADABLE_CORE_PACKAGE_IDS.has(entry.manifest.id))
         .map((entry) => ({
@@ -583,6 +772,7 @@ export const capabilityPackageManager = {
     if (removed.length === 0) return [];
     await writeRegistry(registry.packages.filter((item) => !NON_DOWNLOADABLE_CORE_PACKAGE_IDS.has(item.id)));
     await Promise.all(removed.map((item) => rm(join(VERSIONS, item.id), { recursive: true, force: true })));
+    for (const item of removed) invalidateBrowserTabAssetVerifications(item.id);
     return removed.map((item) => item.id);
   },
 
@@ -649,6 +839,18 @@ export const capabilityPackageManager = {
       }));
   },
 
+  async verifiedRuntimeFiles(installed: InstalledCapabilityPackage) {
+    const verified = await verifyInstalledPackageFiles(installed);
+    const entrypoint = installed.manifest.entrypoints.server;
+    if (!entrypoint) throw new Error(`Capability package ${installed.id} has no server entrypoint`);
+    const runtimeEntrypoint = verified.get(normalizeArchivePath(entrypoint));
+    if (!runtimeEntrypoint) throw new Error(`Capability package ${installed.id} has no verified server entrypoint`);
+    return {
+      entrypoint: normalizeArchivePath(entrypoint),
+      files: new Map([...verified].map(([path, file]) => [path, file.data])),
+    };
+  },
+
   async clientEntrypoint(packageId: string) {
     const installed = (await this.installed()).find((item) => item.id === packageId);
     if (!installed || !isInstalledCapabilityReady(installed)) return null;
@@ -661,7 +863,7 @@ export const capabilityPackageManager = {
             localCapabilityRoots.get(installed.id)!,
             join(localCapabilityRoots.get(installed.id)!, normalizeArchivePath(entrypoint)),
           )
-        : inside(VERSIONS, join(VERSIONS, installed.id, installed.version, normalizeArchivePath(entrypoint))),
+        : await verifyInstalledPackageFile(installed, entrypoint),
     };
   },
 
@@ -682,7 +884,7 @@ export const capabilityPackageManager = {
     return {
       installed,
       contentType,
-      file: inside(VERSIONS, join(VERSIONS, installed.id, installed.version, normalizedPath)),
+      file: await verifyBrowserTabAsset(installed, normalizedPath),
     };
   },
 
@@ -731,6 +933,7 @@ export const capabilityPackageManager = {
     if (runtimeBlockReason(restored)) return null;
     registry.packages[index] = restored;
     await writeRegistry(registry.packages);
+    invalidateBrowserTabAssetVerifications(packageId);
     const server = manifest.entrypoints.server;
     return server
       ? {
@@ -831,13 +1034,13 @@ export const capabilityPackageManager = {
     return true;
   },
 
-  async install(packageId: string, expectedVersion?: string) {
+  async install(packageId: string, expectedVersion: string, expectedArtifactSha256: string) {
     const catalog = await this.catalog();
     const entry = catalog.packages.find((candidate) => candidate.manifest.id === packageId);
-    if (!entry) throw new Error("Package is not present in the official catalog");
-    if (expectedVersion && entry.manifest.version !== expectedVersion) {
+    if (!entry) throw new Error("Package is not present in the configured catalog");
+    if (entry.manifest.version !== expectedVersion || entry.artifact.sha256 !== expectedArtifactSha256) {
       throw new CapabilityPackageVersionMismatchError(
-        `This Agent update is no longer available; ${entry.manifest.id} now offers version ${entry.manifest.version}`,
+        `This Agent package changed after it was reviewed. Review the current ${entry.manifest.id} package and try again.`,
       );
     }
     return installCatalogPackage(entry);
@@ -853,6 +1056,7 @@ export const capabilityPackageManager = {
     }
     await writeRegistry(registry.packages.filter((item) => item.id !== packageId));
     await rm(join(VERSIONS, packageId), { recursive: true, force: true });
+    invalidateBrowserTabAssetVerifications(packageId);
     try {
       await clearDeclinedUpdate(packageId);
     } catch (error) {

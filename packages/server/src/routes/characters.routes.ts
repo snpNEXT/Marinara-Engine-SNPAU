@@ -59,6 +59,11 @@ import { DATA_DIR } from "../utils/data-dir.js";
 import { createWriteStream, existsSync, rmSync, unlinkSync } from "fs";
 import { normalizeTimestampOverrides } from "../services/import/import-timestamps.js";
 import { assertInsideDir, extensionFromImageMime, isAllowedImageBuffer } from "../utils/security.js";
+import {
+  sendValidatedMediaFile,
+  validateImageAssetFile,
+  validateVideoAssetFile,
+} from "../utils/media-file-security.js";
 import { logger, logDebugOverride } from "../lib/logger.js";
 import { isDebugAgentsEnabled } from "../config/runtime-config.js";
 import { parseLibraryPageQuery } from "../utils/list-pagination.js";
@@ -1136,26 +1141,30 @@ export async function charactersRoutes(app: FastifyInstance) {
   });
 
   app.delete<{ Params: { id: string } }>("/:id", async (req, reply) => {
-    if (req.params.id === PROFESSOR_MARI_ID) {
+    const { id } = req.params;
+    if (isUnsafePathSegment(id)) {
+      return reply.status(400).send({ error: "Invalid character ID" });
+    }
+    if (id === PROFESSOR_MARI_ID) {
       return reply.status(403).send({ error: "Professor Mari is a built-in character and cannot be deleted" });
     }
-    const galleryImages = await characterGallery.listByCharacterId(req.params.id);
+    const galleryImages = await characterGallery.listByCharacterId(id);
     await mutateAvatarReferencesAndCleanup({
       db: app.db,
-      collectAvatarPaths: () => collectCharacterAvatarPaths(app.db, [req.params.id]),
-      mutateReferences: () => storage.remove(req.params.id),
+      collectAvatarPaths: () => collectCharacterAvatarPaths(app.db, [id]),
+      mutateReferences: () => storage.remove(id),
     });
     // Cascade the character's Noodle presence, otherwise its account and posts stay
     // in the timeline forever as a ghost (issue #4295).
     try {
-      await createNoodleStorage(app.db).deleteAccountByEntity("character", req.params.id);
+      await createNoodleStorage(app.db).deleteAccountByEntity("character", id);
     } catch (err) {
-      logger.error(err, "Failed to clean up Noodle account for deleted character %s", req.params.id);
+      logger.error(err, "Failed to clean up Noodle account for deleted character %s", id);
     }
     for (const image of galleryImages) {
       await unlinkGalleryFileIfUnreferenced({ db: app.db, filePath: image.filePath });
     }
-    const localPathPrefix = `characters/${req.params.id}/`;
+    const localPathPrefix = `characters/${id}/`;
     const hasSharedLocalFile = (
       await Promise.all(
         galleryImages
@@ -1163,7 +1172,7 @@ export async function charactersRoutes(app: FastifyInstance) {
           .map((image) => galleryFileHasReferences(app.db, image.filePath)),
       )
     ).some(Boolean);
-    const galleryDir = join(CHARACTER_GALLERY_ROOT, req.params.id);
+    const galleryDir = assertInsideDir(CHARACTER_GALLERY_ROOT, join(CHARACTER_GALLERY_ROOT, id));
     if (!hasSharedLocalFile && existsSync(galleryDir)) {
       rmSync(galleryDir, { recursive: true, force: true });
     }
@@ -1534,7 +1543,10 @@ export async function charactersRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Not found" });
     }
 
-    return reply.sendFile(filename, dir);
+    const video = await validateVideoAssetFile(filePath, filename);
+    if (!video) return reply.status(404).send({ error: "Not found" });
+
+    return sendValidatedMediaFile(reply, video, { method: req.method, rangeHeader: req.headers.range });
   });
 
   app.post<{ Params: { id: string } }>("/:id/gallery/upload", async (req, reply) => {
@@ -1600,7 +1612,10 @@ export async function charactersRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Not found" });
     }
 
-    return reply.sendFile(storedFile.filename, storedFile.directory);
+    const validatedImage = await validateImageAssetFile(storedFile.absolutePath, storedFile.filename);
+    if (!validatedImage) return reply.status(404).send({ error: "Not found" });
+
+    return sendValidatedMediaFile(reply, validatedImage, { method: req.method, rangeHeader: req.headers.range });
   });
 
   app.delete<{ Params: { id: string; imageId: string } }>("/:id/gallery/:imageId", async (req, reply) => {
@@ -2592,7 +2607,10 @@ export async function charactersRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "Not found" });
       }
 
-      return reply.sendFile(filename, dir);
+      const video = await validateVideoAssetFile(filePath, filename);
+      if (!video) return reply.status(404).send({ error: "Not found" });
+
+      return sendValidatedMediaFile(reply, video, { method: req.method, rangeHeader: req.headers.range });
     },
   );
 
@@ -2715,7 +2733,10 @@ export async function charactersRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Not found" });
     }
 
-    return reply.sendFile(storedFile.filename, storedFile.directory);
+    const validatedImage = await validateImageAssetFile(storedFile.absolutePath, storedFile.filename);
+    if (!validatedImage) return reply.status(404).send({ error: "Not found" });
+
+    return sendValidatedMediaFile(reply, validatedImage, { method: req.method, rangeHeader: req.headers.range });
   });
 
   app.delete<{ Params: { id: string; imageId: string } }>("/personas/:id/gallery/:imageId", async (req, reply) => {

@@ -3,7 +3,6 @@
 // ──────────────────────────────────────────────
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { pathToFileURL } from "node:url";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -53,7 +52,10 @@ import {
   type MariDbValidationResult,
 } from "@marinara-engine/shared";
 import { computePersonalExtensionHash } from "../extensions/personal-extension-hash.js";
-import { replaceHomeWidgetCatalog } from "../home-widget-catalog.service.js";
+import { HomeWidgetCatalogConflictError, replaceHomeWidgetCatalog } from "../home-widget-catalog.service.js";
+import { createMariWherePredicate } from "./mari-where-expression.js";
+import { runMariTransformSandbox } from "./mari-transform-sandbox.js";
+import { encryptCustomToolWebhookUrl, ENCRYPTED_WEBHOOK_PREFIX } from "../../utils/custom-tool-webhook.js";
 
 type Row = Record<string, unknown>;
 type Table = AnyFileTable;
@@ -550,6 +552,34 @@ function normalizeCustomToolWriteRow(row: Row): Row {
   return out;
 }
 
+function secureCustomToolRequestForStorage(
+  request: ParsedMutationRequest,
+  encryptedWebhooks: ReadonlyMap<string, string>,
+): void {
+  const secureRow = (row: Row | undefined) => {
+    if (!row || typeof row.webhookUrl !== "string") return;
+    row.webhookUrl = encryptedWebhooks.get(row.webhookUrl) ?? encryptCustomToolWebhookUrl(row.webhookUrl);
+  };
+  if (request.table === "custom_tools") {
+    secureRow(request.row);
+    secureRow(request.patch);
+  }
+  for (const related of request.relatedInserts ?? []) {
+    if (related.table === "custom_tools") secureRow(related.row);
+  }
+}
+
+function commandForStorage(request: ParsedMutationRequest, command: string): string {
+  const hasWebhookCredential =
+    (request.table === "custom_tools" &&
+      [request.row?.webhookUrl, request.patch?.webhookUrl].some((value) => typeof value === "string" && value)) ||
+    (request.relatedInserts ?? []).some(
+      (related) =>
+        related.table === "custom_tools" && typeof related.row.webhookUrl === "string" && related.row.webhookUrl,
+    );
+  return hasWebhookCredential ? `mari db ${request.kind} ${request.table} [webhook credential redacted]` : command;
+}
+
 function normalizeWriteRow(table: string, row: Row): Row {
   if (table === "agent_configs") return normalizeAgentConfigWriteRow(row);
   if (table === "custom_tools") return normalizeCustomToolWriteRow(row);
@@ -570,6 +600,20 @@ function serializeRow(table: string, row: Row): Row {
     }
   }
   return out;
+}
+
+function protectPromptPresetSystemKeys(changes: PlanChange[]): void {
+  for (const change of changes) {
+    if (change.table !== "prompt_presets" || !change.afterRaw) continue;
+    change.afterRaw.systemKey =
+      change.action === "insert"
+        ? ""
+        : typeof change.beforeRaw?.systemKey === "string"
+          ? change.beforeRaw.systemKey
+          : "";
+    delete change.afterRaw.system_key;
+    change.after = parseRow(change.table, change.afterRaw);
+  }
 }
 
 function parseThemeRow(row: Row): Row {
@@ -882,13 +926,19 @@ function appDataCreateApply(source: Row): boolean {
 // file the user asks Mari to remember never lands half-saved without anyone knowing.
 function requireInstructionLength(value: string, max: number, field: string): string {
   if (value.length > max) {
-    throw new Error(`That memory's ${field} is ${value.length} characters; the maximum is ${max}. Trim it or split it into two memories.`);
+    throw new Error(
+      `That memory's ${field} is ${value.length} characters; the maximum is ${max}. Trim it or split it into two memories.`,
+    );
   }
   return value;
 }
 
 function buildInstructionInsertRow(data: Row, id: string, timestamp: string): Row {
-  const name = requireInstructionLength((firstString(data, ["name", "title", "label"]) ?? "").trim(), MAX_INSTRUCTION_NAME_LENGTH, "name");
+  const name = requireInstructionLength(
+    (firstString(data, ["name", "title", "label"]) ?? "").trim(),
+    MAX_INSTRUCTION_NAME_LENGTH,
+    "name",
+  );
   if (!name) throw new Error("A memory needs a name.");
   const content = requireInstructionLength(
     (firstString(data, ["content", "text", "body", "memory"]) ?? "").trim(),
@@ -905,7 +955,8 @@ function buildInstructionInsertRow(data: Row, id: string, timestamp: string): Ro
       "description",
     ),
     content,
-    persistent: firstBoolean(data, ["persistent", "pinned", "always", "alwaysInject", "always_inject"]) === true ? 1 : 0,
+    persistent:
+      firstBoolean(data, ["persistent", "pinned", "always", "alwaysInject", "always_inject"]) === true ? 1 : 0,
     // Disabled, ALWAYS: a Mari-authored memory is inert until the USER enables it (via the
     // Memories panel or "Keep & Enable" on the review card). Mari never sets `enabled` herself,
     // so a prompt-injection cannot induce a self-activating memory. Defense-in-depth.
@@ -926,7 +977,11 @@ function buildInstructionPatch(data: Row): Row {
   // "") so a supplied "" reaches the always-injected index instead of leaving the stale value.
   const descriptionKey = ["description", "summary"].find((key) => typeof data[key] === "string");
   if (descriptionKey !== undefined) {
-    patch.description = requireInstructionLength((data[descriptionKey] as string).trim(), MAX_INSTRUCTION_DESCRIPTION_LENGTH, "description");
+    patch.description = requireInstructionLength(
+      (data[descriptionKey] as string).trim(),
+      MAX_INSTRUCTION_DESCRIPTION_LENGTH,
+      "description",
+    );
   }
   const content = firstString(data, ["content", "text", "body", "memory"]);
   if (content !== undefined) {
@@ -1247,6 +1302,8 @@ function normalizePromptPresetActionData(input: Row, existing?: Row | null): Row
       firstBoolean(input, ["isDefault", "is_default"]) ?? (existing ? existing.isDefault === "true" : false),
     ),
     author: firstString(input, ["author"]) ?? (typeof existing?.author === "string" ? existing.author : ""),
+    // Engine-owned preset identity is never writable through Professor Mari.
+    systemKey: typeof existing?.systemKey === "string" ? existing.systemKey : "",
   };
   delete row.conversation_prompt;
   delete row.game_prompt;
@@ -1258,6 +1315,7 @@ function normalizePromptPresetActionData(input: Row, existing?: Row | null): Row
   delete row.wrap_format;
   delete row.default_choices;
   delete row.is_default;
+  delete row.system_key;
   return row;
 }
 
@@ -1464,7 +1522,8 @@ function buildPromptSectionPatch(data: Row): Row {
   if (content !== undefined) patch.content = content;
   const role = firstString(data, ["role"]);
   if (role !== undefined) {
-    if (!["system", "user", "assistant"].includes(role)) throw new Error(`role must be system, user, or assistant, got "${role}"`);
+    if (!["system", "user", "assistant"].includes(role))
+      throw new Error(`role must be system, user, or assistant, got "${role}"`);
     patch.role = role;
   }
   const enabled = firstBoolean(data, ["enabled"]);
@@ -1555,7 +1614,11 @@ function buildPromptSectionInsertRow(
   return {
     id,
     presetId,
-    identifier: normalizePromptIdentifier(firstString(data, ["identifier", "key", "slug"]) ?? name, `section_${index}`, usedIdentifiers),
+    identifier: normalizePromptIdentifier(
+      firstString(data, ["identifier", "key", "slug"]) ?? name,
+      `section_${index}`,
+      usedIdentifiers,
+    ),
     name,
     content: firstString(data, ["content", "prompt", "text"]) ?? "",
     role: requireOneOf(data.role, ["system", "user", "assistant"], "role", "system"),
@@ -2347,41 +2410,17 @@ function buildMinimalCharacterData(
   return data;
 }
 
-function createWherePredicate(expr: string | undefined): (row: Row) => boolean {
-  if (!expr) return () => true;
-  const fn = new Function("row", `return Boolean(${expr});`) as (row: Row) => boolean;
-  return (row: Row) => {
-    try {
-      return Boolean(fn(row));
-    } catch {
-      return false;
-    }
-  };
-}
-
-async function importTransform(path: string): Promise<(row: Row, ctx: TransformContext) => unknown> {
-  const url = pathToFileURL(path).href + `?mariDb=${Date.now()}`;
-  const mod = (await import(url)) as { default?: unknown; transform?: unknown };
-  const fn = mod.default ?? mod.transform;
-  if (typeof fn !== "function") throw new Error(`Transform ${path} must export a default function`);
-  return fn as (row: Row, ctx: TransformContext) => unknown;
-}
-
-type TransformContext = {
-  table: string;
-  now: string;
-  newId: () => string;
-  raw: (row: Row) => Row;
-  parse: (row: Row) => Row;
-  find: (table: string, predicate: (row: Row) => boolean) => Row[];
-};
-
 export class MariDbService {
   private pending = new Map<string, PendingRecord>();
   private pendingHydrated = false;
   private history: MariDbHistoryEntry[] = [];
   private writeQueue: Promise<unknown> = Promise.resolve();
   private characterFolderMutationQueue: Promise<void> = Promise.resolve();
+  // Per-review serialization queue. keepAppliedReview / restoreAppliedReview / rejectRows each do a
+  // read-modify-write over pending.get(id) + the durable sidecar across await points; two concurrent
+  // requests for the SAME review id would both read the same record and clobber each other on write.
+  // Keyed by id so unrelated reviews stay concurrent; entries self-evict once the queue drains.
+  private reviewLocks = new Map<string, Promise<unknown>>();
 
   constructor(private readonly db: DB) {}
 
@@ -3024,10 +3063,13 @@ export class MariDbService {
     changed = assignNullableNumberField(target, source, ["sticky"], "sticky") || changed;
     changed = assignNullableNumberField(target, source, ["cooldown"], "cooldown") || changed;
     changed = assignNullableNumberField(target, source, ["delay"], "delay") || changed;
-    changed = assignNullableNumberField(target, source, ["ephemeral"], "ephemeral", { min: 0, integer: true }) || changed;
+    changed =
+      assignNullableNumberField(target, source, ["ephemeral"], "ephemeral", { min: 0, integer: true }) || changed;
     changed = assignNullableNumberField(target, source, ["groupWeight", "group_weight"], "groupWeight") || changed;
-    changed = assignBooleanTextField(target, source, ["preventRecursion", "prevent_recursion"], "preventRecursion") || changed;
-    changed = assignBooleanTextField(target, source, ["excludeRecursion", "exclude_recursion"], "excludeRecursion") || changed;
+    changed =
+      assignBooleanTextField(target, source, ["preventRecursion", "prevent_recursion"], "preventRecursion") || changed;
+    changed =
+      assignBooleanTextField(target, source, ["excludeRecursion", "exclude_recursion"], "excludeRecursion") || changed;
     changed =
       assignBooleanTextField(target, source, ["delayUntilRecursion", "delay_until_recursion"], "delayUntilRecursion") ||
       changed;
@@ -3158,7 +3200,22 @@ export class MariDbService {
           args,
           ["data", "instruction", "memory", "row"],
           // NB: no "enabled"; Mari never sets a memory's enabled state (see buildInstructionInsertRow).
-          ["name", "title", "label", "description", "summary", "content", "text", "body", "memory", "persistent", "pinned", "always", "alwaysInject", "always_inject"],
+          [
+            "name",
+            "title",
+            "label",
+            "description",
+            "summary",
+            "content",
+            "text",
+            "body",
+            "memory",
+            "persistent",
+            "pinned",
+            "always",
+            "alwaysInject",
+            "always_inject",
+          ],
         );
         const timestamp = now();
         const id = firstString(args, ["id", "instructionId", "memoryId"]) ?? newId();
@@ -3185,7 +3242,22 @@ export class MariDbService {
           args,
           ["patch", "data", "instruction", "memory"],
           // NB: no "enabled"; only the user toggles a memory's enabled state (see buildInstructionPatch).
-          ["name", "title", "label", "description", "summary", "content", "text", "body", "memory", "persistent", "pinned", "always", "alwaysInject", "always_inject"],
+          [
+            "name",
+            "title",
+            "label",
+            "description",
+            "summary",
+            "content",
+            "text",
+            "body",
+            "memory",
+            "persistent",
+            "pinned",
+            "always",
+            "alwaysInject",
+            "always_inject",
+          ],
         );
         const patch = buildInstructionPatch(data);
         if (Object.keys(patch).length <= 1) {
@@ -4310,7 +4382,18 @@ export class MariDbService {
         const data = actionDataWithTopLevel(
           args,
           ["patch", "data", "section"],
-          ["name", "content", "role", "enabled", "isMarker", "groupId", "markerConfig", "injectionPosition", "injectionDepth", "injectionOrder"],
+          [
+            "name",
+            "content",
+            "role",
+            "enabled",
+            "isMarker",
+            "groupId",
+            "markerConfig",
+            "injectionPosition",
+            "injectionDepth",
+            "injectionOrder",
+          ],
         );
         const patch = buildPromptSectionPatch(data);
         if (Object.keys(patch).length === 0) {
@@ -4350,10 +4433,16 @@ export class MariDbService {
         const groupId = requiredString(args, ["groupId", "id"], "prompt group id");
         const existing = await this.getRawById(getMeta("prompt_groups"), groupId);
         if (!existing) throw new Error(`Prompt group ${groupId} not found`);
-        const data = actionDataWithTopLevel(args, ["patch", "data", "group"], ["name", "parentGroupId", "order", "enabled"]);
+        const data = actionDataWithTopLevel(
+          args,
+          ["patch", "data", "group"],
+          ["name", "parentGroupId", "order", "enabled"],
+        );
         const patch = buildPromptGroupPatch(data);
         if (Object.keys(patch).length === 0) {
-          throw new Error("preset.updateGroup needs groupId plus a field such as name, enabled, order, or parentGroupId");
+          throw new Error(
+            "preset.updateGroup needs groupId plus a field such as name, enabled, order, or parentGroupId",
+          );
         }
         // #4812: a parent group must live in the same preset and must not create a cycle (a group
         // nested under itself or under one of its own descendants would loop any tree walk).
@@ -4373,7 +4462,9 @@ export class MariDbService {
             if (seen.has(cursorId)) break;
             seen.add(cursorId);
             cursor =
-              typeof cursor.parentGroupId === "string" && cursor.parentGroupId ? groupsById.get(cursor.parentGroupId) : undefined;
+              typeof cursor.parentGroupId === "string" && cursor.parentGroupId
+                ? groupsById.get(cursor.parentGroupId)
+                : undefined;
           }
         }
         return this.executeMutation(
@@ -4398,7 +4489,20 @@ export class MariDbService {
         const data = actionDataWithTopLevel(
           args,
           ["patch", "data", "choiceBlock", "choice"],
-          ["variableName", "variable", "question", "options", "choices", "values", "multiSelect", "separator", "randomPick", "displayMode", "optionSort", "sortOrder"],
+          [
+            "variableName",
+            "variable",
+            "question",
+            "options",
+            "choices",
+            "values",
+            "multiSelect",
+            "separator",
+            "randomPick",
+            "displayMode",
+            "optionSort",
+            "sortOrder",
+          ],
         );
         const usedVariableNames = new Set(
           (await this.rawRows("choice_blocks"))
@@ -4412,7 +4516,9 @@ export class MariDbService {
           );
         }
         if (Array.isArray(patch.options) && patch.options.length === 0) {
-          throw new Error("preset.updateChoiceBlock cannot set an empty options array; a choice block needs at least one option");
+          throw new Error(
+            "preset.updateChoiceBlock cannot set an empty options array; a choice block needs at least one option",
+          );
         }
         return this.executeMutation(
           {
@@ -4436,7 +4542,19 @@ export class MariDbService {
         const data = actionDataWithTopLevel(
           args,
           ["data", "section", "row"],
-          ["name", "identifier", "content", "role", "enabled", "isMarker", "groupId", "markerConfig", "injectionPosition", "injectionDepth", "injectionOrder"],
+          [
+            "name",
+            "identifier",
+            "content",
+            "role",
+            "enabled",
+            "isMarker",
+            "groupId",
+            "markerConfig",
+            "injectionPosition",
+            "injectionDepth",
+            "injectionOrder",
+          ],
         );
         requiredString(data, ["name", "title", "label"], "section name");
         // #4812: a section may only be filed under a group in its OWN preset (same reason as
@@ -4477,7 +4595,11 @@ export class MariDbService {
         const presetId = requiredString(args, ["presetId", "id"], "prompt preset id");
         const preset = await this.getRawById(getMeta("prompt_presets"), presetId);
         if (!preset) throw new Error(`Prompt preset ${presetId} not found`);
-        const data = actionDataWithTopLevel(args, ["data", "group", "row"], ["name", "parentGroupId", "order", "enabled"]);
+        const data = actionDataWithTopLevel(
+          args,
+          ["data", "group", "row"],
+          ["name", "parentGroupId", "order", "enabled"],
+        );
         requiredString(data, ["name", "title", "label"], "group name");
         // #4812: a parent group must live in the same preset. A fresh group has no descendants yet,
         // so a cycle is impossible here — only the cross-preset/existence check is needed.
@@ -4513,14 +4635,35 @@ export class MariDbService {
         const data = actionDataWithTopLevel(
           args,
           ["data", "choiceBlock", "choice", "row"],
-          ["variableName", "variable", "question", "options", "choices", "values", "multiSelect", "separator", "randomPick", "displayMode", "optionSort", "sortOrder"],
+          [
+            "variableName",
+            "variable",
+            "question",
+            "options",
+            "choices",
+            "values",
+            "multiSelect",
+            "separator",
+            "randomPick",
+            "displayMode",
+            "optionSort",
+            "sortOrder",
+          ],
         );
         const existingBlocks = (await this.rawRows("choice_blocks")).filter((block) => block.presetId === presetId);
         const choiceBlockId = newId();
         const usedVariableNames = new Set(existingBlocks.map((block) => String(block.variableName)));
-        const row = buildChoiceBlockInsertRow(data, presetId, choiceBlockId, existingBlocks.length + 1, usedVariableNames);
+        const row = buildChoiceBlockInsertRow(
+          data,
+          presetId,
+          choiceBlockId,
+          existingBlocks.length + 1,
+          usedVariableNames,
+        );
         if ((row.options as unknown[]).length === 0) {
-          throw new Error("preset.addChoiceBlock needs a non-empty options array (each option is a label the user can pick)");
+          throw new Error(
+            "preset.addChoiceBlock needs a non-empty options array (each option is a label the user can pick)",
+          );
         }
         // choice_blocks are ordered by their own sortOrder column, not a parent order array, so a
         // plain insert is enough — no parent patch needed.
@@ -4608,6 +4751,27 @@ export class MariDbService {
     return Array.from(this.pending.values()).map((record) => this.pendingView(record));
   }
 
+  // #4931: the raw (serialized) snapshot of one pending change, for the synthetic prompt render.
+  // diffPreview only carries the parsed before/after; the render needs the raw rows (JSON columns as
+  // strings) to feed the assembler. The client validates its diffPreview index against the tuple, so
+  // this maps 1:1 to plan.changes[index] for the first PREVIEW_LIMIT changes.
+  getPendingChangeRaw(
+    id: string,
+    index: number,
+  ): { table: string; id: string; action: MariDbRowChange["action"]; beforeRaw: Row | null; afterRaw: Row | null } | null {
+    this.ensurePendingHydrated();
+    if (!Number.isInteger(index) || index < 0 || index >= PREVIEW_LIMIT) return null;
+    const change = this.pending.get(id)?.plan.changes[index];
+    if (!change) return null;
+    return {
+      table: change.table,
+      id: change.id,
+      action: change.action,
+      beforeRaw: change.beforeRaw ?? null,
+      afterRaw: change.afterRaw ?? null,
+    };
+  }
+
   async getHistory(): Promise<MariDbHistoryEntry[]> {
     if (this.history.length > 0) return this.history.slice(-HISTORY_LIMIT).reverse();
     const path = this.historyPath();
@@ -4648,8 +4812,16 @@ export class MariDbService {
 
   async keepAppliedReview(id: string, opts?: { enable?: boolean }): Promise<MariDbHistoryEntry | null> {
     this.ensurePendingHydrated();
+    return this.withReviewLock(id, () => this.keepAppliedReviewLocked(id, opts));
+  }
+
+  private async keepAppliedReviewLocked(id: string, opts?: { enable?: boolean }): Promise<MariDbHistoryEntry | null> {
     const record = this.pending.get(id);
     if (!record) return null;
+    // Do not resolve memory until the durable undo leaves the hydration set. If retirement fails,
+    // Keep fails closed and the review remains pending both now and after restart.
+    await this.deletePendingSidecar(id);
+    this.pending.delete(id);
     // #4851 "Keep & Enable": a Mari-authored memory lands disabled; flip it on when the
     // user chooses that action, before we drop the pending record. Strictly gated to
     // mari_instructions inserts (deliberately never touches installed_extensions.enabled
@@ -4669,8 +4841,6 @@ export class MariDbService {
         logger.warn(err, "[mari-db] Keep & Enable: could not enable the kept memory");
       }
     }
-    this.pending.delete(id);
-    await this.deletePendingSidecar(id);
     const history = await this.recordHistory({
       plan: record.plan,
       command: record.command,
@@ -4689,13 +4859,25 @@ export class MariDbService {
     | null
   > {
     this.ensurePendingHydrated();
+    return this.withReviewLock(id, () => this.restoreAppliedReviewLocked(id));
+  }
+
+  private async restoreAppliedReviewLocked(
+    id: string,
+  ): Promise<
+    | { approval: MariDbPendingApproval; history: MariDbHistoryEntry }
+    | { approval: MariDbPendingApproval; outcome: "state_changed"; error: string }
+    | null
+  > {
     const record = this.pending.get(id);
     if (!record) return null;
     const approval = this.pendingView(record);
+    const retiredSidecar = this.retirePendingSidecar(id);
     try {
       await this.restorePlan(record.plan);
     } catch (err) {
       if (err instanceof RestoreStateChangedError) {
+        await this.reactivatePendingSidecar(record, retiredSidecar);
         // #4852 F2: a newer edit landed after Mari staged this change, so reverting would
         // overwrite it. Leave the live data AND the pending review in place (do not delete the
         // pending record, drop the sidecar, or record a "restored" history entry) so the user can
@@ -4707,13 +4889,23 @@ export class MariDbService {
             "This data changed after Professor Mari staged it; a newer edit would be overwritten. Review a fresh proposal instead.",
         };
       }
-      throw err;
+      if (err instanceof HomeWidgetCatalogConflictError) {
+        // The catalog compare-and-swap rejected before writing, so this known conflict is safe to
+        // retry and retains its original typed error contract.
+        await this.reactivatePendingSidecar(record, retiredSidecar);
+        throw err;
+      }
+      // An unexpected error may occur after the database transaction committed (for example during
+      // validation/flush). Never reactivate an undo whose live-state correspondence is uncertain.
+      this.pending.delete(id);
+      this.discardRetiredPendingSidecar(retiredSidecar);
+      throw new Error("Restore failed and its review was retired to avoid exposing stale undo.", { cause: err });
     }
+    this.pending.delete(id);
+    this.discardRetiredPendingSidecar(retiredSidecar);
     // #4927: the restore reverted the lorebook rows, so rebuild any embedded character_book from the
     // restored state (no-op for standalone lorebooks).
     await this.syncAffectedCharacterBooks(record.plan.changes);
-    this.pending.delete(id);
-    await this.deletePendingSidecar(id);
     const history = await this.recordHistory({
       plan: record.plan,
       command: record.command,
@@ -4722,6 +4914,184 @@ export class MariDbService {
       journalPath: record.journalPath,
     });
     return { approval, history };
+  }
+
+  // Reject a dependency-closed SUBSET of a pending review's rows (revert just those, keep the rest
+  // applied), scoped to top-level `lorebook_entries` changes. The client sends each row's
+  // diffPreview index plus a {table,id,action} consistency tuple; the index maps 1:1 to
+  // plan.changes[index] for the first PREVIEW_LIMIT changes, where the real PlanChange still carries
+  // apply/cascadeOf/beforeRaw that diffPreview drops. Mirrors restoreAppliedReview's audited
+  // contract (#4852 supersede via restoreChanges, #4927 charbook sync, #4813 durable sidecar),
+  // shrinking the pending record in place instead of resolving it whole.
+  async rejectRows(
+    id: string,
+    selections: Array<{ index: number; table: string; id: string; action: MariDbRowChange["action"] }>,
+  ): Promise<
+    | { approval: MariDbPendingApproval | null; history: MariDbHistoryEntry; rejected: number; remaining: number; completed: boolean }
+    | { outcome: "state_changed"; error: string }
+    | { outcome: "invalid_selection"; error: string }
+    | null
+  > {
+    this.ensurePendingHydrated();
+    return this.withReviewLock(id, () => this.rejectRowsLocked(id, selections));
+  }
+
+  private async rejectRowsLocked(
+    id: string,
+    selections: Array<{ index: number; table: string; id: string; action: MariDbRowChange["action"] }>,
+  ): Promise<
+    | { approval: MariDbPendingApproval | null; history: MariDbHistoryEntry; rejected: number; remaining: number; completed: boolean }
+    | { outcome: "state_changed"; error: string }
+    | { outcome: "invalid_selection"; error: string }
+    | null
+  > {
+    const record = this.pending.get(id);
+    if (!record) return null;
+
+    if (selections.length === 0) {
+      return { outcome: "invalid_selection", error: "No rows were selected to reject." };
+    }
+    const selected = new Set<PlanChange>();
+    for (const sel of selections) {
+      if (!Number.isInteger(sel.index) || sel.index < 0 || sel.index >= PREVIEW_LIMIT) {
+        return {
+          outcome: "invalid_selection",
+          error: "This review changed since it was shown. Reopen it and try again.",
+        };
+      }
+      const matchesSelection = (candidate: PlanChange | undefined): candidate is PlanChange =>
+        !!candidate && candidate.table === sel.table && candidate.id === sel.id && candidate.action === sel.action;
+      const indexedChange = record.plan.changes[sel.index];
+      // A serialized rejection may shift the second request's index. Resolve only the exact tuple
+      // from the still-visible preview when it has one unique match, never another row or a hidden
+      // change beyond PREVIEW_LIMIT.
+      const shiftedMatches = matchesSelection(indexedChange)
+        ? []
+        : record.plan.changes.slice(0, PREVIEW_LIMIT).filter(matchesSelection);
+      const change = matchesSelection(indexedChange)
+        ? indexedChange
+        : shiftedMatches.length === 1
+          ? shiftedMatches[0]
+          : undefined;
+      if (!change) {
+        return {
+          outcome: "invalid_selection",
+          error: "This review changed since it was shown. Reopen it and try again.",
+        };
+      }
+      // v1: only individually-authored lorebook entries can be rejected one at a time. A whole-
+      // lorebook delete's cascade children (cascadeOf set) would re-insert an entry whose parent
+      // lorebook is still deleted (dangling reference) — reject the parent change instead.
+      if (change.table !== "lorebook_entries") {
+        return {
+          outcome: "invalid_selection",
+          error: "Only lorebook entries can be rejected individually. Use Restore to revert the whole change.",
+        };
+      }
+      if (change.cascadeOf) {
+        return {
+          outcome: "invalid_selection",
+          error: "This entry was removed as part of deleting its lorebook. Reject the lorebook change instead.",
+        };
+      }
+      // Rejecting an entry DELETE re-inserts the entry, which needs a live parent lorebook. A plan can
+      // hold a top-level `lorebooks` delete AND a top-level `lorebook_entries` delete with no
+      // cascadeOf link (a transform, or two delete plans merged into one review); rejecting only the
+      // entry would re-insert it under a deleted parent. Post-restore validate() only catches that
+      // dangling reference AFTER restoreChanges has committed (leaving the bad row + an unhandled
+      // error), so refuse it up front.
+      if (change.action === "delete") {
+        const parentLorebookId =
+          typeof change.beforeRaw?.lorebookId === "string" ? change.beforeRaw.lorebookId : null;
+        const parentLive =
+          parentLorebookId !== null && (await this.getRawById(getMeta("lorebooks"), parentLorebookId)) !== null;
+        if (!parentLive) {
+          return {
+            outcome: "invalid_selection",
+            error: "This entry's lorebook was also removed, so it can't be restored on its own. Use Restore to revert the whole change.",
+          };
+        }
+      }
+      selected.add(change);
+    }
+
+    // lorebook_entries is a cascade leaf, so the closure is exactly the selected rows.
+    const rejectedChanges = record.plan.changes.filter((change) => selected.has(change));
+    const remainingChanges = record.plan.changes.filter((change) => !selected.has(change));
+    const rejectedPlan: Plan = {
+      ...record.plan,
+      changes: rejectedChanges,
+      summary: summaryForChanges(rejectedChanges),
+    };
+
+    const retiredSidecar = this.retirePendingSidecar(id);
+    try {
+      await this.restoreChanges(rejectedChanges);
+    } catch (err) {
+      if (err instanceof RestoreStateChangedError) {
+        await this.reactivatePendingSidecar(record, retiredSidecar);
+        // #4852 F2: a newer edit landed after Mari staged one of these rows, so reverting would
+        // overwrite it. Leave the live data AND the whole pending review intact (nothing was
+        // written; the tx rolled back) so the user can re-review against current state.
+        return {
+          outcome: "state_changed",
+          error:
+            "This data changed after Professor Mari staged it; a newer edit would be overwritten. Review a fresh proposal instead.",
+        };
+      }
+      this.pending.delete(id);
+      this.discardRetiredPendingSidecar(retiredSidecar);
+      throw new Error("Row rejection failed and its review was retired to avoid exposing stale undo.", { cause: err });
+    }
+
+    const remainingPlan = { ...record.plan, changes: remainingChanges, summary: summaryForChanges(remainingChanges) };
+    const remainingRecord: PendingRecord = {
+      ...record,
+      plan: remainingPlan,
+      affectedTables: remainingPlan.summary.affectedTables,
+      affectedRows: remainingPlan.summary.affectedRows,
+      diffPreview: remainingPlan.summary.preview,
+      diffTruncated: remainingPlan.summary.truncated,
+    };
+
+    try {
+      await this.syncAffectedCharacterBooks(rejectedChanges);
+      if (remainingChanges.length === 0) {
+        this.pending.delete(id);
+      } else {
+        // The old full plan is already retired. Install the replacement sidecar before publishing
+        // its matching in-memory card, so disk and memory cannot disagree across a restart.
+        await this.writePendingSidecar(remainingRecord);
+        this.pending.set(id, remainingRecord);
+      }
+      this.discardRetiredPendingSidecar(retiredSidecar);
+    } catch (err) {
+      // The rows were already restored. Drop both stale review representations and surface the
+      // durability loss instead of keeping an undo that could overwrite newer data after restart.
+      this.pending.delete(id);
+      this.discardRetiredPendingSidecar(retiredSidecar);
+      throw new Error("Rows were restored, but the remaining review could not be saved safely.", { cause: err });
+    }
+
+    const history = await this.recordHistory({
+      plan: rejectedPlan,
+      command: record.command,
+      sessionId: record.sessionId,
+      status: "restored",
+      journalPath: record.journalPath,
+    });
+
+    if (remainingChanges.length === 0) {
+      // Every row was rejected — resolve the review whole instead of persisting a zero-row card.
+      return { approval: null, history, rejected: rejectedChanges.length, remaining: 0, completed: true };
+    }
+    return {
+      approval: this.pendingView(remainingRecord),
+      history,
+      rejected: rejectedChanges.length,
+      remaining: remainingChanges.length,
+      completed: false,
+    };
   }
 
   async validate(table?: string | null): Promise<MariDbValidationResult> {
@@ -4886,7 +5256,7 @@ export class MariDbService {
         message: `Tool executionType must be one of: ${[...TOOL_EXECUTION_TYPES].join(", ")}`,
       });
     }
-    if (row.executionType === "script" && !isCustomToolScriptEnabled()) {
+    if (row.executionType === "script" && row.enabled === "true" && !isCustomToolScriptEnabled()) {
       issues.push({
         level: "error",
         table: "custom_tools",
@@ -4930,7 +5300,7 @@ export class MariDbService {
           id,
           message: "Tool webhookUrl must be a URL string or null",
         });
-      } else {
+      } else if (!row.webhookUrl.startsWith(ENCRYPTED_WEBHOOK_PREFIX)) {
         try {
           new URL(row.webhookUrl);
         } catch {
@@ -5683,7 +6053,10 @@ export class MariDbService {
         const timestamp = now();
         const addSecondaryKeysRaw = flagString(flags, "secondary-keys") ?? "";
         const addSecondaryKeys = addSecondaryKeysRaw
-          ? addSecondaryKeysRaw.split(",").map((k) => k.trim()).filter(Boolean)
+          ? addSecondaryKeysRaw
+              .split(",")
+              .map((k) => k.trim())
+              .filter(Boolean)
           : [];
         const addSelectiveLogic = flagString(flags, "selective-logic");
         if (addSelectiveLogic !== undefined && !normalizeSelectiveLogicValue(addSelectiveLogic)) {
@@ -5782,7 +6155,10 @@ export class MariDbService {
         const updateSecondaryKeysRaw = flagString(flags, "secondary-keys");
         if (updateSecondaryKeysRaw !== undefined) {
           entryPatch.secondaryKeys = updateSecondaryKeysRaw
-            ? updateSecondaryKeysRaw.split(",").map((k) => k.trim()).filter(Boolean)
+            ? updateSecondaryKeysRaw
+                .split(",")
+                .map((k) => k.trim())
+                .filter(Boolean)
             : [];
         }
         const patchFolderId = flagString(flags, "folder-id");
@@ -5930,70 +6306,114 @@ export class MariDbService {
       case "choice-blocks":
         return run("choiceblocks", { presetId: need(0, "Usage: mari presets choice-blocks <preset-id>") });
       case "get-choice-block":
-        return run("getchoiceblock", { choiceBlockId: need(0, "Usage: mari presets get-choice-block <choice-block-id>") });
+        return run("getchoiceblock", {
+          choiceBlockId: need(0, "Usage: mari presets get-choice-block <choice-block-id>"),
+        });
       case "add-section":
         return run("addsection", {
-          presetId: need(0, "Usage: mari presets add-section <preset-id> --name <name> [--content <text>] [--role <system|user|assistant>] [--group-id <id>] [--apply]"),
+          presetId: need(
+            0,
+            "Usage: mari presets add-section <preset-id> --name <name> [--content <text>] [--role <system|user|assistant>] [--group-id <id>] [--apply]",
+          ),
           data: presetDataFromFlags(flags),
           apply,
           reason,
         });
       case "update-section":
         return run("updatesection", {
-          sectionId: need(0, "Usage: mari presets update-section <section-id> [--content <text>] [--name <name>] [--enable|--disable] [--group-id <id>] [--injection-order <n>] [--apply]"),
+          sectionId: need(
+            0,
+            "Usage: mari presets update-section <section-id> [--content <text>] [--name <name>] [--enable|--disable] [--group-id <id>] [--injection-order <n>] [--apply]",
+          ),
           data: presetDataFromFlags(flags),
           apply,
           reason,
         });
       case "delete-section":
-        return run("deletesection", { sectionId: need(0, "Usage: mari presets delete-section <section-id> [--apply]"), apply, reason });
+        return run("deletesection", {
+          sectionId: need(0, "Usage: mari presets delete-section <section-id> [--apply]"),
+          apply,
+          reason,
+        });
       case "add-group":
         return run("addgroup", {
-          presetId: need(0, "Usage: mari presets add-group <preset-id> --name <name> [--parent-group-id <id>] [--apply]"),
+          presetId: need(
+            0,
+            "Usage: mari presets add-group <preset-id> --name <name> [--parent-group-id <id>] [--apply]",
+          ),
           data: presetDataFromFlags(flags),
           apply,
           reason,
         });
       case "update-group":
         return run("updategroup", {
-          groupId: need(0, "Usage: mari presets update-group <group-id> [--name <name>] [--enable|--disable] [--order <n>] [--parent-group-id <id>] [--apply]"),
+          groupId: need(
+            0,
+            "Usage: mari presets update-group <group-id> [--name <name>] [--enable|--disable] [--order <n>] [--parent-group-id <id>] [--apply]",
+          ),
           data: presetDataFromFlags(flags),
           apply,
           reason,
         });
       case "delete-group":
-        return run("deletegroup", { groupId: need(0, "Usage: mari presets delete-group <group-id> [--apply]"), apply, reason });
+        return run("deletegroup", {
+          groupId: need(0, "Usage: mari presets delete-group <group-id> [--apply]"),
+          apply,
+          reason,
+        });
       case "add-choice-block":
         return run("addchoiceblock", {
-          presetId: need(0, "Usage: mari presets add-choice-block <preset-id> --variable-name <name> --question <text> --options <a,b,c> [--multi-select] [--apply]"),
+          presetId: need(
+            0,
+            "Usage: mari presets add-choice-block <preset-id> --variable-name <name> --question <text> --options <a,b,c> [--multi-select] [--apply]",
+          ),
           data: presetDataFromFlags(flags),
           apply,
           reason,
         });
       case "update-choice-block":
         return run("updatechoiceblock", {
-          choiceBlockId: need(0, "Usage: mari presets update-choice-block <choice-block-id> [--question <text>] [--options <a,b,c>] [--variable-name <name>] [--multi-select] [--apply]"),
+          choiceBlockId: need(
+            0,
+            "Usage: mari presets update-choice-block <choice-block-id> [--question <text>] [--options <a,b,c>] [--variable-name <name>] [--multi-select] [--apply]",
+          ),
           data: presetDataFromFlags(flags),
           apply,
           reason,
         });
       case "delete-choice-block":
-        return run("deletechoiceblock", { choiceBlockId: need(0, "Usage: mari presets delete-choice-block <choice-block-id> [--apply]"), apply, reason });
+        return run("deletechoiceblock", {
+          choiceBlockId: need(0, "Usage: mari presets delete-choice-block <choice-block-id> [--apply]"),
+          apply,
+          reason,
+        });
       case "create": {
         const json = await resolveJsonInput(flags, context.cwd);
         if (!json)
-          throw new Error('Usage: mari presets create (--json \'{"name":"...","sections":[...]}\' | --json-file <path>) [--apply]');
+          throw new Error(
+            'Usage: mari presets create (--json \'{"name":"...","sections":[...]}\' | --json-file <path>) [--apply]',
+          );
         return run("create", { data: parseRequiredJsonObjectInput(json, "preset json"), apply, reason });
       }
       case "update": {
-        const id = need(0, "Usage: mari presets update <preset-id> (--json '<partial-json>' | --json-file <path>) [--apply]");
+        const id = need(
+          0,
+          "Usage: mari presets update <preset-id> (--json '<partial-json>' | --json-file <path>) [--apply]",
+        );
         const json = await resolveJsonInput(flags, context.cwd);
         if (!json)
-          throw new Error("Usage: mari presets update <preset-id> (--json '<partial-json>' | --json-file <path>) [--apply]");
+          throw new Error(
+            "Usage: mari presets update <preset-id> (--json '<partial-json>' | --json-file <path>) [--apply]",
+          );
         return run("update", { id, data: parseRequiredJsonObjectInput(json, "preset json"), apply, reason });
       }
       default:
-        return { ok: false, mode: "read", command: context.command, error: `Unknown presets command "${sub}".\n${this.presetsHelpText()}` };
+        return {
+          ok: false,
+          mode: "read",
+          command: context.command,
+          error: `Unknown presets command "${sub}".\n${this.presetsHelpText()}`,
+        };
     }
   }
 
@@ -6326,7 +6746,7 @@ export class MariDbService {
     flags: Map<string, string | boolean>,
   ): Promise<MariDbCommandResult> {
     if (!table) throw new Error("Usage: mari db select <table> --where <expr>");
-    const predicate = createWherePredicate(flagString(flags, "where"));
+    const predicate = createMariWherePredicate(flagString(flags, "where"));
     const rows = (await this.rawRows(table)).map((row) => parseRow(table, row)).filter(predicate);
     const limit = normalizeLimit(flagString(flags, "limit"), 100, 5000);
     return { ok: true, mode: "read", command, output: rows.slice(0, limit) };
@@ -6387,7 +6807,10 @@ export class MariDbService {
     if (kind === "delete") {
       const table = positionals[0];
       if (!table) throw new Error("Usage: mari db delete <table> <id>|--where <expr> [--cascade] [--apply]");
-      return { kind, table, id: positionals[1], where: flagString(flags, "where"), apply, cascade, reason, cwd };
+      const id = positionals[1];
+      const where = flagString(flags, "where");
+      if (!id && !where) throw new Error("Delete requires an id or an explicit --where expression");
+      return { kind, table, id, where, apply, cascade, reason, cwd };
     }
     const [table, scriptPath] = positionals;
     if (!table || !scriptPath)
@@ -6448,9 +6871,10 @@ export class MariDbService {
     sessionId: string,
   ): Promise<MariDbCommandResult> {
     const planTimestamp = now();
-    const plan = await this.planMutation(request, command, planTimestamp);
+    const storedCommand = commandForStorage(request, command);
+    const plan = await this.planMutation(request, storedCommand, planTimestamp);
     if (plan.validation.status === "blocked") {
-      await this.recordHistory({ plan, command, sessionId, status: "blocked", journalPath: null });
+      await this.recordHistory({ plan, command: storedCommand, sessionId, status: "blocked", journalPath: null });
       return {
         ok: false,
         mode: request.apply ? "apply" : "dry-run",
@@ -6462,7 +6886,7 @@ export class MariDbService {
     }
 
     if (!request.apply) {
-      await this.recordHistory({ plan, command, sessionId, status: "dry-run", journalPath: null });
+      await this.recordHistory({ plan, command: storedCommand, sessionId, status: "dry-run", journalPath: null });
       return {
         ok: true,
         mode: "dry-run",
@@ -6477,8 +6901,14 @@ export class MariDbService {
       await this.captureDeletedLorebookEmbeddings(plan.changes);
       const journalPath = await this.applyPlan(plan);
       await this.syncAffectedCharacterBooks(plan.changes);
-      const history = await this.recordHistory({ plan, command, sessionId, status: "approved", journalPath });
-      const review = await this.createAppliedReview(plan, command, sessionId, journalPath, history.id);
+      const history = await this.recordHistory({
+        plan,
+        command: storedCommand,
+        sessionId,
+        status: "approved",
+        journalPath,
+      });
+      const review = await this.createAppliedReview(plan, storedCommand, sessionId, journalPath, history.id);
       return {
         ok: true,
         mode: "apply",
@@ -6490,7 +6920,7 @@ export class MariDbService {
       };
     } catch (err) {
       logger.error(err, "[mari-db] apply failed");
-      await this.recordHistory({ plan, command, sessionId, status: "failed", journalPath: null });
+      await this.recordHistory({ plan, command: storedCommand, sessionId, status: "failed", journalPath: null });
       return {
         ok: false,
         mode: "apply",
@@ -6523,6 +6953,10 @@ export class MariDbService {
     else if (request.kind === "preset-group-delete") changes = await this.planPresetGroupDelete(request, timestamp);
     else changes = await this.planTransform(request, timestamp, allocateId);
 
+    // systemKey identifies Engine-owned presets. Apply this after every planner so raw writes and
+    // transforms cannot bypass the structured preset-action boundary.
+    protectPromptPresetSystemKeys(changes);
+
     const personalExtensionChanges = changes.filter((change) => change.table === "installed_extensions");
     if (personalExtensionChanges.length > 0 && !request.personalExtensionDraftMutation) {
       issues.push({
@@ -6549,6 +6983,69 @@ export class MariDbService {
         }
       }
     }
+
+    // Raw Mari DB commands are model-driven and apply before the user sees the
+    // Keep/Restore review. Keep executable tool authoring available, but never
+    // let that path arm a webhook/script or grant it hidden chat context. The
+    // user can inspect and enable the saved draft in the privileged Tools UI.
+    const encryptedWebhooks = new Map<string, string>();
+    for (const change of changes.filter((candidate) => candidate.table === "custom_tools")) {
+      const before = change.beforeRaw;
+      const beforeWebhookUrl = before?.webhookUrl;
+      if (typeof beforeWebhookUrl === "string") {
+        before!.webhookUrl = encryptCustomToolWebhookUrl(beforeWebhookUrl);
+        change.before = parseRow("custom_tools", before!);
+      }
+
+      const after = change.afterRaw;
+      if (!after) continue;
+      if (
+        typeof after.webhookUrl === "string" &&
+        after.webhookUrl &&
+        !after.webhookUrl.startsWith(ENCRYPTED_WEBHOOK_PREFIX)
+      ) {
+        try {
+          new URL(after.webhookUrl);
+        } catch {
+          issues.push({
+            level: "error",
+            table: "custom_tools",
+            id: change.id,
+            message: "Tool webhookUrl must be a valid URL",
+          });
+        }
+      }
+      const executable = after.executionType === "webhook" || after.executionType === "script";
+      const executableDefinitionChanged =
+        !before ||
+        before.executionType !== after.executionType ||
+        beforeWebhookUrl !== after.webhookUrl ||
+        before.scriptBody !== after.scriptBody;
+      const privilegeEscalated =
+        (after.enabled === "true" && before?.enabled !== "true") ||
+        (after.includeHiddenContext === "true" && before?.includeHiddenContext !== "true");
+      if (executable && (executableDefinitionChanged || privilegeEscalated)) {
+        after.enabled = "false";
+        after.includeHiddenContext = "false";
+        change.after = parseRow("custom_tools", after);
+        issues.push({
+          level: "notice",
+          table: "custom_tools",
+          id: change.id,
+          message:
+            "Executable tool changes are saved disabled without hidden context; review and enable them in Tools.",
+        });
+      }
+      if (typeof after.webhookUrl === "string") {
+        const originalWebhookUrl = after.webhookUrl;
+        const encryptedWebhookUrl =
+          encryptedWebhooks.get(originalWebhookUrl) ?? encryptCustomToolWebhookUrl(originalWebhookUrl);
+        after.webhookUrl = encryptedWebhookUrl;
+        if (encryptedWebhookUrl) encryptedWebhooks.set(originalWebhookUrl, encryptedWebhookUrl);
+        change.after = parseRow("custom_tools", after);
+      }
+    }
+    secureCustomToolRequestForStorage(request, encryptedWebhooks);
 
     // Memories (mari_instructions) are a normal file-backed table, so the generic raw path would
     // otherwise reach them and skip the length caps + enabled=0 forcing that only the instruction.*
@@ -6616,7 +7113,12 @@ export class MariDbService {
     ];
     // Seed the collision set with the primary row's id so a related insert cannot re-claim it.
     changes.push(
-      ...(await this.planRelatedInserts(request.relatedInserts, timestamp, allocateId, new Set([`${meta.name}:${insertPk}`]))),
+      ...(await this.planRelatedInserts(
+        request.relatedInserts,
+        timestamp,
+        allocateId,
+        new Set([`${meta.name}:${insertPk}`]),
+      )),
     );
     return changes;
   }
@@ -6673,7 +7175,9 @@ export class MariDbService {
       // clean dry-run and abort late at apply, so reject it here too.
       const seenKey = `${meta.name}:${insertPk}`;
       if (seenIds.has(seenKey)) {
-        throw new Error(`A ${meta.name} row with id "${insertPk}" is used more than once in this create; each row needs a unique id.`);
+        throw new Error(
+          `A ${meta.name} row with id "${insertPk}" is used more than once in this create; each row needs a unique id.`,
+        );
       }
       seenIds.add(seenKey);
       this.fillTimestamps(meta, parsed, true, timestamp);
@@ -6890,12 +7394,35 @@ export class MariDbService {
     return run;
   }
 
+  // Serialize an operation against all others touching the SAME review id (see reviewLocks). The
+  // stored tail never rejects, so a failed operation cannot wedge the id's queue; the next waiter
+  // still runs. The tail self-evicts from the map once it is the last holder, so ids do not
+  // accumulate. Distinct ids never block each other. Callers must NOT nest this on the same id
+  // (keepAppliedReviewAndWait deliberately does its read-only snapshot outside the lock, then
+  // delegates the mutation to keepAppliedReview, which takes the lock once).
+  private withReviewLock<T>(id: string, operation: () => Promise<T>): Promise<T> {
+    const prev = this.reviewLocks.get(id) ?? Promise.resolve();
+    const run = prev.then(operation);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.reviewLocks.set(id, tail);
+    void tail.then(() => {
+      if (this.reviewLocks.get(id) === tail) this.reviewLocks.delete(id);
+    });
+    return run;
+  }
+
   private async planDelete(request: ParsedMutationRequest, issues: MariDbValidationIssue[]): Promise<PlanChange[]> {
     const meta = getMeta(String(request.table));
+    if (!request.id && !request.where?.trim()) {
+      throw new Error("Delete requires an id or an explicit --where expression");
+    }
     const rows = await this.rawRows(meta.name);
     const predicate = request.id
       ? (row: Row) => String(row[getPrimary(meta)]) === request.id
-      : createWherePredicate(request.where);
+      : createMariWherePredicate(request.where);
     const selected = rows.filter((row) => predicate(parseRow(meta.name, row)));
     const changes: PlanChange[] = selected.map((row) => ({
       table: meta.name,
@@ -6926,7 +7453,6 @@ export class MariDbService {
   ): Promise<PlanChange[]> {
     const cwd = request.cwd ? resolve(request.cwd) : process.cwd();
     const scriptPath = resolve(cwd, String(request.scriptPath));
-    const transform = await importTransform(scriptPath);
     const tables = request.table === "all" ? [...FILE_BACKED_TABLES] : [String(request.table)];
     const allParsed = new Map<string, Row[]>();
     const allRaw = new Map<string, Row[]>();
@@ -6939,6 +7465,17 @@ export class MariDbService {
         rawRows.map((row) => parseRow(table, row)),
       );
     }
+    const sandboxResults = await runMariTransformSandbox({
+      workspaceRoot: cwd,
+      scriptPath,
+      timestamp,
+      tables: tables.map((table) => ({
+        name: table,
+        rows: allRaw.get(table) ?? [],
+        jsonColumns: [...(JSON_COLUMNS[table] ?? [])],
+      })),
+    });
+    const resultsByTable = new Map(sandboxResults.map((result) => [result.table, result.results]));
     const changes: PlanChange[] = [];
     for (const table of tables) {
       const meta = getMeta(table);
@@ -6947,15 +7484,15 @@ export class MariDbService {
       for (let index = 0; index < parsedRows.length; index++) {
         const row = clone(parsedRows[index]!);
         const raw = rawRows[index]!;
-        const ctx: TransformContext = {
-          table,
-          now: timestamp,
-          newId: allocateId,
-          raw: (parsedRow) => serializeRow(table, parsedRow),
-          parse: (rawRow) => parseRow(table, rawRow),
-          find: (findTable, predicate) => (allParsed.get(findTable) ?? []).filter(predicate).map(clone),
-        };
-        const result = await transform(row, ctx);
+        const tableResults = resultsByTable.get(table);
+        if (!tableResults || tableResults.length !== parsedRows.length) {
+          throw new Error(`Transform sandbox returned an incomplete result for ${table}`);
+        }
+        const sandboxResult = tableResults[index];
+        if (!sandboxResult || typeof sandboxResult.defined !== "boolean") {
+          throw new Error(`Transform sandbox returned an invalid result for ${table}`);
+        }
+        const result = sandboxResult.defined ? sandboxResult.value : undefined;
         if (result === null || result === false || result === undefined) continue;
         if (isRecord(result) && result.delete === true) {
           changes.push({
@@ -7240,6 +7777,8 @@ export class MariDbService {
         }
       }
       addCharacterDataShapeIssues(change.table, row, change.id, issues);
+      if (change.table === "agent_configs") this.validateAgentConfigRow(row, change.id, issues);
+      if (change.table === "custom_tools") this.validateCustomToolRow(row, change.id, issues);
     }
 
     const parentRowsByTable = new Map<string, Row[]>();
@@ -7352,63 +7891,96 @@ export class MariDbService {
       const before = homeWidgetCatalogFromPlanRow(homeWidgetChange.beforeRaw);
       const after = homeWidgetCatalogFromPlanRow(homeWidgetChange.afterRaw);
       await replaceHomeWidgetCatalog(this.db, after.revision, before.widgets);
+      await this.validateAndFlushRestored(plan.changes);
     } else {
-      await this.db.transaction(async (tx) => {
-        // #4852 F2: abort the whole restore if any row it would revert was changed by a newer
-        // write after this review applied. Read inside the tx, because restore is NOT serialized against
-        // a concurrent Mari apply (serializeWorkspaceMutation wraps only Mari's own tool mutations,
-        // not this direct-service path), so reading here is what closes the race. The throw rolls
-        // the tx back before any write, and restoreAppliedReview catches it and leaves the newer
-        // data plus the pending review intact. Only applied changes were written, so skip the rest.
-        for (const change of plan.changes) {
-          if (!change.apply) continue;
-          const meta = getMeta(change.table);
-          const pk = getPrimary(meta);
-          const rows = (await tx
-            .select()
-            .from(meta.table as any)
-            .where(eq(meta.byKey.get(pk)!.column as any, change.id))) as Row[];
-          const current = rows[0] ? { ...rows[0] } : null;
-          if (restoreRowSuperseded(meta, current, change.afterRaw ?? null)) {
-            throw new RestoreStateChangedError();
-          }
-        }
-
-        const insertedRows = [...plan.changes].reverse().filter((change) => change.action === "insert");
-        for (const change of insertedRows) {
-          const meta = getMeta(change.table);
-          const pk = getPrimary(meta);
-          await tx.delete(meta.table as any).where(eq(meta.byKey.get(pk)!.column as any, change.id));
-        }
-
-        const updatedRows = plan.changes.filter((change) => change.action === "update" || change.action === "replace");
-        for (const change of updatedRows) {
-          if (!change.beforeRaw) continue;
-          const meta = getMeta(change.table);
-          const pk = getPrimary(meta);
-          await tx
-            .update(meta.table as any)
-            .set(knownColumnPatch(meta, change.beforeRaw))
-            .where(eq(meta.byKey.get(pk)!.column as any, change.id));
-        }
-
-        const deletedRows = plan.changes.filter((change) => change.action === "delete");
-        for (const change of [...deletedRows].reverse()) {
-          const meta = getMeta(change.table);
-          const pk = getPrimary(meta);
-          await tx.delete(meta.table as any).where(eq(meta.byKey.get(pk)!.column as any, change.id));
-        }
-        for (const change of deletedRows) {
-          if (!change.beforeRaw) continue;
-          const meta = getMeta(change.table);
-          await tx.insert(meta.table as any).values(knownColumnPatch(meta, change.beforeRaw));
-        }
-      });
+      await this.restoreChanges(plan.changes);
     }
+  }
 
+  // Revert a subset of a plan's changes in one transaction, then validate + flush. Shared by whole-
+  // plan restore (restorePlan) and per-row reject (rejectRows). The in-tx supersede check is the
+  // audited #4852 / apply-asymmetry contract (see comments below) — the
+  // callers must pass a dependency-closed subset; this helper does not compute cascade closure.
+  private async restoreChanges(changes: PlanChange[]): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      // #4852 F2: abort the whole restore if any row it would revert was changed by a newer
+      // write after this review applied. Read inside the tx, because restore is NOT serialized against
+      // a concurrent Mari apply (serializeWorkspaceMutation wraps only Mari's own tool mutations,
+      // not this direct-service path), so reading here is what closes the race. The throw rolls
+      // the tx back before any write, and the caller catches it and leaves the newer data plus the
+      // pending review intact. Cascade rows carry apply:false because the parent delete removed
+      // them implicitly, but Restore writes those snapshots back and must protect them too.
+      for (const change of changes) {
+        const meta = getMeta(change.table);
+        const pk = getPrimary(meta);
+        const rows = (await tx
+          .select()
+          .from(meta.table as any)
+          .where(eq(meta.byKey.get(pk)!.column as any, change.id))) as Row[];
+        const current = rows[0] ? { ...rows[0] } : null;
+        if (restoreRowSuperseded(meta, current, change.afterRaw ?? null)) {
+          throw new RestoreStateChangedError();
+        }
+      }
+
+      const insertedRows = [...changes].reverse().filter((change) => change.action === "insert");
+      for (const change of insertedRows) {
+        const meta = getMeta(change.table);
+        const pk = getPrimary(meta);
+        await tx.delete(meta.table as any).where(eq(meta.byKey.get(pk)!.column as any, change.id));
+      }
+
+      const updatedRows = changes.filter((change) => change.action === "update" || change.action === "replace");
+      for (const change of updatedRows) {
+        if (!change.beforeRaw) continue;
+        const meta = getMeta(change.table);
+        const pk = getPrimary(meta);
+        await tx
+          .update(meta.table as any)
+          .set(knownColumnPatch(meta, change.beforeRaw))
+          .where(eq(meta.byKey.get(pk)!.column as any, change.id));
+      }
+
+      const deletedRows = changes.filter((change) => change.action === "delete");
+      for (const change of [...deletedRows].reverse()) {
+        const meta = getMeta(change.table);
+        const pk = getPrimary(meta);
+        await tx.delete(meta.table as any).where(eq(meta.byKey.get(pk)!.column as any, change.id));
+      }
+      for (const change of deletedRows) {
+        if (!change.beforeRaw) continue;
+        const meta = getMeta(change.table);
+        await tx.insert(meta.table as any).values(knownColumnPatch(meta, change.beforeRaw));
+      }
+
+      // #4931: a restored lorebook entry needs a live parent lorebook. A concurrent lorebook deletion
+      // can land between rejectRows' pre-check and this transaction (TOCTOU), so re-verify in-tx and
+      // roll back rather than committing a dangling reference that only post-commit validate() would
+      // catch (which would leave the bad row + surface a 500). This covers every non-insert entry
+      // change — a delete re-inserts the row, and an update/replace revert can rewrite lorebookId (e.g.
+      // reverting a reparent whose original lorebook is now gone). Whole-plan restores re-insert the
+      // parent in the loops above, so this fires only when the parent is genuinely gone.
+      for (const change of changes) {
+        if (change.action === "insert" || change.table !== "lorebook_entries" || !change.beforeRaw) continue;
+        const lorebookId = change.beforeRaw.lorebookId;
+        if (typeof lorebookId !== "string") continue;
+        const meta = getMeta("lorebooks");
+        const pk = getPrimary(meta);
+        const parent = (await tx
+          .select()
+          .from(meta.table as any)
+          .where(eq(meta.byKey.get(pk)!.column as any, lorebookId))) as Row[];
+        if (parent.length === 0) throw new RestoreStateChangedError();
+      }
+    });
+
+    await this.validateAndFlushRestored(changes);
+  }
+
+  private async validateAndFlushRestored(changes: PlanChange[]): Promise<void> {
     const validation = await this.validate();
     if (validation.status === "blocked") {
-      const touchedRows = new Set(plan.changes.map((change) => `${change.table}:${change.id}`));
+      const touchedRows = new Set(changes.map((change) => `${change.table}:${change.id}`));
       const touchedErrors = validation.errors.filter(
         (issue) => issue.table && issue.id != null && touchedRows.has(`${issue.table}:${String(issue.id)}`),
       );
@@ -7476,7 +8048,12 @@ export class MariDbService {
       journalPath,
     };
     this.pending.set(id, record);
-    await this.writePendingSidecar(record);
+    try {
+      await this.writePendingSidecar(record);
+    } catch {
+      // There is no older sidecar to invalidate on initial creation. Retain the in-memory undo and
+      // let the already-applied action succeed; writePendingSidecar has logged the durability loss.
+    }
     await this.enforcePendingRetention();
     return this.pendingView(record);
   }
@@ -7491,6 +8068,12 @@ export class MariDbService {
   }
 
   private pendingSidecarPath(id: string) {
+    // Defense-in-depth against path traversal: every caller already passes a server-generated
+    // newId() (a 21-char nanoid) or a route id that first matched a pending record, so a traversal
+    // value can't reach here — but never build a filesystem path from an id that isn't a safe token.
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+      throw new Error(`Invalid pending review id: ${id}`);
+    }
     return join(this.pendingDir(), `${id}.json`);
   }
 
@@ -7506,9 +8089,8 @@ export class MariDbService {
       renameSync(tempPath, finalPath);
     } catch (err) {
       this.safeRm(tempPath);
-      // The change is applied and held in memory even if the sidecar write fails; only the
-      // cross-restart durability is lost. Warn rather than fail the user's action.
       logger.warn(err, "[mari-db] failed to persist pending review %s", record.id);
+      throw err;
     }
   }
 
@@ -7522,19 +8104,43 @@ export class MariDbService {
     }
   }
 
-  private async deletePendingSidecar(id: string): Promise<void> {
+  private retirePendingSidecar(id: string): string | null {
     const finalPath = this.pendingSidecarPath(id);
-    // Atomically retire the sidecar out of the .json hydration set FIRST. If the subsequent unlink
-    // fails (Windows lock / AV), the retired file is still never rehydrated, so a resolved or
-    // evicted review can't come back and be Restored again over newer data.
-    const retiredPath = `${finalPath}.done`;
+    if (!existsSync(finalPath)) return null;
+    const retiredPath = `${finalPath}.${process.pid}.${newId()}.done`;
     try {
       renameSync(finalPath, retiredPath);
-    } catch {
-      this.safeRm(finalPath);
-      return;
+      return retiredPath;
+    } catch (err) {
+      logger.warn(err, "[mari-db] failed to retire pending review %s", id);
+      throw err;
     }
-    this.safeRm(retiredPath);
+  }
+
+  private async reactivatePendingSidecar(record: PendingRecord, retiredPath: string | null): Promise<void> {
+    if (!retiredPath) return;
+    try {
+      renameSync(retiredPath, this.pendingSidecarPath(record.id));
+    } catch (renameErr) {
+      logger.warn(renameErr, "[mari-db] failed to reactivate pending review %s by rename", record.id);
+      try {
+        await this.writePendingSidecar(record);
+        this.safeRm(retiredPath);
+      } catch (writeErr) {
+        throw new Error("The review operation failed and its durable undo could not be restored.", {
+          cause: writeErr,
+        });
+      }
+    }
+  }
+
+  private discardRetiredPendingSidecar(retiredPath: string | null): void {
+    if (retiredPath) this.safeRm(retiredPath);
+  }
+
+  private async deletePendingSidecar(id: string): Promise<void> {
+    const retiredPath = this.retirePendingSidecar(id);
+    this.discardRetiredPendingSidecar(retiredPath);
   }
 
   // Load persisted pending reviews on first access so a Keep/Restore card survives a restart.
@@ -7584,16 +8190,29 @@ export class MariDbService {
           stale.push(path);
         }
       }
-      // Oldest first so the in-memory Map stays insertion-ordered oldest->newest; keep the newest
-      // PENDING_REVIEW_LIMIT. Populate the Map BEFORE pruning so a failed delete can't cost the
-      // reviews we just loaded.
+      // Oldest first so the in-memory Map stays insertion-ordered oldest->newest. Hydrate every
+      // valid review first, then retire overflow sidecars before dropping their memory entries.
       loaded.sort((a, b) => Date.parse(a.requestedAt) - Date.parse(b.requestedAt));
       const dropCount = Math.max(0, loaded.length - PENDING_REVIEW_LIMIT);
-      loaded.slice(dropCount).forEach((record) => this.pending.set(record.id, record));
+      loaded.forEach((record) => this.pending.set(record.id, record));
       for (const path of stale) this.safeRm(path);
-      loaded.slice(0, dropCount).forEach((record) => this.safeRm(this.pendingSidecarPath(record.id)));
-      if (dropCount > 0) {
-        logger.info("[mari-db] dropped %d persisted pending review(s) over the %d cap on load", dropCount, PENDING_REVIEW_LIMIT);
+      let dropped = 0;
+      for (const record of loaded.slice(0, dropCount)) {
+        try {
+          const retiredPath = this.retirePendingSidecar(record.id);
+          this.pending.delete(record.id);
+          this.discardRetiredPendingSidecar(retiredPath);
+          dropped += 1;
+        } catch {
+          // Keep the matching in-memory record when the sidecar could not be retired safely.
+        }
+      }
+      if (dropped > 0) {
+        logger.info(
+          "[mari-db] dropped %d persisted pending review(s) over the %d cap on load",
+          dropped,
+          PENDING_REVIEW_LIMIT,
+        );
       }
     } catch (err) {
       logger.warn(err, "[mari-db] failed to hydrate persisted pending reviews");
@@ -7608,13 +8227,28 @@ export class MariDbService {
     // entries are the oldest reviews; evicting them never touches the review that was just added.
     const evictable = Array.from(this.pending.values()).slice(0, this.pending.size - PENDING_REVIEW_LIMIT);
     for (const record of evictable) {
-      this.pending.delete(record.id);
-      await this.deletePendingSidecar(record.id);
-      logger.info(
-        "[mari-db] dropped oldest pending review %s to stay within the %d-review cap; its change stays applied",
-        record.id,
-        PENDING_REVIEW_LIMIT,
-      );
+      // Serialize eviction against a concurrent keep/restore/reject on the SAME id (the withReviewLock
+      // contract). Otherwise a partial rejectRows whose trailing writePendingSidecar is mid-flight
+      // (mkdir/writeFile await before the atomic rename) could recreate the sidecar this eviction just
+      // retired, resurrecting a phantom review on the next restart. Re-check membership inside the lock
+      // in case that concurrent op already resolved the review.
+      try {
+        await this.withReviewLock(record.id, async () => {
+          if (!this.pending.has(record.id)) return;
+          await this.deletePendingSidecar(record.id);
+          this.pending.delete(record.id);
+          logger.info(
+            "[mari-db] dropped oldest pending review %s to stay within the %d-review cap; its change stays applied",
+            record.id,
+            PENDING_REVIEW_LIMIT,
+          );
+        });
+      } catch (err) {
+        // The data mutation and its new in-memory undo already succeeded. A locked old sidecar may
+        // temporarily leave us over the cap, but must not turn that applied mutation into a reported
+        // failure or discard a still-hydratable review.
+        logger.warn(err, "[mari-db] could not evict pending review %s; retaining it temporarily", record.id);
+      }
     }
   }
 
@@ -7801,7 +8435,9 @@ export class MariDbService {
       "Usage: mari db <command>",
       "Discovery: status, tables, schema <table>, counts, data-dir, now, new-id",
       "Read: list <table>, get <table> <id>, select <table> --where <expr>, search <table|all> <query>, validate [--table <table>]",
+      "Where: row.field and row['field'] with comparisons, &&, ||, !, parentheses, and safe string/array methods (includes, startsWith, endsWith, case conversion, trim); arbitrary code and calls are rejected",
       "Write: insert|patch|replace|delete|transform ... (dry-run by default; --apply saves reversible changes and shows a Keep/Restore review card)",
+      "Transform scripts use an OS sandbox where supported; on other systems, reviewed local scripts remain available only with MARI_DB_ALLOW_UNSAFE_TRANSFORMS=true.",
       `Known tables: ${FILE_BACKED_TABLES.slice(0, 8).join(", ")} ... (${FILE_BACKED_TABLES.length})`,
       `Journal directory: ${this.journalDir()} (${basename(getFileStorageDir())})`,
     ].join("\n");

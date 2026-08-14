@@ -19,6 +19,7 @@ import {
   type BackgroundLibraryOrganization,
 } from "../services/background-library-organization.js";
 import { assertInsideDir, isAllowedImageBuffer } from "../utils/security.js";
+import { sendValidatedMediaFile, validateImageAssetFile } from "../utils/media-file-security.js";
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
@@ -51,13 +52,26 @@ interface BgMeta {
 }
 type MetaMap = Record<string, BgMeta>;
 
+export function normalizeBackgroundMeta(value: unknown): MetaMap {
+  const meta = Object.create(null) as MetaMap;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return meta;
+
+  for (const [filename, entry] of Object.entries(value)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const tags = (entry as { tags?: unknown }).tags;
+    if (!Array.isArray(tags)) continue;
+    meta[filename] = { tags: tags.filter((tag): tag is string => typeof tag === "string") };
+  }
+  return meta;
+}
+
 function readMeta(): MetaMap {
   ensureDir();
-  if (!existsSync(META_PATH)) return {};
+  if (!existsSync(META_PATH)) return normalizeBackgroundMeta(undefined);
   try {
-    return JSON.parse(readFileSync(META_PATH, "utf-8")) as MetaMap;
+    return normalizeBackgroundMeta(JSON.parse(readFileSync(META_PATH, "utf-8")));
   } catch {
-    return {};
+    return normalizeBackgroundMeta(undefined);
   }
 }
 
@@ -700,25 +714,25 @@ export async function backgroundsRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Not found" });
     }
 
-    const ext = extname(filename).toLowerCase();
-    const mimeMap: Record<string, string> = {
-      ".jpg": "image/jpeg",
-      ".jpeg": "image/jpeg",
-      ".png": "image/png",
-      ".gif": "image/gif",
-      ".webp": "image/webp",
-      ".avif": "image/avif",
-    };
+    const image = await validateImageAssetFile(filePath, filename);
+    if (!image) return reply.status(404).send({ error: "Not found" });
 
     // Downscaled variant when asked for one; falls back to the original on any miss.
     const thumbPath = requestedWidth ? await resolveThumbPath(filePath, requestedWidth) : null;
 
-    const { createReadStream } = await import("fs");
-    const stream = createReadStream(thumbPath ?? filePath);
-    return reply
-      .header("Content-Type", thumbPath ? "image/webp" : (mimeMap[ext] ?? "application/octet-stream"))
-      .header("Cache-Control", "no-cache, must-revalidate")
-      .send(stream);
+    if (thumbPath) {
+      await image.handle.close().catch(() => undefined);
+      const { createReadStream } = await import("fs");
+      return reply
+        .header("Content-Type", "image/webp")
+        .header("Cache-Control", "no-cache, must-revalidate")
+        .send(createReadStream(thumbPath));
+    }
+    return sendValidatedMediaFile(reply, image, {
+      method: req.method,
+      rangeHeader: req.headers.range,
+      cacheControl: "no-cache, must-revalidate",
+    });
   });
 
   // Delete a background
