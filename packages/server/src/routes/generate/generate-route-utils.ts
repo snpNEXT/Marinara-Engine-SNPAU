@@ -21,6 +21,7 @@ import {
   type GenerationParameterSendMap,
   type GenerationParameters,
   type InventoryItem,
+  type InventoryTrackerRow,
   type MacroContext,
   type PlayerStats,
   type WrapFormat,
@@ -165,6 +166,119 @@ export function buildLockedPlayerStatsArrayPatch<T>({
     playerStats: { [field]: lockedValues },
   } as { playerStats: Partial<Record<PlayerStatsArrayField, T[]>> };
   return { changed, patch, playerStats, values: lockedValues };
+}
+
+const INVENTORY_TRACKER_PLAYER_STATS_FIELDS = [
+  "inventoryTrackerCurrencies",
+  "inventoryTrackerEquipped",
+  "inventoryTrackerInventory",
+] as const;
+
+type InventoryTrackerPlayerStatsField = (typeof INVENTORY_TRACKER_PLAYER_STATS_FIELDS)[number];
+
+/**
+ * Keep a tracked quantity a finite safe integer.
+ *
+ * Without an upper bound, deduplicating two very large rows sums to `Infinity`,
+ * which `JSON.stringify` writes as `null` — persisting a row whose qty can no
+ * longer be read back as a number.
+ */
+function clampInventoryTrackerQty(value: number): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, Math.floor(value)));
+}
+
+function normalizeInventoryTrackerRows(value: unknown): InventoryTrackerRow[] {
+  if (!Array.isArray(value)) return [];
+
+  const rows: InventoryTrackerRow[] = [];
+  const indexByName = new Map<string, number>();
+  for (const candidate of value) {
+    if (!isPlainRecord(candidate) || typeof candidate.name !== "string") continue;
+    const name = candidate.name.normalize("NFKC").trim().replace(/\s+/gu, " ").slice(0, 160);
+    if (!name) continue;
+    const key = name.toLocaleLowerCase("en-US");
+    const numericQty = Number(candidate.qty);
+    const qty = Number.isFinite(numericQty) ? clampInventoryTrackerQty(numericQty) : 1;
+    const existingIndex = indexByName.get(key);
+    if (existingIndex !== undefined) {
+      const existing = rows[existingIndex]!;
+      const combinedQty = clampInventoryTrackerQty((existing.qty ?? 1) + qty);
+      rows[existingIndex] = combinedQty > 1 ? { ...existing, qty: combinedQty } : existing;
+      continue;
+    }
+    indexByName.set(key, rows.length);
+    rows.push(qty > 1 ? { name, qty } : { name });
+  }
+  return rows.slice(0, 250);
+}
+
+export function buildLockedInventoryTrackerPatch({
+  data,
+  snapshot,
+  lockState,
+}: {
+  data: Record<string, unknown>;
+  snapshot: { playerStats?: unknown } | null | undefined;
+  lockState: GameState | null | undefined;
+}) {
+  const existingPlayerStats = parseSnapshotPlayerStats(snapshot);
+  const existingRows = (field: InventoryTrackerPlayerStatsField): InventoryTrackerRow[] => {
+    const rows = existingPlayerStats[field];
+    return Array.isArray(rows) ? (rows as InventoryTrackerRow[]) : [];
+  };
+
+  // Only a group the agent actually emitted may rewrite that group. Treating an
+  // absent key as an empty array wipes state the model simply did not mention
+  // this turn — the destructive absent-vs-empty failure mode from #2370/#2724.
+  const emittedCurrencies = Array.isArray(data.currencies);
+  const emittedEquipped = Array.isArray(data.equipped);
+  const emittedInventory = Array.isArray(data.inventory);
+
+  const currencies = emittedCurrencies
+    ? normalizeInventoryTrackerRows(data.currencies)
+    : existingRows("inventoryTrackerCurrencies");
+  const equipped = emittedEquipped
+    ? normalizeInventoryTrackerRows(data.equipped)
+    : existingRows("inventoryTrackerEquipped");
+  const carried = emittedInventory
+    ? normalizeInventoryTrackerRows(data.inventory)
+    : existingRows("inventoryTrackerInventory");
+
+  const excludedNames = new Set([...currencies, ...equipped].map((row) => normalizeTextForMatch(row.name)));
+  const inventory = carried.filter((row) => !excludedNames.has(normalizeTextForMatch(row.name)));
+
+  const rawPlayerStatsPatch: Partial<Record<InventoryTrackerPlayerStatsField, InventoryTrackerRow[]>> = {};
+  if (emittedCurrencies) rawPlayerStatsPatch.inventoryTrackerCurrencies = currencies;
+  if (emittedEquipped) rawPlayerStatsPatch.inventoryTrackerEquipped = equipped;
+  // Equipping an item has to drop it from a carried list the agent did not
+  // resend, so write the carried group when exclusivity actually changed it too.
+  if (emittedInventory || !isDeepStrictEqual(inventory, carried)) {
+    rawPlayerStatsPatch.inventoryTrackerInventory = inventory;
+  }
+
+  if (Object.keys(rawPlayerStatsPatch).length === 0) {
+    return { changed: false, patch: { playerStats: {} }, playerStats: existingPlayerStats, values: {} };
+  }
+
+  const lockedPatch = applyTrackerFieldLocksToGameStatePatch({ playerStats: rawPlayerStatsPatch }, lockState);
+  const lockedPlayerStatsPatch = extractPlayerStatsPatch(lockedPatch);
+  const values: Partial<Record<InventoryTrackerPlayerStatsField, InventoryTrackerRow[]>> = {};
+  for (const field of INVENTORY_TRACKER_PLAYER_STATS_FIELDS) {
+    const locked = lockedPlayerStatsPatch[field];
+    if (Array.isArray(locked)) values[field] = locked as InventoryTrackerRow[];
+    else if (rawPlayerStatsPatch[field]) values[field] = rawPlayerStatsPatch[field];
+  }
+
+  const changed = Object.entries(values).some(([field, rows]) => {
+    const existing = existingPlayerStats[field as keyof PlayerStats];
+    return !isDeepStrictEqual(rows, Array.isArray(existing) ? existing : []);
+  });
+  return {
+    changed,
+    patch: { playerStats: values },
+    playerStats: { ...existingPlayerStats, ...values },
+    values,
+  };
 }
 
 function parseSnapshotPersonaStats(snapshot: { personaStats?: unknown } | null | undefined): CharacterStat[] {

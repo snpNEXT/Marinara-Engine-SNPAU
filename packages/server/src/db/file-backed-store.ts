@@ -426,6 +426,7 @@ export const FILE_BACKED_TABLES = [
   "installed_extensions",
   "library_folders",
   "mari_instructions",
+  "mari_workspace_context",
 ] as const;
 
 type FileBackedTable = (typeof FILE_BACKED_TABLES)[number];
@@ -532,6 +533,9 @@ export const CASCADES: Array<{ parent: FileBackedTable; child: FileBackedTable; 
     { parent: "chats", child: "agent_memory", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "chat_images", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "memory_chunks", parentKey: "id", childKey: "chatId" },
+    // #5073: a Mari workspace chat's attached context is scoped to it and must
+    // not outlive it (a leaked shard + stale injection into a reused chat id).
+    { parent: "chats", child: "mari_workspace_context", parentKey: "id", childKey: "chatId" },
     // The influences/notes schemas declare onDelete: cascade on BOTH chat
     // FKs, but the graph never carried them — the rows outlived their chats
     // (invisible inside the old monolith; a permanent leaked shard file once
@@ -1244,10 +1248,16 @@ function compareValues(left: unknown, right: unknown) {
 }
 
 function matchesLike(value: unknown, pattern: unknown) {
+  // SQL-LIKE semantics: % and _ match across newlines too ([\s\S], not dot) — `.`
+  // without the s flag silently failed on multi-line values, which broke substring
+  // searches over comment fields and, worse, let a crafted multi-line value escape
+  // a notLike() namespace boundary (a non-match inverts to true).
   const escaped = String(pattern ?? "")
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/%/g, ".*")
-    .replace(/_/g, ".");
+    // Escape every regex metacharacter, including * and ? — in SQL LIKE only % and _ are wildcards,
+    // so * and ? are literals; leaving them unescaped made "*" throw and "a*b"/"a?b" match non-literally.
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/%/g, "[\\s\\S]*")
+    .replace(/_/g, "[\\s\\S]");
   return new RegExp(`^${escaped}$`, "i").test(String(value ?? ""));
 }
 
@@ -1281,7 +1291,8 @@ function evaluateCondition(condition: Condition, ctx: RowContext): boolean {
     return condition.operator === "in" ? values.includes(value) : !values.includes(value);
   }
   if (condition.kind === "file-pattern") {
-    return matchesLike(resolveValue(condition.value, ctx), resolveValue(condition.pattern, ctx));
+    const matched = matchesLike(resolveValue(condition.value, ctx), resolveValue(condition.pattern, ctx));
+    return condition.negate ? !matched : matched;
   }
   if (condition.kind === "file-string-nonblank") {
     const value = resolveValue(condition.value, ctx);

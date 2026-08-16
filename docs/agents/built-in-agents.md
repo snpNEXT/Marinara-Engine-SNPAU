@@ -1,6 +1,6 @@
 # Downloadable Agents Reference
 
-This guide lists all 32 official first-party packages available through **Agents → Download Agents**, grouped by category. Agents do not ship inside a fresh Marinara Engine installation. Their package sources, manifests, artifacts, and machine-readable catalog are published in [Pasta-Devs/Marinara-Agents](https://github.com/Pasta-Devs/Marinara-Agents). For each one, this guide explains what the agent does, when it runs or integrates, which chat modes allow it, and the main settings. For installation and activation, read the [Agents overview](agents-overview.md) first.
+This guide lists all 33 official first-party packages available through **Agents → Download Agents**, grouped by category. Agents do not ship inside a fresh Marinara Engine installation. Their package sources, manifests, artifacts, and machine-readable catalog are published in [Pasta-Devs/Marinara-Agents](https://github.com/Pasta-Devs/Marinara-Agents). For each one, this guide explains what the agent does, when it runs or integrates, which chat modes allow it, and the main settings. For installation and activation, read the [Agents overview](agents-overview.md) first.
 
 ## How to read this reference
 
@@ -130,6 +130,14 @@ Tracks fields you define yourself, such as currencies, counters, or flags. Use i
 - **Where it works**: Roleplay.
 - **Key settings**: **Add as Prompt Section** (on by default).
 
+### Inventory Tracker
+
+Tracks money, equipped gear, and carried items as three structured lists without reusing Persona Stats inventory or compressing the data into Custom Tracker strings. Duplicate names are merged, quantities of one stay visually compact, and locked rows survive later tracker runs unchanged.
+
+- **Phase**: Post-Processing.
+- **Where it works**: Roleplay.
+- **Key settings**: **Add as Prompt Section** (on by default). The HUD and Tracker Panel let you edit and lock every name and quantity.
+
 ### World Maps
 
 Adds persistent nested locations and spatial relationships to a story. You can author regions, areas, rooms, and connections, move between locations, and let the current position contribute spatial context to generation. Game Mode also gains the package's world-map view.
@@ -216,8 +224,8 @@ Reads the mood of the scene and plays matching music. It can use Spotify, YouTub
 Reads the narrative and controls connected intimate toys in real time through Intiface Central. Intiface Central must already be running with a toy connected before you enable this agent.
 
 - **Phase**: Post-Processing.
-- **Where it works**: Roleplay.
-- **Key settings**: a **Touch Sensitivity** choice (**Subtle**, **Standard**, or **Intense**) and an **Intiface URL** field. For the full setup, see [Haptic Feedback setup](../integrations/haptic-feedback.md).
+- **Where it works**: Conversation, Roleplay, and Game.
+- **Key settings**: a **Touch Sensitivity** choice (**Subtle**, **Standard**, or **Intense**) and an **Intiface URL** field. Sensitivity guides the Agent's choices without capping the available `0.0-1.0` intensity range. For the full setup, see [Haptic Feedback setup](../integrations/haptic-feedback.md).
 
 ### CYOA Choices
 

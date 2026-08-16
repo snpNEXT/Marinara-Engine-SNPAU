@@ -6,10 +6,53 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Added
 
+- Added a host-run structured generation call for game-surface Experiences: `POST /api/game/:chatId/experience-generation` runs one bounded, non-streaming JSON call on the chat's GM connection with package-supplied instructions and an optional JSON schema (forwarded as provider-native structured output where supported), gated on the chat's stamped Experience, rate-limited in the one-shot-call class, serialized per chat, and answering truncation with an actionable error before the tolerant parser can repair a cut-off reply into a silently incomplete document (#5135).
+- Consolidated local regression commands around the filesystem-discovered Node lane: `pnpm regression` and `pnpm regression:node` now collect all 121 Node regressions with one shared build, `pnpm regression:ui` owns the separate Playwright lane with `pnpm smoke:ui` retained as a compatibility alias, and `pnpm test` checks the installer layout before the Node-only lane. Retained focused commands use exact runner filters, and 61 package-script aliases were removed without deleting regression files (#5132).
+
+- Grouped 31 clear-owner Launcher, Mari, Professor Mari, and Noodle regressions into domain directories while preserving all 121 automatically discovered files and stable focused commands. The move also ensures three file-backed regression fixtures close their databases before removing owned temporary storage (#5132).
+
+- Every image and video generation path now runs under a process-wide concurrency ceiling — default 4, configurable with `MARINARA_MEDIA_GENERATION_CONCURRENCY` (`0` disables it) — enforced inside the generators themselves, so while the ceiling is enabled a batch can no longer stampede a local ComfyUI/SwarmUI GPU or fan out unbounded requests against a paid provider (setting the limit to `0` opts out and restores the old unbounded behavior). Batch/automatic work never occupies the last slot ahead of interactive requests, waits are bounded by default (`MARINARA_MEDIA_GENERATION_WAIT_TIMEOUT_MS`; `0` waits indefinitely) so saturation fails loudly instead of hanging, and fallback-connection retries reuse the original request's slot (#5097).
+- Added host-owned `GET`/`PUT /api/game/:chatId/experience-state` routes so a game-surface Experience package can store its world state in the engine's per-message `game_engine_state` table instead of chat metadata: saves are scoped to the chat's stamped Experience (`experience:<id>` rows — invisible to turn-games, protected from turn-game start/resign wipes, and never able to shadow an active turn-game), anchored to the visible message so swiping or branching back to an earlier narration rewinds the world (a brand-new swipe continues from the latest save until the Experience writes one of its own), bounded per save, and pruned to the newest 100 anchors per chat (#5102).
+- Game checkpoints now capture every active engine-state blob (turn-games and Experiences) by value when the checkpoint is created and restore from that copy, replacing the timestamp re-lookup that silently restored stale or no state for any game that rewrites a single anchor in place — including in-place turn games like Tic-Tac-Toe and Rock-Paper-Scissors (#5102).
+- Added a dedicated Roleplay Inventory Tracker integration with separate currency, equipped, and carried-item lists; compact quantities; editable HUD and Tracker Panel grids; per-cell locks; retry support; and committed prompt context (#5105, Pasta-Devs/Marinara-Agents#361).
+- Added `POST /api/sprites/pixelize`: deterministic pixel-art post-processing for AI-generated images — nearest-kernel downscale to a target cell size, palette quantization against a supplied ramp, binary alpha, and a wrap-around seam score reporting tileability — so probabilistic model output can sit beside authored pixel art; identical input always produces identical bytes (#5096).
+- Character sprite-sheet generation accepts an optional `styleProfileId` so a bake can target a specific image style profile instead of always compiling against the user's active one; an absent field keeps today's resolution exactly, and unknown ids degrade the same way the gallery path degrades (#5095).
+- Added capability API 1.11 Experience combat seam: `game-surface` packages receive `combatActive` (true the instant the built-in combat UI mounts, unlike the lagging narrative scene state), the effective `combatStyle`, and `requestCombat()` — which routes into the same encounter-generation pass as the manual Start Combat button, minus the confirm dialog; packages still cannot supply combatants or combat state (#5094).
+- Added capability API 1.10 package assets: an Agent package manifest may declare `contributions.assets.paths`, and the Engine serves those image and JSON files over `/api/capability-packages/<id>/assets/<path>` with per-request hash verification, a passive content-type allowlist, and cheap `ETag`/`304` revalidation — so a package (for example a Game experience) can ship tilesets and sprite atlases instead of inlining art into its client bundle (#5091).
+- Agent package client bundles and assets now carry strong ETags derived from their manifest hashes and answer revalidations with `304 Not Modified`, so an unchanged package no longer re-downloads in full on every app load (#5082).
+- Let Professor Mari read your chat history: attach a chat from the composer's attach menu — sharing all, a range, or the last N messages — so Mari can see your roleplay and give grounded feedback, with a Context Viewer to review and remove what's attached to free up tokens (#5073).
+- Added visible, one-click copy controls for lorebook and lorebook-entry IDs in their editors (#5085).
+- Expanded Haptic Feedback to Conversation, Roleplay, and Game with capability-aware device descriptions, the full `0.0-1.0` intensity range, every Intiface output type, and named patterns for scalar and positional pumping actions.
+- Added an optional Roleplay speaker extractor for TTS autoplay that uses a dedicated connection to queue narration and exact dialogue with assigned character voices, stable Random NPC Voices fallbacks, and optional emotion cues.
 - Added an on-demand Advanced Settings storage optimizer that scans for old, unreferenced avatar images and deletes them only after an explicit confirmation (#5039).
 
 ### Fixed
 
+- Conversation branches now retain active turn-game state at copied message and swipe anchors instead of resetting or losing the game after branching (#5131).
+- Professor Mari now wires up the preset variables she creates: her authoring guidance and worked example make her drop a variable's `{{variableName}}` macro into a prompt section, so a choice block she adds actually changes the assembled prompt instead of leaving the user a picker that does nothing (#5080).
+- Preserved omitted Inventory Tracker groups, kept equipped items out of carried inventory after lock merging and name normalization, clamped oversized quantities, and migrated existing Tracker Panel layouts to show the new section (#5125).
+- Kept launcher update snapshots small by excluding downloaded model caches and sidecar runtimes, while continuing to preserve user content and recovery backups (#5124).
+- Explained in the Windows launcher that non-Git installations cannot use automatic updates or commit-based stale-build checks, while version-based validation still runs (#5123).
+- Kept active characters in individual Conversation group chats responsive when another selected character is away, while preserving the away character's own configured delay and mention shortcut (#5122).
+- Reordered Storyboard Agent settings around separate Roleplay and Game Mode active flows, showed planning and provider-formatting stages in runtime order, kept setup visible, exposed image-aware Step 3 overrides in both chat editors, nested complete prompt collection editors inside their numbered stages, renamed the Stage 4 passthrough formatter, changed the default animation duration to 5 seconds, and hid animation-only controls for still-image defaults (#5120).
+- Added newly shipped built-in prompt choices to existing Storyboard agent configurations after package updates while preserving saved overrides, custom prompts, and current selections (#5118).
+- Kept valid Gallery images visible on Windows when canonical paths differ only by drive-letter or directory casing, without weakening traversal and symlink containment checks (#5099).
+- Made vectorized lorebook recall use model-appropriate query/document formatting, prioritize recent user turns, and reject incompatible stored vector spaces with useful debug diagnostics (#5104).
+- Added a server-side pre-execution authorization gate that binds Professor Mari workspace mutations to an explicit excerpt from the active user request, while retaining Keep/Restore as a second line of defense (#5093).
+- Honored each image style profile's selected prompt grammar for character avatars, portraits, and sprites instead of silently forcing compact tags (#5083).
+- Game checkpoints now capture and restore the turn-game engine state, so loading a checkpoint rewinds an active turn-game (UNO, Chess, Poker, Eight Ball) along with the story and map instead of leaving it on its post-checkpoint state (#5077).
+- Routed Game Mode time-advance and weather-update through the queued per-chat metadata patch path so they no longer silently revert a concurrent metadata write, which could permanently lock World Map movement as a stale definition (#5076).
+- Restored docked Tracker layout so the Roleplay transcript and composer resize beside the panel on either desktop edge instead of being covered by it (#5071).
+- Restored docked Tracker gutter scaling so the panel and all of its contents fit beside the centered Roleplay chat on either desktop edge without moving the transcript, composer, or scrollbar (#5071).
+- Expanded SwarmUI and ComfyUI LoRA strength controls from `-2..2` to `-100..100` so slider LoRAs can use their required weights (#5072).
+- Regex bundle imports now retain scripts flagged by the pattern-safety heuristic and show a warning instead of reporting those entries as skipped.
+- Kept NanoGPT Illustrator generation within its 4 MB reference-upload limit, preferred immediate hosted-result downloads, and hardened base64 fallback parsing so successful images are stored instead of rendering as broken output (#5058).
+- Kept Windows launcher updates from failing while protecting data by excluding the generated capability-package `node_modules` junction from update snapshots (#5052).
+- Prevented stopped or terminal-disconnected dev sessions from leaving nested server and client processes behind, and reused an already healthy local server on repeat launches instead of failing on its storage writer lease (#5062).
+- Started TTS autoplay as soon as assistant text is finalized instead of waiting for Illustrator, trackers, summaries, or other non-rewriting agents; active message-rewrite agents such as Prose Guardian and Continuity Checker still finish first (#5059).
+- Made the Roleplay speaker extractor's structured-output request compatible with Responses API providers that require the input message itself to mention `json` (#5059).
+- Kept long Roleplay speaker-extractor readings complete by packing narration into normal-sized requests, generating queued clips serially, and stopping visibly on a failed clip instead of silently skipping parts of the message (#5059).
+- Gave each character voice assignment its own roomy stacked controls, removed hollow trailing dropdown controls, and kept empty character guidance on semantic theme colors.
 - Improved Tracker Panel readability by giving long custom values more room to wrap and making the side control read as a neutral action instead of a selected mode (#3470).
 - Preserved complete Storyboard animation prompts through planning, image-aware refinement, and final video prompt persistence instead of silently clipping them at generic 1,200- and 650-character summary limits (#5041).
 - Let combat buff skills target allies and debuff skills target enemies, with accurate type labels and descriptions in both combat layouts (#5040).
@@ -19,6 +62,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Stopped removed or disabled Example Dialogue markers from silently injecting character examples into prompts (#5031).
 - Restored persona creation through Professor Mari by supplying the persona reference-image default expected by storage validation (#5033).
 - Kept supported placement settings when importing character-scoped SillyTavern regexes that also contain unsupported placements, with a warning for the ignored values (#5036).
+- Capped game auto-checkpoints to the newest five per trigger type (session start/end, combat start/end, and the rest) so a long campaign no longer duplicates every captured tracker, map, and engine-state snapshot into unbounded memory and ever-larger checkpoint shard rewrites; your own manual checkpoints are never pruned (#5110).
 
 ## [2.4.3]
 
@@ -119,6 +163,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Fixed
 
+- Fixed Playwright web-server startup on Windows when pnpm launcher metadata or inherited stdin is unavailable (#5126).
 - Included Noodle in Professor Mari's official 32-package catalog knowledge and corrected the current downloadable-package documentation for the v2.4.2 Agent catalog (#4992).
 - Kept version-tagged Docker release images on the stable Marinara Agents catalog instead of following staging after publication.
 - Kept dependency security updates pinned to patched resolutions and made the existing pnpm launcher handoff checks a required pull-request gate, protecting upgrades without forcing users onto a new package-manager major version (#4988).

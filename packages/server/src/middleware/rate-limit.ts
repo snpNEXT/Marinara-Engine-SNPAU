@@ -58,10 +58,26 @@ const ROUTE_RULES: Array<{ pattern: RegExp; rule: RateLimitRule }> = [
     pattern: /^\/api\/agents\/suite\/rewrite(?:\?|$)/,
     rule: { key: "agent-suite-rewrite", limit: 20, windowMs: 60_000 },
   },
+  // Same class: a game-surface Experience's host-run structured generation
+  // (#5135) is one bounded LLM call per package action — a buggy package loop
+  // must hit this wall, not the 600/min default.
+  {
+    pattern: /^\/api\/game\/[^/]+\/experience-generation(?:\?|$)/,
+    rule: { key: "game-experience-generation", limit: 20, windowMs: 60_000 },
+  },
   // Cap on extension routes so an XSS-driven mass install / spam can't
   // exploit the persistent storage path. 60/min covers React Query
   // refetches + legacy migrations of small extension lists comfortably.
   { pattern: /^\/api\/extensions(?:\/|\?|$)/, rule: { key: "extensions", limit: 60, windowMs: 60_000 } },
+  // Package file serving (client bundles + declared assets) reads and
+  // hash-verifies from disk on every request; keep it out of the generous
+  // default bucket so a scripted loop can't turn that into cheap IO
+  // amplification. Normal loads fetch one bundle per installed package and
+  // revalidate with 304s afterwards, so 240/min leaves ample headroom.
+  {
+    pattern: /^\/api\/capability-packages\/[^/]+\/(?:client|assets)(?:\/|\?|$)/,
+    rule: { key: "capability-package-files", limit: 240, windowMs: 60_000 },
+  },
 ];
 
 const buckets = new Map<string, Bucket>();
@@ -69,7 +85,18 @@ let lastSweepAt = 0;
 const isE2ERateLimitDisabled = process.env.MARINARA_E2E_DISABLE_RATE_LIMIT === "true";
 
 function selectRule(url: string): RateLimitRule {
-  const path = url.split("?")[0] ?? url;
+  let path = url.split("?")[0] ?? url;
+  // Match rules against the DECODED path the router actually dispatches on:
+  // matching the raw URL let "/api/generat%65"-style percent-encoding slip any
+  // rule in this table back into the permissive default bucket while the route
+  // still resolved. Collapse duplicate slashes for the same reason. A malformed
+  // escape keeps the raw path — the router rejects those requests anyway.
+  try {
+    path = decodeURIComponent(path);
+  } catch {
+    // fall through with the raw path
+  }
+  path = path.replace(/\/{2,}/g, "/");
   return ROUTE_RULES.find((entry) => entry.pattern.test(path))?.rule ?? DEFAULT_RULE;
 }
 

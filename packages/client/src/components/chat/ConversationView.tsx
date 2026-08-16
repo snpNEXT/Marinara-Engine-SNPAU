@@ -360,8 +360,7 @@ export function ConversationView({
   const [openCapabilitySurfaceId, setOpenCapabilitySurfaceId] = useState<string | null>(null);
   const { data: capabilityLoreScan } = useActiveLorebookEntries(chatId, openCapabilitySurfaceId !== null);
   useEffect(() => setOpenCapabilitySurfaceId(null), [chatId]);
-  const isStreamCommitted = useChatStore((s) => s.committedStreamChatIds.has(chatId));
-  const hasLiveStream = isStreaming && !isStreamCommitted;
+  const hasLiveStream = isStreaming;
   const streamBuffer = useThrottledStreamBuffer();
   const thinkingBuffer = useChatStore((s) => s.thinkingBuffer);
   const regenerateMessageId = useChatStore((s) => s.regenerateMessageId);
