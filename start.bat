@@ -455,4 +455,7 @@ if not defined CURRENT_PNPM_VERSION (
     exit /b 1
 )
 echo  [OK] pnpm !CURRENT_PNPM_VERSION! ready
+del /Q D:\Marinara-Engine\packages\server\data\storage\.writer-lease
+rd /Q D:\Marinara-Engine\packages\server\data\storage\.writer-lease
 exit /b 0
+
