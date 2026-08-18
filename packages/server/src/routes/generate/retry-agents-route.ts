@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { randomUUID } from "crypto";
 import { logger, logDebugOverride } from "../../lib/logger.js";
 import {
   BUILT_IN_AGENTS,
@@ -53,6 +54,7 @@ import { buildSpotifyDjConstraints } from "../../services/spotify/spotify-dj-con
 import { fingerprintChatSummary } from "../../services/prompt/chat-summary-fingerprint.js";
 import {
   buildPromptMacroContext,
+  normalizeChatMacroVariables,
   resolveCharacterMacroData,
   resolvePromptIdleDuration,
   resolvePromptMessageMacros,
@@ -60,6 +62,7 @@ import {
 import { cardPromptText } from "../../services/prompt/card-text.js";
 import { getAssetManifest } from "../../services/game/asset-manifest.service.js";
 import { createAgentsStorage } from "../../services/storage/agents.storage.js";
+import { loadPriorBeholderState } from "../../services/agents/beholder-state.js";
 import { getCustomAgentImportPolicy } from "../../services/agents/custom-agent-import-policy.service.js";
 import { createCharactersStorage } from "../../services/storage/characters.storage.js";
 import { createChatsStorage } from "../../services/storage/chats.storage.js";
@@ -74,6 +77,11 @@ import {
   resolveConnectionImageQuality,
 } from "../../services/image/image-generation-defaults.js";
 import { injectMemoryRecallContext } from "../../services/generation/memory-recall-context.js";
+import {
+  appendTrackerLorebookBatchContextKey,
+  applyTrackerLorebookContextPolicy,
+  getTrackerAgentTypes,
+} from "../../services/generation/tracker-agent-context.js";
 import { resolveMemoryRecallEmbeddingSource } from "../../services/memory-recall-embedding.js";
 import {
   loadImageGenerationUserSettings,
@@ -129,11 +137,15 @@ import {
 } from "./generate-route-utils.js";
 import {
   buildHistoricalLorebookKeeperContext,
+  customAgentUsesLorebookReadBehind,
+  customLorebookReadBehindRunKey,
+  getCustomLorebookReadBehindMessages,
   getLorebookKeeperBackfillTargets,
   getLorebookKeeperSettings,
   loadLorebookKeeperExistingEntries,
   persistLorebookKeeperUpdates,
   resolveLorebookKeeperTarget,
+  tryClaimCustomLorebookReadBehindRun,
 } from "./lorebook-keeper-utils.js";
 import {
   agentWriteApprovalRequired,
@@ -145,7 +157,7 @@ import {
   resolveLorebookScopeExclusions,
 } from "../../services/lorebook/game-lorebook-scope.js";
 import { isDebugAgentsEnabled } from "../../config/runtime-config.js";
-import { sendSseEvent, startSseKeepalive, startSseReply } from "./sse.js";
+import { isSseReplyWritable, sendSseEvent, startSseKeepalive, startSseReply } from "./sse.js";
 import { buildGenerationPromptPresetCandidates } from "./prompt-preset-selection.js";
 import {
   buildAgentConnectionUnavailableWarning,
@@ -608,6 +620,13 @@ export function resolveRetryAgentContextPolicy(resolvedAgents: readonly Resolved
   return { contextSize, customAgentVectorAccessEnabled, musicPlayerSource };
 }
 
+export function resolveLorebookKeeperRetryAnchor(target: { id: string; activeSwipeIndex?: number | null }): {
+  messageId: string;
+  swipeIndex: number;
+} {
+  return { messageId: target.id, swipeIndex: target.activeSwipeIndex ?? 0 };
+}
+
 type RetryAgentPhaseToolInputs = {
   requestBody: Record<string, unknown>;
   promptCharacterIds: string[];
@@ -737,6 +756,8 @@ async function buildRetryAgentContext(args: {
   }
 
   const personaContext = await resolvePersonaContext(chars, chat);
+  const initialMacroVariables = normalizeChatMacroVariables(chatMeta.macroVariables);
+  const retryMacroVariables = { ...initialMacroVariables };
   const promptMacroContext = await buildPromptMacroContext({
     db,
     characterIds,
@@ -744,6 +765,7 @@ async function buildRetryAgentContext(args: {
     personaDescription: personaContext.personaDescription,
     personaFields: personaContext.personaFields,
     variables: {},
+    localVariables: retryMacroVariables,
     groupScenarioOverrideText:
       typeof chatMeta.groupScenarioText === "string" && (chatMeta.groupScenarioText as string).trim()
         ? (chatMeta.groupScenarioText as string).trim()
@@ -946,6 +968,16 @@ async function buildRetryAgentContext(args: {
     streaming,
     memory: {},
   };
+
+  const previousBeholderState = await loadPriorBeholderState({
+    agentsStore: createAgentsStorage(db),
+    chatId,
+    chatMode,
+    activeAgentIds: resolvedAgentTypes,
+    chatEnableAgents: isChatAgentsEnabled(chatMeta),
+    excludeMessageId: typeof lastAssistant?.id === "string" ? lastAssistant.id : null,
+  });
+  if (previousBeholderState) agentContext.memory._beholderState = previousBeholderState;
 
   const gameImageStylePrompt = getGameImageStylePrompt(chat, chatMeta);
   if (gameImageStylePrompt) {
@@ -1195,7 +1227,31 @@ async function buildRetryAgentContext(args: {
     };
   }
 
-  return agentContext;
+  return { agentContext, initialMacroVariables, macroVariables: retryMacroVariables };
+}
+
+async function persistRetryMacroVariables(
+  chats: ReturnType<typeof createChatsStorage>,
+  chatId: string,
+  initialVariables: Record<string, string>,
+  macroVariables: Record<string, string>,
+): Promise<void> {
+  const normalizedVariables = normalizeChatMacroVariables(macroVariables);
+  const requestChanges = Object.fromEntries(
+    Object.entries(normalizedVariables).filter(([name, value]) => initialVariables[name] !== value),
+  );
+  if (Object.keys(requestChanges).length === 0) return;
+  await chats.patchMetadata(
+    chatId,
+    (current) => ({
+      ...current,
+      macroVariables: normalizeChatMacroVariables({
+        ...normalizeChatMacroVariables(current.macroVariables),
+        ...requestChanges,
+      }),
+    }),
+    { touchUpdatedAt: false },
+  );
 }
 
 function readTrimmedRetryString(value: unknown): string | null {
@@ -2009,17 +2065,37 @@ async function executeRetryBatches(
   conns?: ReturnType<typeof createConnectionsStorage>,
   chatMode?: ChatMode,
   chatMeta?: Record<string, unknown>,
+  customLorebookReadBehindContexts: ReadonlyMap<string, AgentContext> = new Map(),
 ) {
   const retryAgents = mergeRetryPairedBuiltInRewriteAgents(resolvedAgents);
+  const effectiveChatMode: ChatMode = chatMode ?? (agentContext.chatMode as ChatMode);
+  const attachLorebooksToTrackers = effectiveChatMode === "roleplay" && chatMeta?.attachLorebooksToTrackers === true;
+  const trackerAgentTypes = getTrackerAgentTypes();
   const providerModelGroups = new Map<
     string,
     { agents: ResolvedRetryAgent[]; provider: any; model: string; context: AgentContext; maxParallelJobs: number }
   >();
 
   for (const entry of retryAgents) {
-    const context =
+    const phaseContext =
       preGenerationContext && entry.resolved.phase === "pre_generation" ? preGenerationContext : agentContext;
-    const contextKind = context === preGenerationContext ? "pre_generation" : "default";
+    const baseContext = customLorebookReadBehindContexts.get(entry.resolved.id) ?? phaseContext;
+    const isTracker = trackerAgentTypes.has(entry.resolved.type);
+    const context = applyTrackerLorebookContextPolicy({
+      context: baseContext,
+      chatMode: effectiveChatMode,
+      isTracker,
+      attachLorebooksToTrackers,
+    });
+    const baseContextKind = customLorebookReadBehindContexts.has(entry.resolved.id)
+      ? `read-behind:${entry.resolved.batchContextKey ?? entry.resolved.id}`
+      : baseContext === preGenerationContext
+        ? "pre_generation"
+        : "default";
+    const contextKind =
+      effectiveChatMode === "roleplay" && isTracker
+        ? appendTrackerLorebookBatchContextKey(baseContextKind, attachLorebooksToTrackers)
+        : baseContextKind;
     const key = `${retryProviderKey(entry.agentProvider)}::${entry.agentModel}::${contextKind}::${getAgentBatchLane(entry.resolved)}`;
     if (!providerModelGroups.has(key)) {
       providerModelGroups.set(key, {
@@ -2163,6 +2239,7 @@ async function persistRetryResults(
   chatId: string,
   messageId: string,
   results: AgentResult[],
+  messageIdsByAgentId: ReadonlyMap<string, string> = new Map(),
 ) {
   for (const result of results) {
     if (result.agentType === "illustrator" || result.type === "image_prompt") continue;
@@ -2170,7 +2247,7 @@ async function persistRetryResults(
       await agentsStore.saveRun({
         agentConfigId: result.agentId,
         chatId,
-        messageId,
+        messageId: messageIdsByAgentId.get(result.agentId) ?? messageId,
         result,
       });
     } catch {
@@ -2190,7 +2267,7 @@ async function executeLorebookKeeperRetries(args: {
   chatId: string;
   chatName: string | null | undefined;
   requireApproval: boolean;
-}): Promise<Array<{ messageId: string; result: AgentResult }>> {
+}): Promise<Array<{ messageId: string; swipeIndex: number; result: AgentResult }>> {
   const {
     lorebookKeeperAgent,
     baseContext,
@@ -2213,7 +2290,7 @@ async function executeLorebookKeeperRetries(args: {
       ? (baseContext.memory._lorebookKeeperTargetLorebookId as string)
       : null;
 
-  const results: Array<{ messageId: string; result: AgentResult }> = [];
+  const results: Array<{ messageId: string; swipeIndex: number; result: AgentResult }> = [];
   for (const target of targets) {
     const startedAt = Date.now();
     try {
@@ -2264,11 +2341,11 @@ async function executeLorebookKeeperRetries(args: {
         }
       }
 
-      results.push({ messageId: target.id, result });
+      results.push({ ...resolveLorebookKeeperRetryAnchor(target), result });
     } catch (err) {
       logger.error(err, "[retry-agents] Lorebook Keeper retry failed for target message %s", target.id);
       results.push({
-        messageId: target.id,
+        ...resolveLorebookKeeperRetryAnchor(target),
         result: {
           agentId: lorebookKeeperAgent.resolved.id,
           agentType: lorebookKeeperAgent.resolved.type,
@@ -2293,6 +2370,7 @@ async function applyRetryResultEffects(args: {
   chat: any;
   retryMessageId: string;
   retrySwipeIndex: number;
+  generationId: string;
   results: AgentResult[];
   agentContext: AgentContext;
   /** Raw (unresolved) stored content of the message being retried, used as the
@@ -2318,6 +2396,7 @@ async function applyRetryResultEffects(args: {
     chat,
     retryMessageId,
     retrySwipeIndex,
+    generationId,
     results,
     agentContext,
     mainResponseRaw,
@@ -2549,7 +2628,12 @@ async function applyRetryResultEffects(args: {
 
     // Keep message.extra.contextInjections in sync when retrying agents that emit injectable text,
     // so regenerate/swipe replays the edited or re-run snippet instead of stale cache.
-    if (retryMessageId && result.success && (result.type === "context_injection" || result.type === "director_event")) {
+    if (
+      retryMessageId &&
+      result.success &&
+      result.agentType !== "beholder" &&
+      (result.type === "context_injection" || result.type === "director_event")
+    ) {
       const text =
         typeof result.data === "string"
           ? result.data
@@ -3491,6 +3575,10 @@ async function applyRetryResultEffects(args: {
           },
           success: true,
           error: null,
+          chatId,
+          messageId: retryMessageId || null,
+          swipeIndex: retryMessageId ? retrySwipeIndex : null,
+          generationId,
         },
       });
       logger.info(
@@ -3515,7 +3603,7 @@ async function applyRetryResultEffects(args: {
   }
 }
 
-export async function registerRetryAgentsRoute(app: FastifyInstance) {
+export async function registerRetryAgentsRoute(app: FastifyInstance, activeCustomLorebookReadBehindRuns: Set<string>) {
   const chats = createChatsStorage(app.db);
   const conns = createConnectionsStorage(app.db);
   const chars = createCharactersStorage(app.db);
@@ -3601,18 +3689,9 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
     // writing to a closed socket. Mirrors the main /generate handler so a dropped
     // retry tab does not leak upstream provider requests to completion.
     const abortController = new AbortController();
+    const generationId = randomUUID();
+    const customLorebookReadBehindRunKeys = new Set<string>();
     let clientDisconnected = false;
-    const originalSseWrite = reply.raw.write.bind(reply.raw);
-    const canWriteSse = () =>
-      !clientDisconnected && !reply.raw.destroyed && !reply.raw.writableEnded && !reply.raw.writableFinished;
-    reply.raw.write = ((chunk: any, encodingOrCallback?: any, callback?: any) => {
-      if (!canWriteSse()) return false;
-      try {
-        return originalSseWrite(chunk, encodingOrCallback, callback);
-      } catch {
-        return false;
-      }
-    }) as typeof reply.raw.write;
     const stopSseKeepalive = startSseKeepalive(reply);
     const onClientClose = () => {
       clientDisconnected = true;
@@ -3700,6 +3779,8 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
           swipeIndex: preGenerationLastAssistant.activeSwipeIndex ?? 0,
         };
       }
+      const retryMessageId = lastAssistant?.id ?? "";
+      const retrySwipeIndex = lastAssistant?.activeSwipeIndex ?? 0;
 
       const activeMusicPlayerSource =
         musicPlayerEnabled === false
@@ -3737,7 +3818,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
         };
       }
       const cyoaAgentWillRun = resolvedAgents.some((e) => e.resolved.type === "cyoa");
-      const agentContext = await buildRetryAgentContext({
+      const agentContextResult = await buildRetryAgentContext({
         cyoaAgentWillRun,
         chatId,
         db: app.db,
@@ -3757,9 +3838,10 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
         forceCustomImageGeneration: forceImageGeneration === true,
         historicalGameStateAnchor,
       });
+      const agentContext = agentContextResult.agentContext;
       agentContext.signal = abortController.signal;
       const hasPreGenerationRetries = resolvedAgents.some((entry) => entry.resolved.phase === "pre_generation");
-      const preGenerationAgentContext =
+      const preGenerationAgentContextResult =
         hasPreGenerationRetries && preGenerationRecentMessages
           ? await buildRetryAgentContext({
               cyoaAgentWillRun: false,
@@ -3783,6 +3865,21 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
               useLatestGameStateFallback: false,
             })
           : null;
+      const preGenerationAgentContext = preGenerationAgentContextResult?.agentContext ?? null;
+      await persistRetryMacroVariables(
+        chats,
+        chatId,
+        agentContextResult.initialMacroVariables,
+        agentContextResult.macroVariables,
+      );
+      if (preGenerationAgentContextResult) {
+        await persistRetryMacroVariables(
+          chats,
+          chatId,
+          preGenerationAgentContextResult.initialMacroVariables,
+          preGenerationAgentContextResult.macroVariables,
+        );
+      }
 
       const activeLorebookIds = Array.isArray(chatMeta.activeLorebookIds)
         ? chatMeta.activeLorebookIds.filter(
@@ -3919,7 +4016,30 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
         throw new Error(forceScopeError);
       }
       const lorebookKeeperAgent = resolvedAgents.find((entry) => entry.resolved.type === "lorebook-keeper") ?? null;
-      const nonLorebookAgents = resolvedAgents.filter((entry) => entry.resolved.type !== "lorebook-keeper");
+      const customLorebookReadBehindTargets = new Map<
+        string,
+        { context: AgentContext; messageId: string; swipeIndex: number }
+      >();
+      const nonLorebookAgents = resolvedAgents.filter((entry) => {
+        if (entry.resolved.type === "lorebook-keeper") return false;
+        const readBehindMessages = getCustomLorebookReadBehindMessages(entry.resolved.settings);
+        const usesCustomLorebookReadBehind = customAgentUsesLorebookReadBehind(entry.resolved);
+        if (!usesCustomLorebookReadBehind) return true;
+
+        const target = getLorebookKeeperBackfillTargets(recentMessages, readBehindMessages, null).at(-1);
+        if (!target) return false;
+        const context = buildHistoricalLorebookKeeperContext(agentContext, recentMessages, target.id);
+        if (!context) return false;
+        const runKey = customLorebookReadBehindRunKey(chatId, entry.resolved.id, target.id);
+        if (!tryClaimCustomLorebookReadBehindRun(activeCustomLorebookReadBehindRuns, runKey)) return false;
+        customLorebookReadBehindRunKeys.add(runKey);
+        entry.resolved.batchContextKey = `message:${target.id}`;
+        customLorebookReadBehindTargets.set(entry.resolved.id, {
+          context,
+          ...resolveLorebookKeeperRetryAnchor(target),
+        });
+        return true;
+      });
       if (
         (illustratorPromptReviewOverride || isManualIllustratorBackgroundRequest || isManualIllustratorImageRequest) &&
         (nonLorebookAgents.length !== 1 || nonLorebookAgents[0]?.resolved.type !== "illustrator")
@@ -3978,6 +4098,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
                   conns,
                   chatMode,
                   chatMeta,
+                  new Map([...customLorebookReadBehindTargets].map(([agentId, target]) => [agentId, target.context])),
                 )
               : [];
       const results = rawResults
@@ -3987,7 +4108,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
             ? markRetryLorebookResultForApproval({ result, chatId, agentContext, resolvedAgents: nonLorebookAgents })
             : result,
         );
-      let rawLorebookKeeperRunEntries: Array<{ messageId: string; result: AgentResult }> = [];
+      let rawLorebookKeeperRunEntries: Array<{ messageId: string; swipeIndex: number; result: AgentResult }> = [];
       if (lorebookKeeperAgent) {
         try {
           rawLorebookKeeperRunEntries = await executeLorebookKeeperRetries({
@@ -4085,6 +4206,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
       for (const result of results) {
         if (!customAgentCanEmitRetryResult(result, resolvedAgents)) continue;
         const cfg = resolvedAgents.find((entry) => entry.resolved.type === result.agentType)?.cfg;
+        const historicalTarget = customLorebookReadBehindTargets.get(result.agentId);
         sendSseEvent(reply, {
           type: "agent_result",
           data: {
@@ -4096,6 +4218,10 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
             success: result.success,
             error: result.error,
             durationMs: result.durationMs,
+            chatId,
+            messageId: historicalTarget?.messageId ?? (retryMessageId || null),
+            swipeIndex: historicalTarget?.swipeIndex ?? (retryMessageId ? retrySwipeIndex : null),
+            generationId,
           },
         });
       }
@@ -4121,14 +4247,22 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
             success: entry.result.success,
             error: entry.result.error,
             durationMs: entry.result.durationMs,
+            chatId,
+            messageId: entry.messageId,
+            swipeIndex: entry.swipeIndex,
+            generationId,
           },
         });
       }
 
-      const retryMessageId = lastAssistant?.id ?? "";
-      const retrySwipeIndex = lastAssistant?.activeSwipeIndex ?? 0;
       const permittedResults = results.filter((result) => customAgentCanEmitRetryResult(result, resolvedAgents));
-      await persistRetryResults(agentsStore, chatId, retryMessageId, permittedResults);
+      await persistRetryResults(
+        agentsStore,
+        chatId,
+        retryMessageId,
+        permittedResults,
+        new Map([...customLorebookReadBehindTargets].map(([agentId, target]) => [agentId, target.messageId])),
+      );
       for (const entry of lorebookKeeperRunEntries) {
         try {
           await agentsStore.saveRun({
@@ -4148,6 +4282,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
         chat,
         retryMessageId,
         retrySwipeIndex,
+        generationId,
         results: permittedResults,
         agentContext,
         mainResponseRaw: (lastAssistant?.content as string) ?? "",
@@ -4175,9 +4310,12 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
           : "Agent retry failed";
       sendSseEvent(reply, { type: "error", data: message });
     } finally {
+      for (const runKey of customLorebookReadBehindRunKeys) {
+        activeCustomLorebookReadBehindRuns.delete(runKey);
+      }
       stopSseKeepalive();
       reply.raw.off("close", onClientClose);
-      if (canWriteSse()) {
+      if (!clientDisconnected && isSseReplyWritable(reply)) {
         reply.raw.end();
       }
     }

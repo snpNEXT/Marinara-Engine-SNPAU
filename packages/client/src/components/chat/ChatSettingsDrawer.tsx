@@ -311,6 +311,7 @@ const InlineLorebookEntriesEditor = lazy(() =>
   })),
 );
 const StoryboardChatSettingsPanel = lazy(() => import("./StoryboardChatSettingsPanel"));
+const BeholderChatSettingsPanel = lazy(() => import("./BeholderChatSettingsPanel"));
 
 interface ChatSettingsDrawerProps {
   chat: Chat;
@@ -2058,6 +2059,7 @@ export function ChatSettingsDrawer({
   const mapsAgent = availableAgents.find((agent) => agent.id === mapsPackage?.id);
   const ltmAgent = availableAgents.find((agent) => agent.id === ltmPackage?.id);
   const storyboardAgent = availableAgents.find((agent) => agent.id === STORYBOARD_AGENT_ID);
+  const beholderAgent = availableAgents.find((agent) => agent.id === "beholder");
   const [pendingAgentMenuTargetId, setPendingAgentMenuTargetId] = useState<string | null>(null);
   const roleplayAgentMenuLinks = useMemo(() => {
     if (!metadata.enableAgents || !isRoleplayMode || isGame) return [];
@@ -2096,6 +2098,7 @@ export function ChatSettingsDrawer({
     if (storyboardAgent) {
       addLink(STORYBOARD_AGENT_ID, activeAgentIds.includes(STORYBOARD_AGENT_ID), storyboardAgent.name);
     }
+    if (beholderAgent) addLink("beholder", activeAgentIds.includes("beholder"), beholderAgent.name);
     if (mapsAgent && mapsPackage) addLink(mapsPackage.id, mapsPackageEnabledForChat, mapsAgent.name);
     if (activeCustomAgents.length > 0) {
       links.push({
@@ -2110,6 +2113,7 @@ export function ChatSettingsDrawer({
   }, [
     activeCustomAgents,
     activeAgentIds,
+    beholderAgent,
     cardEvolutionAuditorActive,
     cardEvolutionAuditorAgentMeta.name,
     chat.id,
@@ -6994,18 +6998,32 @@ export function ChatSettingsDrawer({
                     }
                   />
                   {/* Manual trackers run only in roleplay-style chats. */}
-                  {metadata.enableAgents && isRoleplayMode && (
-                    <AgentSettingsToggle
-                      label={localizeUi("ui.chat.chatsettingsdrawer.manualTrackers")}
-                      description={
-                        metadata.manualTrackers
-                          ? localizeUi("ui.chat.chatsettingsdrawer.trackersWonTRunAutomaticallyUseTheButtonIn")
-                          : localizeUi("ui.chat.chatsettingsdrawer.trackersRunAutomaticallyAfterEveryGeneration")
-                      }
-                      enabled={metadata.manualTrackers === true}
-                      surface="secondary"
-                      onToggle={() => updateMeta.mutate({ id: chat.id, manualTrackers: !metadata.manualTrackers })}
-                    />
+                  {metadata.enableAgents && isRoleplayMode && activeTrackerAgents.length > 0 && (
+                    <>
+                      <AgentSettingsToggle
+                        label={localizeUi("ui.chat.chatsettingsdrawer.manualTrackers")}
+                        description={
+                          metadata.manualTrackers
+                            ? localizeUi("ui.chat.chatsettingsdrawer.trackersWonTRunAutomaticallyUseTheButtonIn")
+                            : localizeUi("ui.chat.chatsettingsdrawer.trackersRunAutomaticallyAfterEveryGeneration")
+                        }
+                        enabled={metadata.manualTrackers === true}
+                        surface="secondary"
+                        onToggle={() => updateMeta.mutate({ id: chat.id, manualTrackers: !metadata.manualTrackers })}
+                      />
+                      <AgentSettingsToggle
+                        label={localizeUi("ui.chat.chatsettingsdrawer.attachLorebooksToTrackers")}
+                        description={localizeUi("ui.chat.chatsettingsdrawer.attachLorebooksToTrackersDescription")}
+                        enabled={metadata.attachLorebooksToTrackers === true}
+                        surface="secondary"
+                        onToggle={() =>
+                          updateMeta.mutate({
+                            id: chat.id,
+                            attachLorebooksToTrackers: !metadata.attachLorebooksToTrackers,
+                          })
+                        }
+                      />
+                    </>
                   )}
                   {metadata.enableAgents && isRoleplayMode && activeTrackerAgents.length > 0 && (
                     <div className="space-y-1.5 rounded-lg bg-[var(--background)]/45 p-2 ring-1 ring-[var(--border)]">
@@ -7351,20 +7369,20 @@ export function ChatSettingsDrawer({
                           order={getRoleplayAgentSettingsOrder("lorebook-keeper")}
                           onRemove={getRoleplayAgentMenuRemoveHandler("lorebook-keeper", lorebookKeeperAgentMeta.name)}
                         >
-                          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[var(--background)]/75 px-3 py-2 ring-1 ring-[var(--border)]">
+                          <div className="flex flex-col items-stretch gap-2 rounded-lg bg-[var(--background)]/75 px-3 py-2 ring-1 ring-[var(--border)] sm:flex-row sm:items-center sm:justify-between">
                             <p className="min-w-0 flex-1 text-[0.625rem] leading-snug text-[var(--muted-foreground)]">
                               {localizeUi(
                                 "ui.chat.chatsettingsdrawer.chatLorebookKeeperRunsAfterAssistantRepliesGameMode",
                               )}
                             </p>
-                            <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                            <div className="flex w-full min-w-0 flex-col items-stretch gap-1.5 sm:w-auto sm:shrink-0 sm:flex-row sm:items-center">
                               <button
                                 type="button"
                                 onClick={() => {
                                   onClose();
                                   useUIStore.getState().openAgentDetail("lorebook-keeper");
                                 }}
-                                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-[var(--background)]/80 px-3 py-1.5 text-[0.6875rem] font-medium text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+                                className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-[var(--background)]/80 px-3 py-1.5 text-[0.6875rem] font-medium text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] sm:w-auto"
                               >
                                 <Settings2 size="0.75rem" />
                                 <span>{localizeUi("ui.chat.chatsettingsdrawer.openSetup")}</span>
@@ -7373,7 +7391,7 @@ export function ChatSettingsDrawer({
                                 onClick={handleLorebookKeeperBackfill}
                                 disabled={agentProcessing}
                                 className={cn(
-                                  "inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-[0.6875rem] font-medium transition-colors",
+                                  "inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-[0.6875rem] font-medium transition-colors sm:w-auto",
                                   agentProcessing
                                     ? "cursor-not-allowed bg-[var(--muted)] text-[var(--muted-foreground)]"
                                     : "bg-[var(--primary)]/10 text-[var(--primary)] hover:bg-[var(--primary)]/15",
@@ -8719,6 +8737,7 @@ export function ChatSettingsDrawer({
                                           id={
                                             agent.id === "hierarchical-maps" ||
                                             agent.id === "long-term-memory" ||
+                                            agent.id === "beholder" ||
                                             agent.id === STORYBOARD_AGENT_ID
                                               ? getAgentSettingsMenuId(chat.id, agent.id)
                                               : undefined
@@ -8726,6 +8745,7 @@ export function ChatSettingsDrawer({
                                           tabIndex={
                                             agent.id === "hierarchical-maps" ||
                                             agent.id === "long-term-memory" ||
+                                            agent.id === "beholder" ||
                                             agent.id === STORYBOARD_AGENT_ID
                                               ? -1
                                               : undefined
@@ -8847,6 +8867,18 @@ export function ChatSettingsDrawer({
                                                 metadata={metadata as Record<string, unknown>}
                                                 onClose={onClose}
                                                 ownerMode="roleplay"
+                                              />
+                                            </Suspense>
+                                          )}
+                                          {agent.id === "beholder" && (
+                                            <Suspense fallback={null}>
+                                              <BeholderChatSettingsPanel
+                                                chatId={chat.id}
+                                                onOpenAgentSettings={() => {
+                                                  void requestClose().then((closed) => {
+                                                    if (closed) useUIStore.getState().openAgentDetail("beholder");
+                                                  });
+                                                }}
                                               />
                                             </Suspense>
                                           )}

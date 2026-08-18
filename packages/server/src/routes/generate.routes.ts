@@ -2,6 +2,7 @@
 // Routes: Generation (SSE Streaming with Tool Use + Agent Pipeline)
 // ──────────────────────────────────────────────
 import type { FastifyInstance } from "fastify";
+import { randomUUID } from "crypto";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import {
@@ -137,11 +138,14 @@ import { resolveCustomAgentStyleProfileId } from "../services/generation/custom-
 import { buildSpotifyDjConstraints } from "../services/spotify/spotify-dj-constraints.js";
 import {
   assemblePrompt,
+  appendFallbackChatSummaryToSystemPrompt,
   buildPromptMacroContext,
+  normalizeChatMacroVariables,
   collectCharacterAdvancedPromptEntries,
   resolveCharacterAdvancedPromptIds,
   resolveCharacterMacroData,
   resolveMacrosWithVariableSnapshot,
+  resolveMacrosForPreview,
   resolvePromptIdleDuration,
   resolvePromptLastGenerationType,
   resolvePromptMessageMacros,
@@ -233,6 +237,7 @@ import {
   dedupeLastMessageWrappers,
   findLastIndex,
   findTrackerContextInsertIndex,
+  hasProviderMessagePayload,
   formatConversationInstructionsForWrap,
   extractFileAttachmentInputs,
   buildGenerationGuideInstruction,
@@ -341,17 +346,21 @@ import {
 import { logger, logDebugOverride } from "../lib/logger.js";
 import {
   buildHistoricalLorebookKeeperContext,
+  customAgentUsesLorebookReadBehind,
+  customLorebookReadBehindRunKey,
+  getCustomLorebookReadBehindMessages,
   getLorebookKeeperAutomaticTarget,
   getLorebookKeeperSettings,
   loadLorebookKeeperExistingEntries,
   persistLorebookKeeperUpdates,
   resolveLorebookKeeperTarget,
+  tryClaimCustomLorebookReadBehindRun,
 } from "./generate/lorebook-keeper-utils.js";
 import { registerDryRunRoute } from "./generate/dry-run-route.js";
 import { registerRawRoute } from "./generate/raw-route.js";
 import { registerRetryAgentsRoute } from "./generate/retry-agents-route.js";
 import { fingerprintChatSummary } from "../services/prompt/chat-summary-fingerprint.js";
-import { sendSseEvent, startSseKeepalive, startSseReply, trySendSseEvent } from "./generate/sse.js";
+import { isSseReplyWritable, sendSseEvent, startSseKeepalive, startSseReply } from "./generate/sse.js";
 import {
   resolveAlreadyAppliedSpatialTurn,
   resolveSpatialGenerationOrigin,
@@ -523,10 +532,16 @@ import {
 } from "../services/generation/character-prompt-context.js";
 import { injectSceneContextMessages } from "../services/generation/scene-context-runtime.js";
 import { injectCommittedTrackerContext } from "../services/generation/committed-tracker-context.js";
+import { loadPriorBeholderState } from "../services/agents/beholder-state.js";
 import { injectGameGmPromptRuntime } from "../services/generation/game-gm-prompt-runtime.js";
 import { mergeConversationCharacterMemories } from "../services/generation/conversation-memory-context.js";
 import { injectMemoryRecallContext } from "../services/generation/memory-recall-context.js";
 import { shouldSkipAgentByMessageInterval } from "../services/generation/agent-cadence.js";
+import {
+  appendTrackerLorebookBatchContextKey,
+  applyTrackerLorebookContextPolicy,
+  getTrackerAgentTypes,
+} from "../services/generation/tracker-agent-context.js";
 import {
   createAgentEventDispatcher,
   shouldDeferExpressionAgentEvent,
@@ -697,6 +712,7 @@ function decodeDeferredRelocationConditionals(
   const evalContext: MacroContext = {
     ...baseContext,
     variables: { ...baseContext.variables, ...relocationVariables },
+    localVariables: { ...baseContext.localVariables },
   };
 
   for (let index = 0; index < messages.length; index += 1) {
@@ -769,6 +785,7 @@ export async function generateRoutes(app: FastifyInstance) {
    */
   const encryptedReasoningCache = new Map<string, unknown[]>();
   const activeGenerations = new Map<string, { abortController: AbortController; backendUrl: string | null }>();
+  const activeCustomLorebookReadBehindRuns = new Set<string>();
 
   /**
    * POST /api/generate
@@ -896,6 +913,8 @@ export async function generateRoutes(app: FastifyInstance) {
     // awaits DB/connection work, so delaying this left a small double-submit
     // window where two requests for the same chat could both pass the guard.
     const abortController = new AbortController();
+    const generationId = randomUUID();
+    const customLorebookReadBehindRunKeys = new Set<string>();
     activeGenerations.set(input.chatId, { abortController, backendUrl: null });
     const releaseActiveGeneration = () => {
       if (activeGenerations.get(input.chatId)?.abortController === abortController) {
@@ -1190,17 +1209,6 @@ export async function generateRoutes(app: FastifyInstance) {
 
     let generationComplete = false;
     let clientDisconnected = false;
-    const originalSseWrite = reply.raw.write.bind(reply.raw);
-    const canWriteSse = () =>
-      !clientDisconnected && !reply.raw.destroyed && !reply.raw.writableEnded && !reply.raw.writableFinished;
-    reply.raw.write = ((chunk: any, encodingOrCallback?: any, callback?: any) => {
-      if (!canWriteSse()) return false;
-      try {
-        return originalSseWrite(chunk, encodingOrCallback, callback);
-      } catch {
-        return false;
-      }
-    }) as typeof reply.raw.write;
     const stopSseKeepalive = startSseKeepalive(reply);
 
     const onClose = () => {
@@ -1252,7 +1260,7 @@ export async function generateRoutes(app: FastifyInstance) {
 
     // ── SSE progress helper: tells the client what phase we're in ──
     const sendProgress = (phase: string) => {
-      trySendSseEvent(reply, { type: "progress", data: { phase } });
+      sendSseEvent(reply, { type: "progress", data: { phase } });
     };
 
     try {
@@ -1623,11 +1631,35 @@ export async function generateRoutes(app: FastifyInstance) {
       let runningMessagesForFollowUp: GenerationPromptMessage[] = [...mappedMessages];
       let followUpIteration = 0;
       const MAX_FOLLOW_UP_ITERATIONS = 2;
+      const chatMacroVariables = normalizeChatMacroVariables(chatMeta.macroVariables);
+      let persistedMacroVariables = JSON.stringify(chatMacroVariables);
+      let persistedMacroVariableSnapshot = { ...chatMacroVariables };
+      const persistChatMacroVariables = async () => {
+        const serialized = JSON.stringify(chatMacroVariables);
+        if (serialized === persistedMacroVariables) return;
+        const requestChanges = Object.fromEntries(
+          Object.entries(chatMacroVariables).filter(([name, value]) => persistedMacroVariableSnapshot[name] !== value),
+        );
+        await chats.patchMetadata(
+          input.chatId,
+          (current) => ({
+            ...current,
+            macroVariables: normalizeChatMacroVariables({
+              ...normalizeChatMacroVariables(current.macroVariables),
+              ...requestChanges,
+            }),
+          }),
+          { touchUpdatedAt: false },
+        );
+        persistedMacroVariables = serialized;
+        persistedMacroVariableSnapshot = { ...chatMacroVariables };
+      };
 
       // Hoisted out of the loop so the SSE flush, OOC posting, and
       // illustration await at the end see state from the latest iteration.
       let firstSavedMsg: any = null;
       let lastSavedMsg: any = null;
+      let lastSavedSwipeIndex: number | null = null;
       let pendingIllustration: Promise<void> | null = null;
       let pendingIllustratorBackground: (() => Promise<void>) | null = null;
       const collectedCommands: Array<{
@@ -1703,6 +1735,7 @@ export async function generateRoutes(app: FastifyInstance) {
         let verbosity: "low" | "medium" | "high" | null = null;
         let serviceTier: "flex" | "priority" | null = null;
         let assistantPrefill = "";
+        let assistantReasoningPrefill = "";
         let customThinkingTags: ThinkingTagPair[] = [];
         let customParameters: Record<string, unknown> = {};
         let enabledParameters: GenerationParameterSendMap | undefined;
@@ -1858,6 +1891,7 @@ export async function generateRoutes(app: FastifyInstance) {
               normalizeGameStoryboardKeyframeCount(chatMeta.gameStoryboardKeyframeCount),
             ),
           },
+          localVariables: chatMacroVariables,
           groupScenarioOverrideText:
             typeof chatMeta.groupScenarioText === "string" && (chatMeta.groupScenarioText as string).trim()
               ? (chatMeta.groupScenarioText as string).trim()
@@ -1876,11 +1910,7 @@ export async function generateRoutes(app: FastifyInstance) {
         ): T[] => resolvePromptMessageMacros(messages, promptMacroContext, historyMacroProfilesById);
         const resolvePromptMacros = (value: string) => resolveMacros(value, promptMacroContext);
         const resolvePromptMacrosWithoutVariableWrites = (value: string) =>
-          resolveMacros(
-            value,
-            { ...promptMacroContext, variables: { ...promptMacroContext.variables } },
-            { trimResult: false },
-          );
+          resolveMacrosForPreview(value, promptMacroContext, { trimResult: false });
         const resolvePromptMacrosForLorebook = (value: string) =>
           resolveMacrosWithVariableSnapshot(
             value,
@@ -2158,6 +2188,7 @@ export async function generateRoutes(app: FastifyInstance) {
             groups: groups as any,
             choiceBlocks: choiceBlocks as any,
             chatChoices,
+            localVariables: chatMacroVariables,
             chatId: input.chatId,
             characterIds: promptCharacterIds,
             groupCharacterIds: characterIds,
@@ -2260,6 +2291,7 @@ export async function generateRoutes(app: FastifyInstance) {
           verbosity = assembled.parameters.verbosity ?? null;
           serviceTier = assembled.parameters.serviceTier ?? null;
           assistantPrefill = assembled.parameters.assistantPrefill ?? "";
+          assistantReasoningPrefill = assembled.parameters.assistantReasoningPrefill ?? "";
           customThinkingTags = normalizeThinkingTagPairs(assembled.parameters.customThinkingTags);
           customParameters = mergeCustomParameters(customParameters, assembled.parameters.customParameters);
           if (assembled.parameters.enabledParameters) {
@@ -2313,7 +2345,7 @@ export async function generateRoutes(app: FastifyInstance) {
             finalMessages,
             abortSignal: abortController.signal,
             writeSse: (payload) => {
-              reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+              sendSseEvent(reply, payload as Parameters<typeof sendSseEvent>[1]);
             },
             endSse: () => {
               reply.raw.end();
@@ -2893,6 +2925,7 @@ export async function generateRoutes(app: FastifyInstance) {
             verbosity,
             serviceTier,
             assistantPrefill,
+            assistantReasoningPrefill,
             customThinkingTags,
             customParameters,
             enabledParameters,
@@ -2907,6 +2940,7 @@ export async function generateRoutes(app: FastifyInstance) {
           enableThinking,
           isClaudeNoSampling,
           providerTopK,
+          supportsAssistantReasoningPrefill: providerSupportsAssistantReasoningPrefill,
           primaryProvider: agentChatProvider,
           provider,
         } = providerRuntime;
@@ -2923,6 +2957,7 @@ export async function generateRoutes(app: FastifyInstance) {
           verbosity,
           serviceTier,
           assistantPrefill,
+          assistantReasoningPrefill,
           customThinkingTags,
           customParameters,
           enabledParameters,
@@ -3104,6 +3139,16 @@ export async function generateRoutes(app: FastifyInstance) {
             resolvePromptMacros,
             isConversation: chatMode === "conversation",
           });
+        }
+
+        if (chatMode === "roleplay" && !resolvedPreset) {
+          finalMessages = appendFallbackChatSummaryToSystemPrompt(
+            finalMessages,
+            activeChatSummary,
+            wrapFormat,
+            promptMacroContext,
+            deferCharacterMacros ? { deferCharacterMacros: "all" } : undefined,
+          );
         }
 
         if (isSceneChat) {
@@ -3721,12 +3766,22 @@ export async function generateRoutes(app: FastifyInstance) {
           ...(requestDebug
             ? {
                 agentDebug: (event: AgentCallDebugEvent) => {
-                  trySendSseEvent(reply, { type: "agent_debug", data: event });
+                  sendSseEvent(reply, { type: "agent_debug", data: event });
                 },
               }
             : {}),
           signal: abortController.signal,
         };
+
+        const latestBeholderState = await loadPriorBeholderState({
+          agentsStore,
+          chatId: input.chatId,
+          chatMode,
+          activeAgentIds: chatActiveAgentIds,
+          chatEnableAgents,
+          excludeMessageId: input.regenerateMessageId,
+        });
+        if (latestBeholderState) agentContext.memory._beholderState = latestBeholderState;
 
         if (personaId) {
           agentContext.memory._personaId = personaId;
@@ -4270,6 +4325,7 @@ export async function generateRoutes(app: FastifyInstance) {
           chatEnableAgents,
           activeAgentIds: chatActiveAgentIds,
           latestGameState,
+          beholderState: latestBeholderState,
           chatMetadata: chatMeta,
           wrapFormat,
           dedupeLastMessageWrappers,
@@ -4351,10 +4407,24 @@ export async function generateRoutes(app: FastifyInstance) {
             },
           };
         };
+        const customLorebookReadBehindTargets = new Map<
+          string,
+          { context: AgentContext; messageId: string; swipeIndex: number }
+        >();
         const { sendAgentEvent: sendRawAgentEvent, sendAgentResultEvent: sendRawAgentResultEvent } =
           createAgentEventDispatcher({
             resolvedAgents: agentEventResolvedAgents,
-            sendEvent: (payload) => trySendSseEvent(reply, payload),
+            sendEvent: (payload) => sendSseEvent(reply, payload),
+            getOwnership: (result) => {
+              const historicalTarget = customLorebookReadBehindTargets.get(result.agentId);
+              return {
+                chatId: input.chatId,
+                messageId:
+                  historicalTarget?.messageId ?? (typeof lastSavedMsg?.id === "string" ? lastSavedMsg.id : null),
+                swipeIndex: historicalTarget?.swipeIndex ?? lastSavedSwipeIndex,
+                generationId,
+              };
+            },
           });
         const sendAgentEvent = (result: AgentResult, options?: { finalized?: boolean }) => {
           const nextResult = markLorebookResultForApproval(result);
@@ -4378,7 +4448,7 @@ export async function generateRoutes(app: FastifyInstance) {
         };
         const flushDeferredParallelAgentEvents = () => {
           if (parallelAgentStartPending) {
-            trySendSseEvent(reply, { type: "agent_start", data: { phase: "parallel" } });
+            sendSseEvent(reply, { type: "agent_start", data: { phase: "parallel" } });
             parallelAgentStartPending = false;
           }
           if (deferredParallelAgentEvents.length === 0) return;
@@ -4389,7 +4459,7 @@ export async function generateRoutes(app: FastifyInstance) {
         };
 
         for (const warning of agentConnectionWarnings) {
-          trySendSseEvent(reply, { type: "agent_warning", data: warning });
+          sendSseEvent(reply, { type: "agent_warning", data: warning });
         }
 
         // Create the pipeline (exclude text rewrite agents — they run last,
@@ -4405,15 +4475,16 @@ export async function generateRoutes(app: FastifyInstance) {
         let pipelineAgents = resolvedAgents.filter(
           (a) => !textRewriteAgentIds.has(a.id) && a.type !== "lorebook-keeper",
         );
+        const trackerAgentTypes = getTrackerAgentTypes();
+        const attachLorebooksToTrackers = chatMode === "roleplay" && chatMeta.attachLorebooksToTrackers === true;
 
         // Manual tracker agents are stripped from the automatic pipeline — the
         // user will trigger them manually via retry-agents.
         const manualTrackers = chatMeta.manualTrackers === true;
         const manualTrackerAgentTypes = normalizeManualTrackerAgentTypes(chatMeta.manualTrackerAgentTypes);
         if (manualTrackers || Object.keys(manualTrackerAgentTypes).length > 0) {
-          const trackerIds = new Set(BUILT_IN_AGENTS.filter((a) => a.category === "tracker").map((a) => a.id));
           pipelineAgents = pipelineAgents.filter(
-            (a) => !trackerIds.has(a.type) || (!manualTrackers && manualTrackerAgentTypes[a.type] !== true),
+            (a) => !trackerAgentTypes.has(a.type) || (!manualTrackers && manualTrackerAgentTypes[a.type] !== true),
           );
         }
 
@@ -4452,8 +4523,59 @@ export async function generateRoutes(app: FastifyInstance) {
           gameState,
           gameSpotifyMusicEnabled,
           agentContext,
-          emitMetadataPatch: (patch) => trySendSseEvent(reply, { type: "metadata_patch", data: patch }),
+          emitMetadataPatch: (patch) => sendSseEvent(reply, { type: "metadata_patch", data: patch }),
         });
+        const eligiblePipelineAgents: typeof pipelineAgents = [];
+        for (const agent of pipelineAgents) {
+          const readBehindMessages = getCustomLorebookReadBehindMessages(agent.settings);
+          const usesCustomLorebookReadBehind = customAgentUsesLorebookReadBehind(agent);
+          if (!usesCustomLorebookReadBehind) {
+            eligiblePipelineAgents.push(agent);
+            continue;
+          }
+
+          const target = getLorebookKeeperAutomaticTarget(lorebookKeeperMessages, readBehindMessages);
+          if (!target) continue;
+          const context = buildHistoricalLorebookKeeperContext(agentContext, lorebookKeeperMessages, target.id);
+          if (!context) continue;
+          const runKey = customLorebookReadBehindRunKey(input.chatId, agent.id, target.id);
+          if (!tryClaimCustomLorebookReadBehindRun(activeCustomLorebookReadBehindRuns, runKey)) {
+            logger.debug(
+              "[agents] Skipping custom lorebook read-behind agent %s for in-flight message %s",
+              agent.type,
+              target.id,
+            );
+            continue;
+          }
+          customLorebookReadBehindRunKeys.add(runKey);
+          if (await agentsStore.hasSuccessfulRunForMessage(agent.id, input.chatId, target.id)) {
+            activeCustomLorebookReadBehindRuns.delete(runKey);
+            customLorebookReadBehindRunKeys.delete(runKey);
+            logger.debug(
+              "[agents] Skipping custom lorebook read-behind agent %s for already processed message %s",
+              agent.type,
+              target.id,
+            );
+            continue;
+          }
+          agent.batchContextKey = `message:${target.id}`;
+          customLorebookReadBehindTargets.set(agent.id, {
+            context,
+            messageId: target.id,
+            swipeIndex: typeof target.activeSwipeIndex === "number" ? target.activeSwipeIndex : 0,
+          });
+          eligiblePipelineAgents.push(agent);
+        }
+        pipelineAgents = eligiblePipelineAgents;
+        if (chatMode === "roleplay") {
+          for (const agent of pipelineAgents) {
+            if (!trackerAgentTypes.has(agent.type)) continue;
+            agent.batchContextKey = appendTrackerLorebookBatchContextKey(
+              agent.batchContextKey,
+              attachLorebooksToTrackers,
+            );
+          }
+        }
         if (enableChatTools && toolDefs && toolDefs.length > 0 && conn.treatAsLocalEndpoint === "true") {
           const toolLines = toolDefs.map(
             (t) =>
@@ -4465,16 +4587,20 @@ export async function generateRoutes(app: FastifyInstance) {
         // Pre-generation prompt-patch agents read the assembled prompt here; this is overwritten
         // with the fitted provider prompt before each main model call.
         agentContext.memory._mainPromptPreview = promptPreviewForAgents(finalMessages);
-        const resolveImagePromptAgentContext = async (
-          agent: AgentExecConfig,
-          context: AgentContext,
-        ): Promise<AgentContext> => {
+        const resolveAgentContext = async (agent: AgentExecConfig, context: AgentContext): Promise<AgentContext> => {
+          const resolvedContext = customLorebookReadBehindTargets.get(agent.id)?.context ?? context;
+          const trackerContext = applyTrackerLorebookContextPolicy({
+            context: resolvedContext,
+            chatMode,
+            isTracker: trackerAgentTypes.has(agent.type),
+            attachLorebooksToTrackers,
+          });
           const isImagePromptAgent =
             agent.type === "illustrator" ||
             (agent.isCustomAgent === true && customAgentHasCapability(agent.settings, "trigger_image_generation"));
-          if (!isImagePromptAgent) return context;
+          if (!isImagePromptAgent) return trackerContext;
 
-          const memory = { ...context.memory };
+          const memory = { ...trackerContext.memory };
           delete memory._imagePromptInstructions;
           const imageConnectionId =
             agent.type === "illustrator"
@@ -4486,13 +4612,13 @@ export async function generateRoutes(app: FastifyInstance) {
           imageConnection ??= await connections.getDefaultForImageGeneration();
           const imagePromptInstructions = normalizeImagePromptInstructions(imageConnection?.imagePromptInstructions);
           if (imagePromptInstructions) memory._imagePromptInstructions = imagePromptInstructions;
-          return { ...context, memory };
+          return { ...trackerContext, memory };
         };
         const pipeline = createAgentPipeline(
           pipelineAgents,
           agentContext,
           sendAgentEventAfterMainStream,
-          resolveImagePromptAgentContext,
+          resolveAgentContext,
         );
         let directorSecretPlotResults: AgentResult[] = [];
         let directorSecretPlotArcForPrompt: unknown = directorSecretPlotMemory.overarchingArc;
@@ -4543,9 +4669,7 @@ export async function generateRoutes(app: FastifyInstance) {
         const shouldRunPreGen = (hasPreGenAgents || reviewedAgentInjections.length > 0) && !input.regenerateMessageId;
         const runDirectorSecretPlotMaintenance = async (): Promise<AgentResult[]> => {
           if (!directorSecretPlotAgent) return [];
-          reply.raw.write(
-            `data: ${JSON.stringify({ type: "agent_start", data: { phase: "pre_generation", agentType: "director" } })}\n\n`,
-          );
+          sendSseEvent(reply, { type: "agent_start", data: { phase: "pre_generation", agentType: "director" } });
           const secretAgent = buildDirectorSecretPlotAgent(directorSecretPlotAgent);
           const runOnce = async (state: Record<string, unknown>): Promise<AgentResult> => {
             const secretContext: AgentContext = {
@@ -4621,9 +4745,7 @@ export async function generateRoutes(app: FastifyInstance) {
           // Build the pre-gen promise
           const preGenPromise = hasPreGenAgents
             ? (async () => {
-                reply.raw.write(
-                  `data: ${JSON.stringify({ type: "agent_start", data: { phase: "pre_generation" } })}\n\n`,
-                );
+                sendSseEvent(reply, { type: "agent_start", data: { phase: "pre_generation" } });
                 if (isDebug) {
                   const preGenAgents = pipelineAgents.filter(
                     (a) => a.phase === "pre_generation" && !EXCLUDED_FROM_PIPELINE.has(a.type),
@@ -4651,9 +4773,10 @@ export async function generateRoutes(app: FastifyInstance) {
             ? (async () => {
                 const _tKR = Date.now();
                 try {
-                  reply.raw.write(
-                    `data: ${JSON.stringify({ type: "agent_start", data: { phase: "pre_generation", agentType: "knowledge-retrieval" } })}\n\n`,
-                  );
+                  sendSseEvent(reply, {
+                    type: "agent_start",
+                    data: { phase: "pre_generation", agentType: "knowledge-retrieval" },
+                  });
                   const krConfig = {
                     id: knowledgeRetrievalAgent!.id,
                     type: knowledgeRetrievalAgent!.type,
@@ -4679,10 +4802,10 @@ export async function generateRoutes(app: FastifyInstance) {
                   // Emit agent_error so the client closes the pending state opened by
                   // agent_start above — without this the UI shows the agent as forever-
                   // running. (Mirrors the Illustrator agent's failure protocol.)
-                  // Use trySendSseEvent rather than reply.raw.write so a disconnected
+                  // Use sendSseEvent rather than reply.raw.write so a disconnected
                   // client doesn't turn this caught failure back into a rejected promise.
                   logger.warn(err, "[knowledge-retrieval] failed — continuing generation without retrieved context");
-                  trySendSseEvent(reply, {
+                  sendSseEvent(reply, {
                     type: "agent_error",
                     data: {
                       agentType: "knowledge-retrieval",
@@ -4703,9 +4826,10 @@ export async function generateRoutes(app: FastifyInstance) {
             ? (async () => {
                 const _tRouter = Date.now();
                 try {
-                  reply.raw.write(
-                    `data: ${JSON.stringify({ type: "agent_start", data: { phase: "pre_generation", agentType: "knowledge-router" } })}\n\n`,
-                  );
+                  sendSseEvent(reply, {
+                    type: "agent_start",
+                    data: { phase: "pre_generation", agentType: "knowledge-router" },
+                  });
                   const routerConfig = {
                     id: knowledgeRouterAgent!.id,
                     type: knowledgeRouterAgent!.type,
@@ -4746,10 +4870,10 @@ export async function generateRoutes(app: FastifyInstance) {
                   // Emit agent_error so the client closes the pending state opened by
                   // agent_start above — without this the UI shows the agent as forever-
                   // running. (Mirrors the Illustrator agent's failure protocol.)
-                  // Use trySendSseEvent rather than reply.raw.write so a disconnected
+                  // Use sendSseEvent rather than reply.raw.write so a disconnected
                   // client doesn't turn this caught failure back into a rejected promise.
                   logger.warn(err, "[knowledge-router] failed — continuing generation without routed context");
-                  trySendSseEvent(reply, {
+                  sendSseEvent(reply, {
                     type: "agent_error",
                     data: {
                       agentType: "knowledge-router",
@@ -4816,7 +4940,7 @@ export async function generateRoutes(app: FastifyInstance) {
             const applied = applyPromptPatchOperations(finalMessages, result.data);
             if (applied > 0) {
               logger.info("[custom-agent] Applied %d prompt patch operation(s) from %s", applied, result.agentType);
-              trySendSseEvent(reply, {
+              sendSseEvent(reply, {
                 type: "prompt_patch",
                 data: { agentType: result.agentType, applied },
               });
@@ -4915,9 +5039,7 @@ export async function generateRoutes(app: FastifyInstance) {
               (a) => a.phase === "pre_generation" && !EXCLUDED_FROM_PIPELINE.has(a.type),
             );
             if (hasContextInjectionAgents) {
-              reply.raw.write(
-                `data: ${JSON.stringify({ type: "agent_start", data: { phase: "pre_generation" } })}\n\n`,
-              );
+              sendSseEvent(reply, { type: "agent_start", data: { phase: "pre_generation" } });
               // On regens, exclude legacy Secret Plot Driver cache entries.
               contextInjections = (
                 await pipeline.preGenerate(
@@ -4966,12 +5088,14 @@ export async function generateRoutes(app: FastifyInstance) {
             contextInjections,
             { omitUnmatched: presetOwnsAgentPlacement },
           );
-          contextInjections = contextInjections.filter(
-            (injection) => !runtimeHandledCached.omittedInjections.includes(injection),
+          const unmatchedCachedLongTermMemory = runtimeHandledCached.omittedInjections.filter(
+            (injection) => injection.agentType === "long-term-memory",
           );
-          if (runtimeHandledCached.omittedInjections.some((injection) => injection.agentType === "long-term-memory")) {
-            longTermMemoryRecallReceipt = undefined;
-          }
+          contextInjections = contextInjections.filter(
+            (injection) =>
+              injection.agentType === "long-term-memory" || !runtimeHandledCached.omittedInjections.includes(injection),
+          );
+          runtimeHandledCached.fallbackInjections.push(...unmatchedCachedLongTermMemory);
 
           const cachedPipelineInjections = runtimeHandledCached.fallbackInjections.filter(
             (inj) => !SEPARATE_INJECTION_AGENTS.has(inj.agentType),
@@ -4989,22 +5113,20 @@ export async function generateRoutes(app: FastifyInstance) {
             appendSeparateAgentInjection(inj.agentType, inj.text);
           }
           for (const inj of contextInjections) {
-            reply.raw.write(
-              `data: ${JSON.stringify({
-                type: "agent_result",
-                data: {
-                  agentType: inj.agentType,
-                  agentName: agentNameByType.get(inj.agentType) ?? inj.agentName ?? inj.agentType,
-                  resultType: "context_injection",
-                  data: { text: inj.text },
-                  tokensUsed: 0,
-                  success: true,
-                  error: null,
-                  durationMs: 0,
-                  cached: true,
-                },
-              })}\n\n`,
-            );
+            sendSseEvent(reply, {
+              type: "agent_result",
+              data: {
+                agentType: inj.agentType,
+                agentName: agentNameByType.get(inj.agentType) ?? inj.agentName ?? inj.agentType,
+                resultType: "context_injection",
+                data: { text: inj.text },
+                tokensUsed: 0,
+                success: true,
+                error: null,
+                durationMs: 0,
+                cached: true,
+              },
+            });
           }
           clearUnusedRuntimeSectionsBeforeLtm();
         } else {
@@ -5024,11 +5146,17 @@ export async function generateRoutes(app: FastifyInstance) {
             const tokens = runtimeAgentSectionTokens.get("long-term-memory");
             const handledByPresetSection =
               tokens !== undefined && replaceRuntimeAgentSection(finalMessages, tokens, recall.text);
-            if (handledByPresetSection || !presetOwnsAgentPlacement) {
-              if (!handledByPresetSection) appendSeparateAgentInjection("long-term-memory", recall.text);
-              contextInjections.push({ agentType: "long-term-memory", text: recall.text });
-              longTermMemoryRecallReceipt = recall.receipt;
+            if (!handledByPresetSection) {
+              if (presetOwnsAgentPlacement) {
+                logger.warn(
+                  "[long-term-memory] Preset marker was not found; using fallback injection chatId=%s",
+                  input.chatId,
+                );
+              }
+              appendSeparateAgentInjection("long-term-memory", recall.text);
             }
+            contextInjections.push({ agentType: "long-term-memory", text: recall.text });
+            longTermMemoryRecallReceipt = recall.receipt;
           }
         }
         clearUnusedRuntimeAgentSections(finalMessages, runtimeAgentSectionTokens);
@@ -5071,6 +5199,8 @@ export async function generateRoutes(app: FastifyInstance) {
 
         const tailMessages = appendGenerationTailMessages(finalMessages, {
           assistantPrefill,
+          assistantReasoningPrefill,
+          supportsAssistantReasoningPrefill: providerSupportsAssistantReasoningPrefill,
           followUpIteration,
           impersonate: input.impersonate,
           isGoogleProvider,
@@ -5107,7 +5237,7 @@ export async function generateRoutes(app: FastifyInstance) {
           providerThinking += chunk;
           if (showThoughts) {
             fullThinking += chunk;
-            trySendSseEvent(reply, { type: "thinking", data: chunk });
+            sendSseEvent(reply, { type: "thinking", data: chunk });
           }
         };
         const captureReasoning = chatMode === "roleplay" && showThoughts;
@@ -5126,7 +5256,7 @@ export async function generateRoutes(app: FastifyInstance) {
         const emitTokenTextChunked = async (text: string) => {
           for (let i = 0; i < text.length; i += TOKEN_CHUNK_SIZE) {
             const chunk = text.slice(i, i + TOKEN_CHUNK_SIZE);
-            trySendSseEvent(reply, { type: "token", data: chunk });
+            sendSseEvent(reply, { type: "token", data: chunk });
             tokenChunksSinceYield += 1;
             if (tokenChunksSinceYield % TOKEN_CHUNK_YIELD_EVERY === 0) {
               await yieldToEventLoop();
@@ -5542,6 +5672,7 @@ export async function generateRoutes(app: FastifyInstance) {
           speaksOnlyTargetCharacter = true,
         ): Promise<{
           savedMsg: Awaited<ReturnType<typeof chats.createMessage>>;
+          savedSwipeIndex: number | null;
           response: string;
           commands: CharacterCommand[];
           commandCharacterIds: (string | null)[] | null;
@@ -5770,7 +5901,7 @@ export async function generateRoutes(app: FastifyInstance) {
           const mergeProviderAdjacentMessages = (messages: ChatMessage[]): ChatMessage[] => {
             const merged: ChatMessage[] = [];
             for (const message of messages) {
-              if (!message.content.trim() && !message.images?.length && !message.files?.length) continue;
+              if (!hasProviderMessagePayload(message)) continue;
 
               const last = merged[merged.length - 1];
               if (last && last.role === message.role) {
@@ -5900,7 +6031,10 @@ export async function generateRoutes(app: FastifyInstance) {
           let finishReason: string | undefined;
 
           const logPromptSentToModel = (messages: ChatMessage[], label = "Prompt sent to model") => {
-            if (isDebug || requestDebug) {
+            const promptDebugOverride = requestDebug || isDebugAgentsEnabled();
+            if (isDebug || promptDebugOverride) {
+              const logProviderPrompt = (message: string, ...args: unknown[]) =>
+                logDebugOverride(promptDebugOverride, message, ...args);
               const effModel = conn.model.toLowerCase();
               const tempSuppressed =
                 ((conn.provider === "openai" || conn.provider === "openrouter") &&
@@ -5909,7 +6043,7 @@ export async function generateRoutes(app: FastifyInstance) {
               const effTemp = tempSuppressed ? "N/A" : temperature;
               const effTopP = tempSuppressed ? "N/A" : topP;
 
-              debugLog(
+              logProviderPrompt(
                 "\n[debug] %s (%d messages):\n  Model: %s (%s)  Temp: %s  MaxTokens: %s  MaxContext: %s  TopP: %s  TopK: %s  EnableThinking: %s  ShowThoughts: %s  Effort: %s  Verbosity: %s  Stream: %s",
                 label,
                 messages.length,
@@ -5932,9 +6066,23 @@ export async function generateRoutes(app: FastifyInstance) {
                 if (m.files?.length) extras.push(`files=${m.files.length}`);
                 if (m.tool_call_id) extras.push(`tool_call_id=${m.tool_call_id}`);
                 if (m.tool_calls?.length) extras.push(`tool_calls=${JSON.stringify(m.tool_calls)}`);
-                if (m.providerMetadata)
+                if (m.providerMetadata) {
                   extras.push(`providerMetadataKeys=${Object.keys(m.providerMetadata).join(",")}`);
-                debugLog("  [%s]%s %s", m.role.toUpperCase(), extras.length ? ` ${extras.join(" ")}` : "", m.content);
+                  const reasoningMetadata = readChatCompletionsReasoningMetadata(m.providerMetadata);
+                  const promptMetadata = {
+                    ...(reasoningMetadata ?? {}),
+                    ...(m.providerMetadata.partial === true ? { partial: true } : {}),
+                  };
+                  if (Object.keys(promptMetadata).length > 0) {
+                    extras.push(`providerMetadata=${JSON.stringify(promptMetadata)}`);
+                  }
+                }
+                logProviderPrompt(
+                  "  [%s]%s %s",
+                  m.role.toUpperCase(),
+                  extras.length ? ` ${extras.join(" ")}` : "",
+                  m.content,
+                );
               }
             }
           };
@@ -6128,12 +6276,10 @@ export async function generateRoutes(app: FastifyInstance) {
                 .filter((toolResult): toolResult is NonNullable<typeof toolResult> => toolResult != null);
 
               for (const tr of toolResults) {
-                reply.raw.write(
-                  `data: ${JSON.stringify({
-                    type: "tool_result",
-                    data: { name: tr.name, result: tr.result, success: tr.success },
-                  })}\n\n`,
-                );
+                sendSseEvent(reply, {
+                  type: "tool_result",
+                  data: { name: tr.name, result: tr.result, success: tr.success },
+                });
 
                 // Persist update_game_state tool calls to the game state DB
                 if (tr.name === "update_game_state" && tr.success) {
@@ -6161,7 +6307,7 @@ export async function generateRoutes(app: FastifyInstance) {
                           updates = lockedUpdates;
                           // Send game_state_patch so HUD updates live
                           logger.debug("[game_state_patch] tool update_game_state: %j", updates);
-                          reply.raw.write(`data: ${JSON.stringify({ type: "game_state_patch", data: updates })}\n\n`);
+                          sendSseEvent(reply, { type: "game_state_patch", data: updates });
                         }
                       }
                     }
@@ -6791,8 +6937,7 @@ export async function generateRoutes(app: FastifyInstance) {
               const displayResponse = fullResponse
                 .replace(/\[selfie(?::\s*(?:context="[^"]*"|"[^"]*"|[^\]\r\n"]+))?\]/gi, "")
                 .trim();
-              reply.raw.write(`data: ${JSON.stringify({ type: "content_replace", data: displayResponse })}\n\n`);
-
+              sendSseEvent(reply, { type: "content_replace", data: displayResponse });
             }
           }
 
@@ -6883,6 +7028,8 @@ export async function generateRoutes(app: FastifyInstance) {
               await recordSavedAutonomousGeneration(targetCharId);
               return {
                 savedMsg: anchoredMsg,
+                savedSwipeIndex:
+                  typeof anchoredMsg?.activeSwipeIndex === "number" ? anchoredMsg.activeSwipeIndex : null,
                 response: "",
                 commands: parsedCommands,
                 commandCharacterIds: parsedCommandCharacterIds,
@@ -6891,9 +7038,10 @@ export async function generateRoutes(app: FastifyInstance) {
               };
             }
             logger.warn(`[generate] Empty response from model for chat ${input.chatId} (char: ${targetCharId})`);
-            reply.raw.write(
-              `data: ${JSON.stringify({ type: "error", data: "The AI returned an empty response. Try sending your message again." })}\n\n`,
-            );
+            sendSseEvent(reply, {
+              type: "error",
+              data: "The AI returned an empty response. Try sending your message again.",
+            });
             return null;
           }
 
@@ -7063,6 +7211,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 verbosity: verbosity ?? null,
                 serviceTier,
                 assistantPrefill: assistantPrefill || null,
+                assistantReasoningPrefill: assistantReasoningPrefill || null,
                 customParameters: Object.keys(customParameters).length > 0 ? customParameters : null,
                 tokensPrompt: usage?.promptTokens ?? null,
                 tokensCompletion: usage?.completionTokens ?? null,
@@ -7096,7 +7245,11 @@ export async function generateRoutes(app: FastifyInstance) {
             extraUpdate.generationReplay = buildGenerationReplay(input);
             extraUpdate.startsNewAssistantBubble = startsNewAssistantBubble;
             // Cache the final prompt (what was actually sent to the model) for Peek Prompt
-            extraUpdate.cachedPrompt = finalPromptSent.map((m) => ({ role: m.role, content: m.content }));
+            extraUpdate.cachedPrompt = finalPromptSent.map((m) => ({
+              role: m.role,
+              content: m.content,
+              ...(m.providerMetadata ? { providerMetadata: m.providerMetadata } : {}),
+            }));
             // Cache the lorebook scan that produced the prompt so Active Context
             // reflects the last generation instead of a best-effort rescan.
             extraUpdate.lorebookScan = lorebookScanSnapshot;
@@ -7220,6 +7373,7 @@ export async function generateRoutes(app: FastifyInstance) {
 
           return {
             savedMsg,
+            savedSwipeIndex,
             response: fullResponse,
             commands: recoveredAlreadyAppliedSpatialTurn ? [] : parsedCommands,
             commandCharacterIds: recoveredAlreadyAppliedSpatialTurn ? [] : parsedCommandCharacterIds,
@@ -7320,16 +7474,14 @@ export async function generateRoutes(app: FastifyInstance) {
                 ? remainingConversationPresenceDelay(responderDelay.delayMs, conversationPresenceDelayStartedAt)
                 : 0;
               if (responderDelay && remainingDelayMs > 0) {
-                reply.raw.write(
-                  `data: ${JSON.stringify({
-                    type: "delayed",
-                    characters: [groupResponderName(charId)],
-                    characterIds: [charId],
-                    characterStatuses: { [charId]: responderDelay.status },
-                    status: responderDelay.status,
-                    delayMs: remainingDelayMs,
-                  })}\n\n`,
-                );
+                sendSseEvent(reply, {
+                  type: "delayed",
+                  characters: [groupResponderName(charId)],
+                  characterIds: [charId],
+                  characterStatuses: { [charId]: responderDelay.status },
+                  status: responderDelay.status,
+                  delayMs: remainingDelayMs,
+                });
                 await waitForConversationPresenceDelay(remainingDelayMs, abortController.signal);
                 if (abortController.signal.aborted) break;
               }
@@ -7349,15 +7501,14 @@ export async function generateRoutes(app: FastifyInstance) {
                   runningMessages.push(resolveHistoryMessageMacros([mapped])[0] ?? mapped);
                 }
               }
-              reply.raw.write(
-                `data: ${JSON.stringify({ type: "typing", characters: [groupResponderName(charId)] })}\n\n`,
-              );
+              sendSseEvent(reply, { type: "typing", characters: [groupResponderName(charId)] });
             }
 
             // Tell the client which character is responding next
-            reply.raw.write(
-              `data: ${JSON.stringify({ type: "group_turn", data: { characterId: charId, characterName: charName ?? "Character", index: ci } })}\n\n`,
-            );
+            sendSseEvent(reply, {
+              type: "group_turn",
+              data: { characterId: charId, characterName: charName, index: ci },
+            });
 
             // For roleplay/visual_novel individual mode, use a soft system instruction for character
             // attribution. A system message is safe for all models including those that produce a
@@ -7401,6 +7552,8 @@ export async function generateRoutes(app: FastifyInstance) {
             firstSavedMsg ??= genResult.savedMsg;
             lastSavedMsg = genResult.savedMsg;
             recordExpressionTarget(genResult.savedMsg, genResult.characterId);
+            lastSavedSwipeIndex = genResult.savedSwipeIndex;
+            recordExpressionTarget(genResult.savedMsg, genResult.characterId);
             currentIterationSavedMsg = genResult.savedMsg;
             if (typeof genResult.savedMsg?.id === "string") {
               knownConversationMessageIds.add(genResult.savedMsg.id);
@@ -7417,7 +7570,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 command: cmd,
                 characterId: genResult.characterId, // use detected/actual character
                 messageId: genResult.savedMsg?.id ?? "",
-                swipeIndex: genResult.savedMsg?.activeSwipeIndex ?? 0,
+                swipeIndex: genResult.savedSwipeIndex ?? genResult.savedMsg?.activeSwipeIndex ?? 0,
               });
             }
             collectedOocMessages.push(...genResult.oocMessages);
@@ -7502,6 +7655,7 @@ export async function generateRoutes(app: FastifyInstance) {
           if (genResult) {
             firstSavedMsg ??= genResult.savedMsg;
             lastSavedMsg = genResult.savedMsg;
+            lastSavedSwipeIndex = genResult.savedSwipeIndex;
             currentIterationSavedMsg = genResult.savedMsg;
             recordExpressionTarget(genResult.savedMsg, genResult.characterId);
             for (let cmdIndex = 0; cmdIndex < genResult.commands.length; cmdIndex++) {
@@ -7511,7 +7665,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 // back to the generation's character when no attribution is available.
                 characterId: genResult.commandCharacterIds?.[cmdIndex] ?? genResult.characterId,
                 messageId: genResult.savedMsg?.id ?? "",
-                swipeIndex: genResult.savedMsg?.activeSwipeIndex ?? 0,
+                swipeIndex: genResult.savedSwipeIndex ?? genResult.savedMsg?.activeSwipeIndex ?? 0,
               });
             }
             collectedOocMessages.push(...genResult.oocMessages);
@@ -7561,6 +7715,7 @@ export async function generateRoutes(app: FastifyInstance) {
         const activatedTextRewriteRunAgents = textRewriteRunAgents.filter(
           (agent) => !inactivePostProcessingAgentIds.has(agent.id),
         );
+        await persistChatMacroVariables();
         let assistantMessageReadySent = false;
         const sendAssistantMessageReady = async (savedMessage?: typeof currentIterationSavedMsg) => {
           if (assistantMessageReadySent || abortController.signal.aborted || input.impersonate) return;
@@ -7568,7 +7723,7 @@ export async function generateRoutes(app: FastifyInstance) {
           if (typeof messageId !== "string" || !messageId) return;
           const readyMessage = savedMessage ?? (await chats.getMessage(messageId));
           if (!readyMessage || readyMessage.role !== "assistant") return;
-          assistantMessageReadySent = trySendSseEvent(reply, {
+          assistantMessageReadySent = sendSseEvent(reply, {
             type: "assistant_message_ready",
             data: readyMessage,
           });
@@ -7578,6 +7733,9 @@ export async function generateRoutes(app: FastifyInstance) {
         // Illustrator, trackers, summaries, or other non-rewriting agents.
         if (activatedTextRewriteRunAgents.length === 0) {
           await sendAssistantMessageReady(currentIterationSavedMsg);
+          // Roleplay post-processing is anchored to the saved message/swipe
+          // below, so it no longer needs to hold the chat-wide generation slot.
+          if (chatMode === "roleplay" && assistantMessageReadySent) releaseActiveGeneration();
         }
 
         // ────────────────────────────────────────
@@ -7819,7 +7977,7 @@ export async function generateRoutes(app: FastifyInstance) {
           }
           if (newText) {
             if (shouldReviewSummary) {
-              trySendSseEvent(reply, {
+              sendSseEvent(reply, {
                 type: "agent_write_proposal",
                 data: buildSummaryWriteApprovalProposal({
                   chatId: input.chatId,
@@ -7841,12 +7999,23 @@ export async function generateRoutes(app: FastifyInstance) {
               });
             } else {
               const combined = typeof chatMeta.summary === "string" ? chatMeta.summary : newText;
-              reply.raw.write(
-                `data: ${JSON.stringify({
-                  type: "chat_summary",
-                  data: { summary: combined, entry: createdEntry, entries: summaryEntries },
-                })}\n\n`,
-              );
+              // Opt-in token compression: hide the messages this summary covered
+              // (except the protected recent tail, already excluded in autoHideIds)
+              // so the summary is a net token reduction. Best-effort; never aborts
+              // the stream. The same set is persisted on the entry above.
+              let hiddenMessageIds: string[] = [];
+              if (autoHideIds.length > 0) {
+                try {
+                  await chats.bulkSetHiddenFromAI(input.chatId, autoHideIds, true);
+                  hiddenMessageIds = autoHideIds;
+                } catch (err) {
+                  logger.error(err, "[chat-summary] Failed to auto-hide summarized roleplay messages");
+                }
+              }
+                sendSseEvent(reply, {
+                type: "chat_summary",
+                data: { summary: combined, entry: createdEntry, entries: summaryEntries, hiddenMessageIds },
+                });
             }
           }
         };
@@ -7872,7 +8041,7 @@ export async function generateRoutes(app: FastifyInstance) {
             agentContext.memory._expressionTargetIds = [...generatedExpressionTargetIds];
           }
           if (hasPostProcessingAgents) {
-            reply.raw.write(`data: ${JSON.stringify({ type: "agent_start", data: { phase: "post_generation" } })}\n\n`);
+            sendSseEvent(reply, { type: "agent_start", data: { phase: "post_generation" } });
           }
 
           // LOG_LEVEL=debug: log post-processing agents
@@ -8027,7 +8196,7 @@ export async function generateRoutes(app: FastifyInstance) {
                       historicalLorebookTarget.id,
                     ) ?? phaseRetryContext)
                   : phaseRetryContext;
-                const resolvedRetryContext = await resolveImagePromptAgentContext(agentCfg, retryCtx);
+                const resolvedRetryContext = await resolveAgentContext(agentCfg, retryCtx);
                 const retried = await executeAgent(
                   agentCfg,
                   resolvedRetryContext,
@@ -8058,16 +8227,14 @@ export async function generateRoutes(app: FastifyInstance) {
             // Use postResults (not retryResults) so agents skipped during retry (e.g. agentCfg not found) are included
             const stillFailed = postResults.filter((r) => !r.success);
             if (stillFailed.length > 0) {
-              reply.raw.write(
-                `data: ${JSON.stringify({
-                  type: "agents_retry_failed",
-                  data: stillFailed.map((r) => ({
-                    agentType: r.agentType,
-                    agentName: resolvedAgents.find((agent) => agent.type === r.agentType)?.name ?? r.agentType,
-                    error: r.error,
-                  })),
-                })}\n\n`,
-              );
+              sendSseEvent(reply, {
+                type: "agents_retry_failed",
+                data: stillFailed.map((r) => ({
+                  agentType: r.agentType,
+                  agentName: resolvedAgents.find((agent) => agent.type === r.agentType)?.name ?? r.agentType,
+                  error: r.error,
+                })),
+              });
             }
           }
 
@@ -8106,11 +8273,15 @@ export async function generateRoutes(app: FastifyInstance) {
           const messageId = (lastSavedMsg as any)?.id ?? "";
           // Determine swipe index for this generation so ALL tracker agents target the
           // same (messageId, swipeIndex) snapshot that the world-state agent creates.
-          let targetSwipeIndex = 0;
-          if (input.regenerateMessageId && messageId) {
-            const refreshedForSwipe = await chats.getMessage(messageId);
-            if (refreshedForSwipe) targetSwipeIndex = refreshedForSwipe.activeSwipeIndex ?? 0;
-          }
+          // Capture the immutable swipe selected when this response was saved.
+          // Re-reading the message here can observe a newer user-selected swipe
+          // while these agents are still running and attach old results to it.
+          const targetSwipeIndex =
+            typeof lastSavedSwipeIndex === "number"
+              ? lastSavedSwipeIndex
+              : typeof (lastSavedMsg as { activeSwipeIndex?: unknown } | null)?.activeSwipeIndex === "number"
+                ? (lastSavedMsg as { activeSwipeIndex: number }).activeSwipeIndex
+                : 0;
           const siblingSwipeSnapshot = projectGameSnapshotLocation(
             input.regenerateMessageId && messageId && targetSwipeIndex > 0
               ? await gameStateStore.getByMessage(messageId, targetSwipeIndex - 1)
@@ -8127,7 +8298,7 @@ export async function generateRoutes(app: FastifyInstance) {
             const resultMessageId =
               result.agentType === "lorebook-keeper" && lorebookKeeperProcessedMessageId
                 ? lorebookKeeperProcessedMessageId
-                : messageId;
+                : (customLorebookReadBehindTargets.get(result.agentId)?.messageId ?? messageId);
 
             // Validate background agent result — reject hallucinated filenames
             if (
@@ -8435,7 +8606,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   ...(gs.worldCustomFields !== undefined ? { worldCustomFields: newWorldCustomFields } : {}),
                 };
                 logger.debug("[game_state_patch] world-state: %j", worldStatePatch);
-                reply.raw.write(`data: ${JSON.stringify({ type: "game_state_patch", data: worldStatePatch })}\n\n`);
+                sendSseEvent(reply, { type: "game_state_patch", data: worldStatePatch });
 
                 const existingGameMap = (chatMeta.gameMap as GameMap | null) ?? null;
                 const syncedMeta =
@@ -8689,17 +8860,11 @@ export async function generateRoutes(app: FastifyInstance) {
                           undefined,
                           { baseSnapshot: trackerBaseGameStateSnapshot },
                         );
-                        try {
-                          logger.debug(
-                            "[game_state_patch] character-tracker (avatar update): %d chars",
-                            presentCharacters.length,
-                          );
-                          reply.raw.write(
-                            `data: ${JSON.stringify({ type: "game_state_patch", data: { presentCharacters } })}\n\n`,
-                          );
-                        } catch {
-                          /* stream closed */
-                        }
+                        logger.debug(
+                          "[game_state_patch] character-tracker (avatar update): %d chars",
+                          presentCharacters.length,
+                        );
+                        sendSseEvent(reply, { type: "game_state_patch", data: { presentCharacters } });
                       } catch (err) {
                         logger.warn(err, "[character-tracker] Avatar generation error");
                       }
@@ -8721,17 +8886,8 @@ export async function generateRoutes(app: FastifyInstance) {
                   `[generate] character-tracker: updateByMessage returned ${updated ? "ok" : "null (no snapshot)"}`,
                 );
                 // Merge into the game_state SSE event for the HUD
-                try {
-                  logger.debug(
-                    "[game_state_patch] character-tracker: %s",
-                    chars.map((c: any) => c.name ?? c).join(", "),
-                  );
-                  reply.raw.write(
-                    `data: ${JSON.stringify({ type: "game_state_patch", data: { presentCharacters: chars } })}\n\n`,
-                  );
-                } catch {
-                  /* stream closed */
-                }
+                logger.debug("[game_state_patch] character-tracker: %s", chars.map((c: any) => c.name ?? c).join(", "));
+                sendSseEvent(reply, { type: "game_state_patch", data: { presentCharacters: chars } });
 
                 // Auto-populate journal: NPC encounters
                 try {
@@ -8809,9 +8965,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 }
                 if (personaPatch.changed) {
                   logger.debug("[game_state_patch] persona-stats: %j", personaPatch.patch);
-                  reply.raw.write(
-                    `data: ${JSON.stringify({ type: "game_state_patch", data: personaPatch.patch })}\n\n`,
-                  );
+                  sendSseEvent(reply, { type: "game_state_patch", data: personaPatch.patch });
                 }
 
                 // Auto-populate journal: inventory changes
@@ -8868,9 +9022,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 }
                 if (inventoryTrackerPatch.changed) {
                   logger.debug("[game_state_patch] inventory-tracker: %j", inventoryTrackerPatch.values);
-                  reply.raw.write(
-                    `data: ${JSON.stringify({ type: "game_state_patch", data: inventoryTrackerPatch.patch })}\n\n`,
-                  );
+                  sendSseEvent(reply, { type: "game_state_patch", data: inventoryTrackerPatch.patch });
                 }
               } catch (err) {
                 logger.error(err, "[generate] Failed to apply inventory tracker update");
@@ -8916,9 +9068,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   }
                   if (customTrackerPatch.changed) {
                     logger.debug("[game_state_patch] custom-tracker: %j", customTrackerPatch.values);
-                    reply.raw.write(
-                      `data: ${JSON.stringify({ type: "game_state_patch", data: customTrackerPatch.patch })}\n\n`,
-                    );
+                    sendSseEvent(reply, { type: "game_state_patch", data: customTrackerPatch.patch });
                   }
                 }
               } catch (err) {
@@ -8977,9 +9127,7 @@ export async function generateRoutes(app: FastifyInstance) {
                         .where(eq(gameStateSnapshotsTable.id, snap.id));
                     }
                     logger.debug("[game_state_patch] quests: %j", questTrackerPatch.values);
-                    reply.raw.write(
-                      `data: ${JSON.stringify({ type: "game_state_patch", data: questTrackerPatch.patch })}\n\n`,
-                    );
+                    sendSseEvent(reply, { type: "game_state_patch", data: questTrackerPatch.patch });
 
                     // Auto-populate journal: quest updates
                     for (const u of questMerge.updates) {
@@ -9156,9 +9304,10 @@ export async function generateRoutes(app: FastifyInstance) {
                         }
                       }
                       if (executedCommands.length > 0) {
-                        reply.raw.write(
-                          `data: ${JSON.stringify({ type: "haptic_command", data: { commands: executedCommands, reasoning: hData.reasoning } })}\n\n`,
-                        );
+                        sendSseEvent(reply, {
+                          type: "haptic_command",
+                          data: { commands: executedCommands, reasoning: hData.reasoning },
+                        });
                         logger.info(
                           "[haptic] Agent executed %d command(s): %s",
                           executedCommands.length,
@@ -9298,7 +9447,7 @@ export async function generateRoutes(app: FastifyInstance) {
                     }
 
                     await chats.patchMetadata(input.chatId, { background: generated.filename });
-                    trySendSseEvent(reply, {
+                    sendSseEvent(reply, {
                       type: "agent_result",
                       data: {
                         agentType: "illustrator",
@@ -9322,7 +9471,7 @@ export async function generateRoutes(app: FastifyInstance) {
                     );
                   } catch (backgroundError) {
                     logger.error(backgroundError, "[illustrator-background] Automatic scene background failed");
-                    trySendSseEvent(reply, {
+                    sendSseEvent(reply, {
                       type: "agent_error",
                       data: {
                         agentType: "illustrator",
@@ -9370,7 +9519,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 imgConnFull ??= await connections.getDefaultForImageGeneration();
                 if (imgConnFull) {
                   const resolvedImageConnection = imgConnFull;
-                  trySendSseEvent(reply, {
+                  sendSseEvent(reply, {
                     type: "illustration_queued",
                     data: { messageId },
                   });
@@ -9642,18 +9791,16 @@ export async function generateRoutes(app: FastifyInstance) {
                         }
 
                         // Notify client
-                        reply.raw.write(
-                          `data: ${JSON.stringify({
-                            type: "illustration",
-                            data: {
-                              messageId,
-                              imageUrl,
-                              prompt: renderedPrompt,
-                              reason: illData.reason,
-                              galleryId: (galleryEntry as any)?.id,
-                            },
-                          })}\n\n`,
-                        );
+                        sendSseEvent(reply, {
+                          type: "illustration",
+                          data: {
+                            messageId,
+                            imageUrl,
+                            prompt: renderedPrompt,
+                            reason: illData.reason,
+                            galleryId: (galleryEntry as any)?.id,
+                          },
+                        });
                       }
                       logger.info(
                         "[illustrator] Generated %d illustration(s): %s...",
@@ -9662,35 +9809,31 @@ export async function generateRoutes(app: FastifyInstance) {
                       );
                     } catch (illErr) {
                       logger.error(illErr, "[illustrator] Image generation failed");
-                      reply.raw.write(
-                        `data: ${JSON.stringify({
-                          type: "agent_error",
-                          data: {
-                            agentType: result.agentType,
-                            agentName: imagePromptAgent?.name ?? "Illustrator",
-                            retryTarget: "illustration",
-                            error: `Image generation failed: ${illErr instanceof Error ? illErr.message : String(illErr)}`,
-                          },
-                        })}\n\n`,
-                      );
+                      sendSseEvent(reply, {
+                        type: "agent_error",
+                        data: {
+                          agentType: result.agentType,
+                          agentName: imagePromptAgent?.name ?? "Illustrator",
+                          retryTarget: "illustration",
+                          error: `Image generation failed: ${illErr instanceof Error ? illErr.message : String(illErr)}`,
+                        },
+                      });
                     }
                   })();
                 } else {
                   logger.warn("[illustrator] Agent wants to generate but no image generation connection configured");
-                  reply.raw.write(
-                    `data: ${JSON.stringify({
-                      type: "agent_error",
-                      data: {
-                        agentType: result.agentType,
-                        agentName: imagePromptAgent?.name ?? "Illustrator",
-                        retryTarget: "illustration",
-                        error: `No image generation connection is set on ${
-                          imagePromptAgent?.name?.trim() ||
-                          (result.agentType === "illustrator" ? "the Illustrator agent" : "this image agent")
-                        } or under Settings → Connections → Defaults → Images. Choose one there, or assign one directly in Settings → Agents.`,
-                      },
-                    })}\n\n`,
-                  );
+                  sendSseEvent(reply, {
+                    type: "agent_error",
+                    data: {
+                      agentType: result.agentType,
+                      agentName: imagePromptAgent?.name ?? "Illustrator",
+                      retryTarget: "illustration",
+                      error: `No image generation connection is set on ${
+                        imagePromptAgent?.name?.trim() ||
+                        (result.agentType === "illustrator" ? "the Illustrator agent" : "this image agent")
+                      } or under Settings → Connections → Defaults → Images. Choose one there, or assign one directly in Settings → Agents.`,
+                    },
+                  });
                 }
               }
             }
@@ -9826,17 +9969,15 @@ export async function generateRoutes(app: FastifyInstance) {
                       });
                     }
                     textRewriteApplied = true;
-                    reply.raw.write(
-                      `data: ${JSON.stringify({
-                        type: "text_rewrite",
-                        data: {
-                          editedText: sanitizedEditedText,
-                          changes,
-                          rewriteApplied: true,
-                          ...(originalText ? { originalText, agentType: editorResult.agentType } : {}),
-                        },
-                      })}\n\n`,
-                    );
+                    sendSseEvent(reply, {
+                      type: "text_rewrite",
+                      data: {
+                        editedText: sanitizedEditedText,
+                        changes,
+                        rewriteApplied: true,
+                        ...(originalText ? { originalText, agentType: editorResult.agentType } : {}),
+                      },
+                    });
                   }
                 }
               } catch {
@@ -9846,16 +9987,14 @@ export async function generateRoutes(app: FastifyInstance) {
           }
 
           if (holdForTextRewrite && !textRewriteApplied && !abortController.signal.aborted) {
-            reply.raw.write(
-              `data: ${JSON.stringify({
-                type: "text_rewrite",
-                data: {
-                  editedText: originalResponseBeforeRewrite,
-                  changes: [],
-                  rewriteApplied: false,
-                },
-              })}\n\n`,
-            );
+            sendSseEvent(reply, {
+              type: "text_rewrite",
+              data: {
+                editedText: originalResponseBeforeRewrite,
+                changes: [],
+                rewriteApplied: false,
+              },
+            });
           }
         }
 
@@ -9863,6 +10002,7 @@ export async function generateRoutes(app: FastifyInstance) {
         // persisted edit (or no-op result) before releasing TTS.
         if (activatedTextRewriteRunAgents.length > 0) {
           await sendAssistantMessageReady();
+          if (chatMode === "roleplay" && assistantMessageReadySent) releaseActiveGeneration();
         }
 
         if (!recoveredAlreadyAppliedOwnerTurn && !abortController.signal.aborted) {
@@ -9878,7 +10018,7 @@ export async function generateRoutes(app: FastifyInstance) {
         // ────────────────────────────────────────
         if (collectedCommands.length > 0 && !abortController.signal.aborted) {
           const professorMariCommandCount = countProfessorMariCommands(collectedCommands);
-          trySendSseEvent(reply, {
+          sendSseEvent(reply, {
             type: "assistant_commands_start",
             data: { count: collectedCommands.length, professorMariCommandCount },
           });
@@ -9913,12 +10053,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   chatId: input.chatId,
                   chats,
                   sendUpdated: (data) => {
-                    reply.raw.write(
-                      `data: ${JSON.stringify({
-                        type: "schedule_updated",
-                        data,
-                      })}\n\n`,
-                    );
+                    sendSseEvent(reply, { type: "schedule_updated", data });
                   },
                 });
 
@@ -9930,12 +10065,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   fullResponse,
                   chats,
                   sendCrossPost: (data) => {
-                    reply.raw.write(
-                      `data: ${JSON.stringify({
-                        type: "cross_post",
-                        data,
-                      })}\n\n`,
-                    );
+                    sendSseEvent(reply, { type: "cross_post", data });
                   },
                 });
 
@@ -9965,7 +10095,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   chats,
                   connections,
                   sendEvent: (payload) => {
-                    reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+                    sendSseEvent(reply, payload);
                   },
                 });
 
@@ -9978,7 +10108,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   db: app.db,
                   chats,
                   sendRingingEvent: (data) => {
-                    trySendSseEvent(reply, {
+                    sendSseEvent(reply, {
                       type: "conversation_call_ringing",
                       data,
                     });
@@ -10000,7 +10130,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   chatMode,
                   agentsStore,
                   sendEvent: (event) => {
-                    trySendSseEvent(reply, event);
+                    sendSseEvent(reply, event);
                   },
                 });
 
@@ -10027,24 +10157,14 @@ export async function generateRoutes(app: FastifyInstance) {
                   allChatMessages,
                   chats,
                   sendAssistantAction: (data) => {
-                    reply.raw.write(
-                      `data: ${JSON.stringify({
-                        type: "assistant_action",
-                        data,
-                      })}\n\n`,
-                    );
+                    sendSseEvent(reply, { type: "assistant_action", data });
                   },
                 });
 
                 await handleHapticCommand({
                   command,
                   sendEvent: (data) => {
-                    reply.raw.write(
-                      `data: ${JSON.stringify({
-                        type: "haptic_command",
-                        data,
-                      })}\n\n`,
-                    );
+                    sendSseEvent(reply, { type: "haptic_command", data });
                   },
                 });
 
@@ -10054,12 +10174,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   chatId: input.chatId,
                   chars,
                   sendSceneRequested: (data) => {
-                    reply.raw.write(
-                      `data: ${JSON.stringify({
-                        type: "scene_requested",
-                        data,
-                      })}\n\n`,
-                    );
+                    sendSseEvent(reply, { type: "scene_requested", data });
                   },
                 });
 
@@ -10113,12 +10228,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   embeddingSource: memoryRecallEmbeddingSource,
                   vectorizerAvailable: memoryRecallVectorizerAvailable,
                   sendAssistantAction: (data) => {
-                    reply.raw.write(
-                      `data: ${JSON.stringify({
-                        type: "assistant_action",
-                        data,
-                      })}\n\n`,
-                    );
+                    sendSseEvent(reply, { type: "assistant_action", data });
                   },
                 });
                 if (professorMariResult.fetchSucceeded) {
@@ -10129,7 +10239,7 @@ export async function generateRoutes(app: FastifyInstance) {
               }
             }
           } finally {
-            trySendSseEvent(reply, {
+            sendSseEvent(reply, {
               type: "assistant_commands_end",
               data: {},
             });
@@ -10217,6 +10327,8 @@ export async function generateRoutes(app: FastifyInstance) {
         break;
       } // end of Professor Mari follow-up loop
 
+      await persistChatMacroVariables();
+
       // ── Post OOC messages to connected conversation (Roleplay → Conversation) ──
       if (collectedOocMessages.length > 0 && chat.connectedChatId && !abortController.signal.aborted) {
         try {
@@ -10231,7 +10343,7 @@ export async function generateRoutes(app: FastifyInstance) {
           logger.info(
             `[generate] Posted ${collectedOocMessages.length} OOC message(s) to conversation ${chat.connectedChatId}`,
           );
-          trySendSseEvent(reply, {
+          sendSseEvent(reply, {
             type: "ooc_posted",
             data: { chatId: chat.connectedChatId, count: collectedOocMessages.length },
           });
@@ -10290,13 +10402,16 @@ export async function generateRoutes(app: FastifyInstance) {
           : "Generation failed";
       sendSseEvent(reply, { type: "error", data: message });
     } finally {
+      for (const runKey of customLorebookReadBehindRunKeys) {
+        activeCustomLorebookReadBehindRuns.delete(runKey);
+      }
       if (conversationGenerationStartedAt != null && !conversationAssistantSaved) {
         clearGenerationInProgress(input.chatId, conversationGenerationStartedAt);
       }
       stopSseKeepalive();
       reply.raw.off("close", onClose);
       releaseActiveGeneration();
-      if (canWriteSse()) {
+      if (!clientDisconnected && isSseReplyWritable(reply)) {
         reply.raw.end();
       }
     }
@@ -10351,5 +10466,5 @@ export async function generateRoutes(app: FastifyInstance) {
 
   await registerDryRunRoute(app);
   await registerRawRoute(app);
-  await registerRetryAgentsRoute(app);
+  await registerRetryAgentsRoute(app, activeCustomLorebookReadBehindRuns);
 }

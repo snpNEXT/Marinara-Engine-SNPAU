@@ -19,6 +19,7 @@ export type ExtractRoleplayTTSSpeakersInput = {
   group: string;
   user: string;
   characters: string[];
+  messageAuthor?: string;
   debugMode: boolean;
 };
 
@@ -63,11 +64,10 @@ export function buildExtractedRoleplayTTSVoiceRequests(
     const voice = resolveTTSVoiceForSpeaker(config, speaker, characterId, npcFallbackHint);
     if (config.source === "elevenlabs" && !voice) return [];
 
-    const chunks = splitTTSChunks(segment.text);
+    const chunks = splitTTSChunks(segment.text, { preserveEmotionIndicators: true });
     return chunks.map((text, chunkIndex) => ({
       text,
       speaker,
-      tone: segment.tone,
       voice,
       ...(config.dialogueOnly &&
       segmentIndex < spokenSegments.length - 1 &&

@@ -154,6 +154,7 @@ import {
   sceneAnalysisRequestSchema,
   resolveProviderReasoningEffort,
   scoreMusic,
+  musicAreaSlug,
   scoreAmbient,
   serializeResolvedSkillCheckTag,
   applyTrackerFieldLocksToGameStatePatch,
@@ -1752,11 +1753,7 @@ const gameSetupConfigSchema = z.object({
   personaId: z.string().nullable().optional(),
   /** Installed package that provides this game's experience. Same shape the manifest allows for an id,
    *  since this is matched against one to mount the surface. */
-  gameExperienceId: z
-    .string()
-    .regex(GAME_EXPERIENCE_ID_PATTERN)
-    .max(GAME_EXPERIENCE_ID_MAX_CHARS)
-    .optional(),
+  gameExperienceId: z.string().regex(GAME_EXPERIENCE_ID_PATTERN).max(GAME_EXPERIENCE_ID_MAX_CHARS).optional(),
   /** Opaque config owned by that experience — persisted verbatim, never read by the host. */
   experienceConfig: z
     .record(z.string().max(120), z.unknown())
@@ -1770,6 +1767,9 @@ const gameSetupConfigSchema = z.object({
   gameImageDynamicPromptEnabled: z.boolean().optional(),
   imageConnectionId: z.string().optional(),
   videoConnectionId: z.string().optional(),
+  audioConnectionId: z.string().optional(),
+  enableGameSoundEffects: z.boolean().optional(),
+  enableGameMusic: z.boolean().optional(),
   gameStoryboardAutoIllustrationsEnabled: z.boolean().optional(),
   gameStoryboardAutoGenerationEnabled: z.boolean().optional(),
   gameStoryboardsEnabled: z.boolean().optional(),
@@ -2987,6 +2987,7 @@ type InitialSetupConnectionRow = {
   imageService?: unknown;
   videoGenerationSource?: unknown;
   videoService?: unknown;
+  audioSource?: unknown;
 };
 
 function snapshotInitialSetupConnection(
@@ -3002,6 +3003,7 @@ function snapshotInitialSetupConnection(
     service: firstString(
       connection.imageService,
       connection.videoService,
+      connection.audioSource,
       connection.imageGenerationSource,
       connection.videoGenerationSource,
     ),
@@ -6410,11 +6412,12 @@ export async function gameRoutes(app: FastifyInstance) {
       if (id === "local") return { name: "Local scene helper", provider: "local" };
       return snapshotInitialSetupConnection(await connectionStorage.getById(id));
     };
-    const [gmConnection, sceneConnection, imageConnection, videoConnection] = await Promise.all([
+    const [gmConnection, sceneConnection, imageConnection, videoConnection, audioConnection] = await Promise.all([
       snapshotConnection(resolvedGmConnectionId),
       snapshotConnection(setupConfig.sceneConnectionId),
       snapshotConnection(setupConfig.imageConnectionId),
       snapshotConnection(setupConfig.videoConnectionId),
+      snapshotConnection(setupConfig.audioConnectionId),
     ]);
     await chats.updateMetadata(sessionChat.id, {
       ...sessionMeta,
@@ -6451,6 +6454,7 @@ export async function gameRoutes(app: FastifyInstance) {
           scene: sceneConnection,
           image: imageConnection,
           video: videoConnection,
+          audio: audioConnection,
         },
         labels: shareLabels,
         createdAt: new Date().toISOString(),
@@ -6467,6 +6471,9 @@ export async function gameRoutes(app: FastifyInstance) {
       gameImageDynamicPromptEnabled: resolveGameImageDynamicPromptEnabled(setupConfig),
       gameImageConnectionId: setupConfig.imageConnectionId || null,
       gameVideoConnectionId: setupConfig.videoConnectionId || null,
+      gameAudioConnectionId: setupConfig.audioConnectionId || null,
+      gameAudioSoundEffectsEnabled: setupConfig.enableGameSoundEffects !== false,
+      gameAudioMusicEnabled: setupConfig.enableGameMusic !== false,
       gameSceneVideosEnabled: false,
       gameStoryboardAutoIllustrationsEnabled: setupConfig.gameStoryboardAutoIllustrationsEnabled !== false,
       gameStoryboardAutoGenerationEnabled: setupConfig.gameStoryboardAutoGenerationEnabled === true,
@@ -10057,7 +10064,8 @@ export async function gameRoutes(app: FastifyInstance) {
     // resolution. A brand-new swipe/anchor with no row of its own falls back to
     // the latest committed save — the world continues rather than resetting.
     const row = await storage.getForGeneration(req.params.chatId, { visibleAnchor: anchor, gameType });
-    if (!row) return { exists: false, state: null, schemaVersion: null, anchor: null, committed: false, createdAt: null };
+    if (!row)
+      return { exists: false, state: null, schemaVersion: null, anchor: null, committed: false, createdAt: null };
 
     let state: unknown = null;
     try {
@@ -10090,62 +10098,63 @@ export async function gameRoutes(app: FastifyInstance) {
     "/:chatId/experience-state",
     { bodyLimit: MAX_EXPERIENCE_STATE_CHARS * 6 + 16_384 },
     async (req, reply) => {
-    const body = z
-      .object({
-        state: z.unknown(),
-        schemaVersion: z.number().int().min(1).max(1_000_000).default(1),
-        // Experience saves are player-confirmed world state, not mid-turn
-        // provisional snapshots, so they default to committed (regen fallback
-        // eligible) unlike turn-game rows.
-        committed: z.boolean().default(true),
-      })
-      .parse(req.body ?? {});
-    const serialized = JSON.stringify(body.state);
-    if (serialized === undefined) {
-      return reply.code(422).send({ error: "state must be a JSON-serializable value" });
-    }
-    if (serialized.length > MAX_EXPERIENCE_STATE_CHARS) {
-      return reply.code(422).send({
-        error: `state must serialize to at most ${MAX_EXPERIENCE_STATE_CHARS} characters`,
-      });
-    }
+      const body = z
+        .object({
+          state: z.unknown(),
+          schemaVersion: z.number().int().min(1).max(1_000_000).default(1),
+          // Experience saves are player-confirmed world state, not mid-turn
+          // provisional snapshots, so they default to committed (regen fallback
+          // eligible) unlike turn-game rows.
+          committed: z.boolean().default(true),
+        })
+        .parse(req.body ?? {});
+      const serialized = JSON.stringify(body.state);
+      if (serialized === undefined) {
+        return reply.code(422).send({ error: "state must be a JSON-serializable value" });
+      }
+      if (serialized.length > MAX_EXPERIENCE_STATE_CHARS) {
+        return reply.code(422).send({
+          error: `state must serialize to at most ${MAX_EXPERIENCE_STATE_CHARS} characters`,
+        });
+      }
 
-    const chats = createChatsStorage(app.db);
-    const chat = await chats.getById(req.params.chatId);
-    if (!chat) return reply.code(404).send({ error: "Chat not found" });
-    const gameType = resolveExperienceStateGameType(chat);
-    if (!gameType) {
-      return reply.code(409).send({
-        error: "This chat has no game-surface Experience, so it cannot store experience state",
-      });
-    }
+      const chats = createChatsStorage(app.db);
+      const chat = await chats.getById(req.params.chatId);
+      if (!chat) return reply.code(404).send({ error: "Chat not found" });
+      const gameType = resolveExperienceStateGameType(chat);
+      if (!gameType) {
+        return reply.code(409).send({
+          error: "This chat has no game-surface Experience, so it cannot store experience state",
+        });
+      }
 
-    // Anchor to the currently-visible message ("" live anchor before the first
-    // one exists, like a turn-game's opening deal). storage.create replaces any
-    // prior row of this gameType for the SAME anchor and inserts a fresh row
-    // otherwise, so each narration turn keeps its own snapshot — the history
-    // swipe-back rewind recovers. Checkpoint restore does NOT depend on these
-    // rows: checkpoints capture the state blob by value at create time. Older
-    // anchors beyond the newest EXPERIENCE_STATE_KEEP_ANCHORS are pruned so a
-    // long campaign cannot balloon the chat's sharded table (every save
-    // re-serializes the chat's whole game_engine_state shard).
-    return withExperienceStateWriteLock(req.params.chatId, async () => {
-      const messages = await chats.listMessages(req.params.chatId);
-      const anchor = resolveVisibleGameStateAnchor(messages) ?? { messageId: "", swipeIndex: 0 };
-      const storage = createGameEngineStateStorage(app.db);
-      const id = await storage.create({
-        chatId: req.params.chatId,
-        messageId: anchor.messageId,
-        swipeIndex: anchor.swipeIndex,
-        gameType,
-        schemaVersion: body.schemaVersion,
-        state: serialized,
-        committed: body.committed,
+      // Anchor to the currently-visible message ("" live anchor before the first
+      // one exists, like a turn-game's opening deal). storage.create replaces any
+      // prior row of this gameType for the SAME anchor and inserts a fresh row
+      // otherwise, so each narration turn keeps its own snapshot — the history
+      // swipe-back rewind recovers. Checkpoint restore does NOT depend on these
+      // rows: checkpoints capture the state blob by value at create time. Older
+      // anchors beyond the newest EXPERIENCE_STATE_KEEP_ANCHORS are pruned so a
+      // long campaign cannot balloon the chat's sharded table (every save
+      // re-serializes the chat's whole game_engine_state shard).
+      return withExperienceStateWriteLock(req.params.chatId, async () => {
+        const messages = await chats.listMessages(req.params.chatId);
+        const anchor = resolveVisibleGameStateAnchor(messages) ?? { messageId: "", swipeIndex: 0 };
+        const storage = createGameEngineStateStorage(app.db);
+        const id = await storage.create({
+          chatId: req.params.chatId,
+          messageId: anchor.messageId,
+          swipeIndex: anchor.swipeIndex,
+          gameType,
+          schemaVersion: body.schemaVersion,
+          state: serialized,
+          committed: body.committed,
+        });
+        await storage.pruneToNewestAnchors(req.params.chatId, gameType, EXPERIENCE_STATE_KEEP_ANCHORS);
+        return { ok: true, id, anchor };
       });
-      await storage.pruneToNewestAnchors(req.params.chatId, gameType, EXPERIENCE_STATE_KEEP_ANCHORS);
-      return { ok: true, id, anchor };
-    });
-  });
+    },
+  );
 
   // ── POST /game/:chatId/experience-generation (#5135) ──
   // One host-run, bounded, non-streaming structured-output call for the chat's
@@ -10996,13 +11005,18 @@ export async function gameRoutes(app: FastifyInstance) {
 
       if (input.context.useSpotifyMusic) {
         parsed.music = null;
-      } else if (!input.context.generateMusic) {
+      } else {
+        // Scoring runs even with music generation enabled (#5161): generated
+        // context tracks are ordinary scoreable library entries now, and the
+        // analyzer no longer writes free-text music prompts.
         const scoredMusic = scoreMusic({
           state: (input.context.currentState as GameActiveState) ?? "exploration",
           weather: parsed.weather ?? input.context.currentWeather,
           timeOfDay: parsed.timeOfDay ?? input.context.currentTimeOfDay,
           musicGenre: parsed.musicGenre,
           musicIntensity: parsed.musicIntensity,
+          locationSlug: musicAreaSlug(input.context.currentLocation),
+          enemyTier: input.context.enemyTier,
           currentMusic: input.context.currentMusic,
           recentMusic: input.context.recentMusic,
           availableMusic: serverMusicTags,
@@ -13737,7 +13751,11 @@ export async function gameRoutes(app: FastifyInstance) {
       } catch (err) {
         // Corrupt capture: fall through to the legacy re-lookup below rather than
         // silently leaving the game on its post-checkpoint state.
-        logger.error(err, "Unparseable checkpoint engineStateData for chat %s; using the legacy restore lookup", input.chatId);
+        logger.error(
+          err,
+          "Unparseable checkpoint engineStateData for chat %s; using the legacy restore lookup",
+          input.chatId,
+        );
         return [];
       }
     })();

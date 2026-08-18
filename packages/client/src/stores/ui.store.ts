@@ -392,7 +392,7 @@ export function normalizeTrackerPanelSizeProfile(value: unknown, legacyWidth?: u
   return "standard";
 }
 
-function normalizeTrackerPanelCollapsedSections(value: unknown): TrackerPanelCollapsedSections {
+export function normalizeTrackerPanelCollapsedSections(value: unknown): TrackerPanelCollapsedSections {
   const raw = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
   const collapsed: TrackerPanelCollapsedSections = {};
   for (const section of TRACKER_DATA_PANEL_SECTIONS) {
@@ -401,7 +401,7 @@ function normalizeTrackerPanelCollapsedSections(value: unknown): TrackerPanelCol
   return collapsed;
 }
 
-function normalizeTrackerPanelSectionOrder(value: unknown): TrackerPanelSectionOrder {
+export function normalizeTrackerPanelSectionOrder(value: unknown): TrackerPanelSectionOrder {
   const order: TrackerPanelSectionOrder = [];
   const seen = new Set<TrackerDataPanelSection>();
   const raw = Array.isArray(value) ? value : [];
@@ -691,6 +691,12 @@ interface UIState {
   gameMiddleMouseNav: boolean;
   /** Game mode dialogue layout: classic VN box or a VN box with a scrollable segment history above it. */
   gameDialogueDisplayMode: GameDialogueDisplayMode;
+  /**
+   * Game mode narration box collapsed to its handle, so the scene, map or Experience behind it
+   * is visible. The player's standing preference — the box still opens itself whenever it holds
+   * something they must act on (a turn to type, a segment to advance).
+   */
+  gameNarrationCollapsed: boolean;
   /**
    * Chat-list row banners. "hover" (default) paints the active and hovered rows; touch
    * devices have no hover, so there it means the active row only. "always" paints every
@@ -1030,6 +1036,7 @@ interface UIState {
   setGameInstantTextReveal: (v: boolean) => void;
   setGameMiddleMouseNav: (v: boolean) => void;
   setGameDialogueDisplayMode: (v: GameDialogueDisplayMode) => void;
+  setGameNarrationCollapsed: (v: boolean) => void;
   setChatListBackgrounds: (v: ChatListBackgroundMode) => void;
   setGameTextSpeed: (v: number) => void;
   setGameAutoPlayDelay: (v: number) => void;
@@ -1238,6 +1245,7 @@ export function pickSyncedSettings(state: UIState) {
     gameInstantTextReveal: state.gameInstantTextReveal,
     gameMiddleMouseNav: state.gameMiddleMouseNav,
     gameDialogueDisplayMode: state.gameDialogueDisplayMode,
+    gameNarrationCollapsed: state.gameNarrationCollapsed,
     chatListBackgrounds: state.chatListBackgrounds,
     gameTextSpeed: state.gameTextSpeed,
     gameAutoPlayDelay: state.gameAutoPlayDelay,
@@ -1443,6 +1451,7 @@ export const useUIStore = create<UIState>()(
       gameInstantTextReveal: false,
       gameMiddleMouseNav: false,
       gameDialogueDisplayMode: "classic" as GameDialogueDisplayMode,
+      gameNarrationCollapsed: false,
       chatListBackgrounds: "hover" as ChatListBackgroundMode,
       gameTextSpeed: 50,
       gameAutoPlayDelay: 3000,
@@ -2187,6 +2196,7 @@ export const useUIStore = create<UIState>()(
       setGameInstantTextReveal: (v) => set({ gameInstantTextReveal: v }),
       setGameMiddleMouseNav: (v) => set({ gameMiddleMouseNav: v }),
       setGameDialogueDisplayMode: (v) => set({ gameDialogueDisplayMode: v }),
+      setGameNarrationCollapsed: (v) => set({ gameNarrationCollapsed: v }),
       setChatListBackgrounds: (v) => set({ chatListBackgrounds: v }),
       setGameTextSpeed: (v) => set({ gameTextSpeed: Math.max(1, Math.min(100, v)) }),
       setGameAutoPlayDelay: (v) => set({ gameAutoPlayDelay: Math.max(200, Math.min(10000, Math.round(v))) }),
@@ -2381,6 +2391,7 @@ export const useUIStore = create<UIState>()(
           roleplayNarratorAvatarCycling: true,
           roleplaySpriteScale: 1,
           gameDialogueDisplayMode: "classic" as GameDialogueDisplayMode,
+          gameNarrationCollapsed: false,
           chatListBackgrounds: "hover" as ChatListBackgroundMode,
           gameAvatarScale: 1,
           gameFullBodySpriteScale: 1.35,
@@ -3168,6 +3179,7 @@ export const useUIStore = create<UIState>()(
         gameInstantTextReveal: state.gameInstantTextReveal,
         gameMiddleMouseNav: state.gameMiddleMouseNav,
         gameDialogueDisplayMode: state.gameDialogueDisplayMode,
+        gameNarrationCollapsed: state.gameNarrationCollapsed,
         chatListBackgrounds: state.chatListBackgrounds,
         gameTextSpeed: state.gameTextSpeed,
         gameAutoPlayDelay: state.gameAutoPlayDelay,

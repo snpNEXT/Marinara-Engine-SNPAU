@@ -82,7 +82,11 @@ import { useEncounterStore } from "../../stores/encounter.store";
 import { useTranslationStore } from "../../stores/translation.store";
 import { ttsService } from "../../lib/tts-service";
 import { useTTSConfig } from "../../hooks/use-tts";
-import { buildTTSVoiceRequests, normalizeTTSCharacterName, withTTSVoiceRequestCacheKeys } from "../../lib/tts-dialogue";
+import {
+  buildTTSVoiceRequests,
+  findTTSCharacterIdBySpeakerName,
+  withTTSVoiceRequestCacheKeys,
+} from "../../lib/tts-dialogue";
 import {
   buildExtractedRoleplayTTSVoiceRequests,
   extractRoleplayTTSSpeakers,
@@ -2167,7 +2171,7 @@ export const ChatArea = memo(function ChatArea() {
     (direction: -1 | 1) => {
       const supportsMode = chatMode === "conversation" || isRoleplay;
       if (!supportsMode || !intuitiveSwipeNavigation || intuitiveSwipeBlocked) return false;
-      if (!activeChatId || isStreaming || agentProcessing || !latestAssistantMessageForSwipes) return false;
+      if (!activeChatId || isStreaming || !latestAssistantMessageForSwipes) return false;
 
       const swipeCount = latestAssistantMessageForSwipes.swipeCount ?? 1;
       const activeIndex = latestAssistantMessageForSwipes.activeSwipeIndex ?? 0;
@@ -2189,7 +2193,6 @@ export const ChatArea = memo(function ChatArea() {
     },
     [
       activeChatId,
-      agentProcessing,
       chatMode,
       handleRegenerate,
       handleSetActiveSwipe,
@@ -2500,22 +2503,11 @@ export const ChatArea = memo(function ChatArea() {
     return () => window.removeEventListener("marinara:generation-error", handleGenerationError);
   }, []);
   const resolveTTSCharacterId = useCallback(
-    (speaker?: string | null) => {
-      const normalizedSpeaker = normalizeTTSCharacterName(speaker);
-      if (!normalizedSpeaker) return null;
-      for (const [characterId, character] of characterMap) {
-        if (normalizeTTSCharacterName(character.name) === normalizedSpeaker) return characterId;
-      }
-      return null;
-    },
+    (speaker?: string | null) => findTTSCharacterIdBySpeakerName(speaker, characterMap),
     [characterMap],
   );
   const speakTTSAutoplayMessage = useCallback(
-    async (
-      lastMsg: TTSAutoplayMessage,
-      targetChatId: string,
-      generationAtStart: TTSGenerationSnapshot | null,
-    ) => {
+    async (lastMsg: TTSAutoplayMessage, targetChatId: string, generationAtStart: TTSGenerationSnapshot | null) => {
       if (useChatStore.getState().activeChatId !== targetChatId) return;
 
       const cfg = ttsConfigRef.current;
@@ -2550,6 +2542,7 @@ export const ChatArea = memo(function ChatArea() {
             group: getChatDisplayName(chat) || characterNames.join(", "),
             user: personaInfo?.name || "User",
             characters: characterNames,
+            messageAuthor: lastMsg.characterId ? characterMap.get(lastMsg.characterId)?.name : undefined,
             debugMode: useUIStore.getState().debugMode,
           });
           ttsRequests = buildExtractedRoleplayTTSVoiceRequests(

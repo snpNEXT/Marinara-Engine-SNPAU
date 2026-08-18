@@ -347,6 +347,8 @@ export interface ChatMetadata {
   presetChoices: Record<string, string | string[]>;
   /** Chat-wide string variables persisted by agent tool calls (key → value). */
   agentVariables?: Record<string, string>;
+  /** SillyTavern-compatible local macro variables persisted in this chat. */
+  macroVariables?: Record<string, string>;
   /** Group chat mode: "merged" (narrator) or "individual" (separate characters) */
   groupChatMode?: GroupChatMode;
   /** Group individual mode: color dialogues with speaker tags */
@@ -412,6 +414,8 @@ export interface ChatMetadata {
   proseGuardianHoldForRewrite?: boolean;
   /** When true, tracker agents only run when the user manually triggers them (not after every generation) */
   manualTrackers?: boolean;
+  /** When true, Roleplay tracker agents receive lorebook entries activated for the main generation. */
+  attachLorebooksToTrackers?: boolean;
   /** Per-agent manual tracker mode overrides (agent type → manual). */
   manualTrackerAgentTypes?: Record<string, boolean>;
   /** Whether to recall memories from this chat during generation. Default: true for conversation/scenes, false for roleplay. */

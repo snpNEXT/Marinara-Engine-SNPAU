@@ -240,11 +240,7 @@ export function resolveComfyUiImageGenerationTimeoutMs(
  * URL already is the physical target, and a stale `imageEndpointId` left on an imported or
  * copied connection must not split one ComfyUI/A1111 endpoint into separate slots.
  */
-export function imageAdmissionKey(
-  normalizedBaseUrl: string,
-  resolvedSource: string,
-  imageEndpointId?: string,
-): string {
+export function imageAdmissionKey(normalizedBaseUrl: string, resolvedSource: string, imageEndpointId?: string): string {
   if (resolvedSource === "runpod_comfyui") {
     const endpointId = imageEndpointId?.trim();
     return endpointId ? `${normalizedBaseUrl}#${endpointId}` : normalizedBaseUrl;
@@ -309,66 +305,67 @@ async function generateImageUncapped(
   let outcome: ConnectionAttemptOutcome = "failed";
 
   try {
-    const physicalRequest = () => withImageGenerationDeadline(request, generationTimeoutMs, async (signal) => {
-      const allowLocalUrls =
-        request.allowLocalUrls ?? (await shouldAllowLocalUrlsForImageConnection(normalizedBaseUrl, resolvedSource));
-      const scopedRequest = {
-        ...request,
-        fallback: undefined,
-        signal,
-        allowLocalUrls,
-        privateImageResultOrigin: allowLocalUrls ? imageProviderOrigin(normalizedBaseUrl) : undefined,
-      };
+    const physicalRequest = () =>
+      withImageGenerationDeadline(request, generationTimeoutMs, async (signal) => {
+        const allowLocalUrls =
+          request.allowLocalUrls ?? (await shouldAllowLocalUrlsForImageConnection(normalizedBaseUrl, resolvedSource));
+        const scopedRequest = {
+          ...request,
+          fallback: undefined,
+          signal,
+          allowLocalUrls,
+          privateImageResultOrigin: allowLocalUrls ? imageProviderOrigin(normalizedBaseUrl) : undefined,
+        };
 
-      switch (resolvedSource) {
-        case "openai":
-          return generateOpenAI(normalizedBaseUrl, apiKey, scopedRequest);
-        case "arli":
-          return generateArli(normalizedBaseUrl, apiKey, scopedRequest);
-        case "nanogpt":
-          return generateNanoGPT(normalizedBaseUrl, apiKey, scopedRequest);
-        case "openrouter":
-          return generateOpenRouter(normalizedBaseUrl, apiKey, scopedRequest);
-        case "pollinations":
-          return generatePollinations(scopedRequest);
-        case "stability":
-          return generateStability(normalizedBaseUrl, apiKey, scopedRequest);
-        case "togetherai":
-          return generateTogetherAI(normalizedBaseUrl, apiKey, scopedRequest);
-        case "novelai":
-          return generateNovelAI(normalizedBaseUrl, apiKey, scopedRequest);
-        case "horde":
-          return generateHorde(normalizedBaseUrl, apiKey, scopedRequest);
-        case "xai":
-          return generateXAI(normalizedBaseUrl, apiKey, scopedRequest);
-        case "venice":
-          return generateVenice(normalizedBaseUrl, apiKey, scopedRequest);
-        case "zai":
-          return generateZai(normalizedBaseUrl, apiKey, scopedRequest);
-        case "atlas":
-          return generateAtlasCloudImage(normalizedBaseUrl, apiKey, scopedRequest);
-        case "comfyui":
-          return generateComfyUI(normalizedBaseUrl, scopedRequest);
-        case "swarmui":
-          return generateSwarmUI(normalizedBaseUrl, apiKey, scopedRequest);
-        case "runpod_comfyui": {
-          const endpointId = scopedRequest.imageEndpointId || "";
-          if (!endpointId) {
-            throw new Error(
-              "RunPod ComfyUI requires an endpoint ID. " +
-                "Enter your RunPod endpoint ID in the Endpoint ID field (e.g. 'abc123def456').",
-            );
+        switch (resolvedSource) {
+          case "openai":
+            return generateOpenAI(normalizedBaseUrl, apiKey, scopedRequest);
+          case "arli":
+            return generateArli(normalizedBaseUrl, apiKey, scopedRequest);
+          case "nanogpt":
+            return generateNanoGPT(normalizedBaseUrl, apiKey, scopedRequest);
+          case "openrouter":
+            return generateOpenRouter(normalizedBaseUrl, apiKey, scopedRequest);
+          case "pollinations":
+            return generatePollinations(scopedRequest);
+          case "stability":
+            return generateStability(normalizedBaseUrl, apiKey, scopedRequest);
+          case "togetherai":
+            return generateTogetherAI(normalizedBaseUrl, apiKey, scopedRequest);
+          case "novelai":
+            return generateNovelAI(normalizedBaseUrl, apiKey, scopedRequest);
+          case "horde":
+            return generateHorde(normalizedBaseUrl, apiKey, scopedRequest);
+          case "xai":
+            return generateXAI(normalizedBaseUrl, apiKey, scopedRequest);
+          case "venice":
+            return generateVenice(normalizedBaseUrl, apiKey, scopedRequest);
+          case "zai":
+            return generateZai(normalizedBaseUrl, apiKey, scopedRequest);
+          case "atlas":
+            return generateAtlasCloudImage(normalizedBaseUrl, apiKey, scopedRequest);
+          case "comfyui":
+            return generateComfyUI(normalizedBaseUrl, scopedRequest);
+          case "swarmui":
+            return generateSwarmUI(normalizedBaseUrl, apiKey, scopedRequest);
+          case "runpod_comfyui": {
+            const endpointId = scopedRequest.imageEndpointId || "";
+            if (!endpointId) {
+              throw new Error(
+                "RunPod ComfyUI requires an endpoint ID. " +
+                  "Enter your RunPod endpoint ID in the Endpoint ID field (e.g. 'abc123def456').",
+              );
+            }
+            return generateRunPodComfyUI(normalizedBaseUrl, endpointId, apiKey, scopedRequest);
           }
-          return generateRunPodComfyUI(normalizedBaseUrl, endpointId, apiKey, scopedRequest);
+          case "automatic1111":
+            return generateAutomatic1111(normalizedBaseUrl, scopedRequest, serviceHint);
+          case "gemini_image":
+            return generateViaChatCompletions(normalizedBaseUrl, apiKey, scopedRequest);
+          default:
+            return generateOpenAI(normalizedBaseUrl, apiKey, scopedRequest);
         }
-        case "automatic1111":
-          return generateAutomatic1111(normalizedBaseUrl, scopedRequest, serviceHint);
-        case "gemini_image":
-          return generateViaChatCompletions(normalizedBaseUrl, apiKey, scopedRequest);
-        default:
-          return generateOpenAI(normalizedBaseUrl, apiKey, scopedRequest);
-      }
-    });
+      });
     // Admit on the resolved endpoint rather than a connection id: every caller reaches this
     // function, but only some have a connection row in scope, and foreground work that
     // registers nothing would let background preparation start on top of it.
@@ -455,7 +452,9 @@ export function saveImageToDisk(
   const ownerDir = options.shared ? "shared" : chatId;
   const dir = assertInsideDir(GALLERY_DIR, join(GALLERY_DIR, ownerDir));
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const filename = `${newId()}.${ext}`;
+  const detectedMime = detectImageMimeType(base64);
+  const effectiveExt = (detectedMime ? imageExtensionFromMimeType(detectedMime) : null) ?? ext;
+  const filename = `${newId()}.${effectiveExt}`;
   const filePath = assertInsideDir(GALLERY_DIR, join(dir, filename));
   const tempPath = assertInsideDir(GALLERY_DIR, `${filePath}.${process.pid}.${Date.now()}.tmp`);
   try {
@@ -513,7 +512,9 @@ export function sweepStagedImages(): number {
 
 /** Stage provider output without making it visible in the gallery. */
 export function stageImageToDisk(chatId: string, base64: string, ext: string): StagedGalleryImage {
-  const filename = `${newId()}.${ext}`;
+  const detectedMime = detectImageMimeType(base64);
+  const effectiveExt = (detectedMime ? imageExtensionFromMimeType(detectedMime) : null) ?? ext;
+  const filename = `${newId()}.${effectiveExt}`;
   const relativePath = `${chatId}/${filename}`;
   const finalPath = assertInsideDir(GALLERY_DIR, join(GALLERY_DIR, relativePath));
   const stagingDir = assertInsideDir(GALLERY_DIR, join(GALLERY_DIR, ".staging", "noodle"));
@@ -692,9 +693,7 @@ function localImageBackendFetch(
 ) {
   return imageFetch(url, init, {
     allowLocal: true,
-    agentOptions: options.timeoutMs
-      ? { bodyTimeout: options.timeoutMs, headersTimeout: options.timeoutMs }
-      : undefined,
+    agentOptions: options.timeoutMs ? { bodyTimeout: options.timeoutMs, headersTimeout: options.timeoutMs } : undefined,
     keepAliveInitialDelayMs: options.keepAliveInitialDelayMs,
   });
 }
@@ -2304,9 +2303,7 @@ async function generateNovelAI(baseUrl: string, apiKey: string, request: ImageGe
       index < styleReferenceOffset ? defaults.styleReferenceStrength : 1,
     );
     parameters.director_reference_secondary_strength_values = directorReferenceImages.map((_, index) =>
-      index < styleReferenceOffset
-        ? resolveNovelAiStyleReferenceSecondaryStrength(defaults.styleReferenceFidelity)
-        : 0,
+      index < styleReferenceOffset ? resolveNovelAiStyleReferenceSecondaryStrength(defaults.styleReferenceFidelity) : 0,
     );
   }
 
@@ -3358,7 +3355,8 @@ function redactSwarmUiWorkflowImages(workflowText: string, request: ImageGenRequ
     ),
   ];
   return [...new Set(imageValues)].reduce(
-    (redacted, image) => redacted.replaceAll(image, `[redacted image: ${Buffer.from(image, "base64").byteLength} bytes]`),
+    (redacted, image) =>
+      redacted.replaceAll(image, `[redacted image: ${Buffer.from(image, "base64").byteLength} bytes]`),
     workflowText,
   );
 }

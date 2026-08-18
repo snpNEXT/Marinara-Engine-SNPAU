@@ -135,6 +135,53 @@ mirror the generation's progress and failure so a package is never left waiting 
 regardless of the `capabilityApi` it declares — the 1.11 label marks when they appeared, so a
 package that *requires* them declares 1.11 and older Engines refuse it cleanly.
 
+### Capability API 1.12: spatial events for the owning Experience
+
+Capability API 1.12 addresses the spatial capability events to the game-owning Experience
+package as well. `spatial_transition_committed`, `spatial_transition_rejected`, and the
+untyped `spatial_context_refresh` nudge — previously addressed only to `hierarchical-maps` on
+the `marinara-capability-server-event` window event — are now dual-dispatched with
+`packageId` set to the chat's `gameExperienceId`. Payloads differ per event: a committed
+event carries `{ chatId, commandId, currentLocationId, definitionRevision, travel? }`; a
+rejected event carries `{ chatId, commandId, code?, message? }` (no location fields — the
+move did not happen); the refresh nudge carries `data: null`. An Experience that sent a
+travel command via `sendMessage`'s `pendingSpatialTransition` argument can therefore confirm
+or clear its journey the moment the host knows, instead of inferring the outcome from later
+state reads. 1.12 also closes a gap that affected World Maps itself: transitions rejected on
+either silent HTTP path — the pre-stream owner-turn commit inside a generation, or the
+standalone REST commit — previously produced no event at all; both now synthesize
+`spatial_transition_rejected`, and only on definitive evidence (a `spatial_*` error code
+other than `already_applied`). Inconclusive failures — a network error that may have lost a
+successful commit — deliver the untyped `spatial_context_refresh` nudge instead, so listeners
+reconcile from server state rather than a fabricated verdict. Note that a committed event
+whose `travel.mode` is `"step_by_step"` with `complete: false` means the journey continues —
+keep your pending state until the completing event. This is a soft seam like 1.11: events are
+delivered regardless of the declared `capabilityApi`; declare 1.12 only if your package
+requires them.
+
+### Capability API 1.13: transient narration collapse
+
+Capability API 1.13 adds `requestsCollapsedNarration` to the chrome declaration a
+`game-surface` package passes to `setExperienceChrome`. While the flag is true the Game Mode
+narration box folds down to its slim handle, so an Experience can clear the screen for a
+cutscene or a full-screen beat.
+
+It is a REQUEST, not a preference. The player's own collapse setting is never written, and
+the flag is honored only while your Experience is the live surface — drop the flag, or stop
+being the active surface, and the box returns to whatever the player chose. That is the
+"always reopens afterwards" guarantee; there is deliberately no way to persist a collapse
+from a package.
+
+The Engine's safety rules outrank the request. The box force-expands whenever the player's
+text input is on screen (including at the very start of a scene, before any segment exists)
+and whenever the segment-advance controls are live, because those controls are the only way
+to finish a turn — a package that could hide them could strand the player permanently. The
+handle also keeps raising its attention indicator for a pending scene-analysis, generation,
+or combat-generation retry. A player who expands the box by hand during a request keeps it
+open until the request drops. Like the 1.11/1.12 seams, this is a soft seam: the field is
+honored regardless of the declared `capabilityApi`, and the 1.13 label marks when it
+appeared, so a package that *requires* it declares 1.13.
+
 ## Initial packages
 
 - all currently built-in agents;

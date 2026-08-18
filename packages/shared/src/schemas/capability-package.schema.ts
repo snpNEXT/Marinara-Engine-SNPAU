@@ -176,7 +176,14 @@ const capabilityPackageManifestBaseSchema = z
 // 1.10: contributions.assets — general package-owned static asset delivery.
 // 1.11: Experience combat seam — combatActive/combatStyle/requestCombat on the
 //        game-surface capabilityProps.
-export const supportedCapabilityApi = Object.freeze({ major: 1, minor: 11 } as const);
+// 1.12: spatial transition commit/reject/refresh capability events are also
+//        addressed to the game-owning Experience package (soft seam: delivered
+//        regardless of declared capabilityApi; declare 1.12 only to REQUIRE it).
+// 1.13: setExperienceChrome accepts requestsCollapsedNarration — a transient request
+//        to fold the Game narration box down to its handle for a cutscene beat. It
+//        never writes the player's stored preference and the engine's safety rules
+//        still force the box open when it holds something to act on.
+export const supportedCapabilityApi = Object.freeze({ major: 1, minor: 13 } as const);
 
 const capabilityApiVersionSchema = z
   .object({
@@ -316,9 +323,7 @@ export const capabilityCatalogSchema = z
  *  manifest key this Engine's strict schemas do not know yet) cannot fail the
  *  whole document, and `.strip()` (not strict, not passthrough) so newer
  *  TOP-LEVEL fields neither reject the envelope nor leak into the result. */
-const capabilityCatalogEnvelopeSchema = capabilityCatalogSchema
-  .extend({ packages: z.array(z.unknown()) })
-  .strip();
+const capabilityCatalogEnvelopeSchema = capabilityCatalogSchema.extend({ packages: z.array(z.unknown()) }).strip();
 
 export type CapabilityCatalogParseResult = {
   catalog: z.infer<typeof capabilityCatalogSchema>;

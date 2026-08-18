@@ -70,6 +70,12 @@ import {
   parseOptionalCadenceInputValue,
   stepCadenceValue,
 } from "../../lib/agent-cadence";
+import {
+  DEFAULT_ECHO_CHAMBER_MESSAGE_DELAY_SECONDS,
+  MAX_ECHO_CHAMBER_MESSAGE_DELAY_SECONDS,
+  MIN_ECHO_CHAMBER_MESSAGE_DELAY_SECONDS,
+  normalizeEchoChamberMessageDelaySeconds,
+} from "../../lib/echo-chamber-queue";
 import { HelpTooltip } from "../ui/HelpTooltip";
 import { SettingsSwitch } from "../panels/settings/SettingControls";
 import {
@@ -145,6 +151,7 @@ function createCustomAgentType(name: string): string {
 
 const LOREBOOK_WRITE_TOOL_NAME = "save_lorebook_entry";
 const MESSAGE_EDIT_TOOL_NAME = "edit_chat_message";
+const MAX_LOREBOOK_READ_BEHIND_MESSAGES = 100;
 const DEFAULT_PROSE_GUARDIAN_BANNED_WORDS = "ozone";
 type MusicProvider = "spotify" | "youtube" | "custom";
 type CustomMusicSource = "game-assets" | "folder";
@@ -171,6 +178,12 @@ function normalizeMusicProvider(settings: Record<string, unknown>): MusicProvide
 function normalizeCustomMusicSource(settings: Record<string, unknown>): CustomMusicSource {
   const source = settings.customMusicSource ?? settings.localMusicSource;
   return source === "folder" ? "folder" : "game-assets";
+}
+
+function normalizeLorebookReadBehindMessages(value: unknown): number {
+  const numeric = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(0, Math.min(MAX_LOREBOOK_READ_BEHIND_MESSAGES, Math.trunc(numeric)));
 }
 
 function normalizeExternalMusicFolderInput(value: unknown): string {
@@ -398,7 +411,7 @@ const CUSTOM_AGENT_RESULT_TYPE_OPTIONS: Array<{
     id: "lorebook_update",
     label: "Lorebook Update",
     description: 'Expects JSON with an "updates" array to create or update lorebook entries.',
-    requiredCapability: "edit_lorebooks",
+    requiredAnyCapability: ["edit_lorebooks", "create_lorebooks"],
   },
   {
     id: "character_tracker_update",
@@ -523,6 +536,20 @@ function resultTypeAllowedByCapabilities(
   return true;
 }
 
+function customLorebookReadBehindEnabled(
+  phase: AgentPhase,
+  lorebookWriterEnabled: boolean,
+  resultType: CustomAgentResultType,
+  capabilities: CustomAgentCapabilityMap,
+): boolean {
+  return (
+    phase === "post_processing" &&
+    (lorebookWriterEnabled ||
+      (resultType === "lorebook_update" &&
+        (capabilities.edit_lorebooks === true || capabilities.create_lorebooks === true)))
+  );
+}
+
 function createPromptOptionId(name: string, existingIds: Set<string>): string {
   const base =
     name
@@ -638,7 +665,10 @@ export function AgentEditor() {
       llmIds: new Set(
         rows
           .filter(
-            (connection) => connection.provider !== "image_generation" && connection.provider !== "video_generation",
+            (connection) =>
+              connection.provider !== "image_generation" &&
+              connection.provider !== "video_generation" &&
+              connection.provider !== "audio",
           )
           .map((connection) => connection.id),
       ),
@@ -691,6 +721,9 @@ export function AgentEditor() {
   const [localContextSize, setLocalContextSize] = useState<number | "">("");
   const [localMaxTokens, setLocalMaxTokens] = useState<number | "">("");
   const [localRunInterval, setLocalRunInterval] = useState<number | "">("");
+  const [localEchoMessageDelaySeconds, setLocalEchoMessageDelaySeconds] = useState(
+    DEFAULT_ECHO_CHAMBER_MESSAGE_DELAY_SECONDS,
+  );
   const [localActivationKeywordsText, setLocalActivationKeywordsText] = useState("");
   const [localActivationScanDepth, setLocalActivationScanDepth] = useState<number | "">(
     DEFAULT_CUSTOM_AGENT_ACTIVATION_SCAN_DEPTH,
@@ -711,6 +744,7 @@ export function AgentEditor() {
   const [toolsSectionOpen, setToolsSectionOpen] = useState(false);
   const [localLorebookWriteEnabled, setLocalLorebookWriteEnabled] = useState(false);
   const [localWritableLorebookId, setLocalWritableLorebookId] = useState("");
+  const [localLorebookReadBehindMessages, setLocalLorebookReadBehindMessages] = useState(0);
   const [localMusicProvider, setLocalMusicProvider] = useState<MusicProvider>("spotify");
   const [localCustomMusicSource, setLocalCustomMusicSource] = useState<CustomMusicSource>("game-assets");
   const [localCustomMusicFolder, setLocalCustomMusicFolder] = useState("music");
@@ -787,6 +821,7 @@ export function AgentEditor() {
       setLocalRunInterval(
         (settings.runInterval as number | undefined) ?? (defaultSettings.runInterval as number) ?? "",
       );
+      setLocalEchoMessageDelaySeconds(normalizeEchoChamberMessageDelaySeconds(settings.messageDelaySeconds));
       setLocalActivationKeywordsText(
         Array.isArray(settings.activationKeywords)
           ? settings.activationKeywords.filter((keyword: unknown) => typeof keyword === "string").join("\n")
@@ -814,6 +849,7 @@ export function AgentEditor() {
         settings.lorebookWriteEnabled === true || enabledTools.includes(LOREBOOK_WRITE_TOOL_NAME),
       );
       setLocalWritableLorebookId(writableLorebookId);
+      setLocalLorebookReadBehindMessages(normalizeLorebookReadBehindMessages(settings.lorebookReadBehindMessages));
       setLocalMusicProvider(normalizeMusicProvider(settings));
       setLocalCustomMusicSource(normalizeCustomMusicSource(settings));
       setLocalCustomMusicFolder(
@@ -893,6 +929,7 @@ export function AgentEditor() {
       setLocalContextSize("");
       setLocalMaxTokens((defaultSettings.maxTokens as number) ?? "");
       setLocalRunInterval((defaultSettings.runInterval as number) ?? "");
+      setLocalEchoMessageDelaySeconds(DEFAULT_ECHO_CHAMBER_MESSAGE_DELAY_SECONDS);
       setLocalActivationKeywordsText("");
       setLocalActivationScanDepth(DEFAULT_CUSTOM_AGENT_ACTIVATION_SCAN_DEPTH);
       setLocalInjectAsSection(defaultSettings.injectAsSection === true);
@@ -924,6 +961,7 @@ export function AgentEditor() {
       setLocalIncludeParallelResults(false);
       setLocalLorebookWriteEnabled(false);
       setLocalWritableLorebookId("");
+      setLocalLorebookReadBehindMessages(0);
       setLocalMusicProvider(normalizeMusicProvider(defaultSettings));
       setLocalCustomMusicSource(normalizeCustomMusicSource(defaultSettings));
       setLocalCustomMusicFolder(
@@ -950,6 +988,7 @@ export function AgentEditor() {
       setLocalContextSize("");
       setLocalMaxTokens(DEFAULT_AGENT_MAX_TOKENS);
       setLocalRunInterval(customRunIntervalMeta?.defaultValue ?? "");
+      setLocalEchoMessageDelaySeconds(DEFAULT_ECHO_CHAMBER_MESSAGE_DELAY_SECONDS);
       setLocalActivationKeywordsText("");
       setLocalActivationScanDepth(DEFAULT_CUSTOM_AGENT_ACTIVATION_SCAN_DEPTH);
       setLocalInjectAsSection(false);
@@ -977,6 +1016,7 @@ export function AgentEditor() {
       setLocalIncludeParallelResults(false);
       setLocalLorebookWriteEnabled(false);
       setLocalWritableLorebookId("");
+      setLocalLorebookReadBehindMessages(0);
       setLocalMusicProvider("spotify");
       setLocalCustomMusicSource("game-assets");
       setLocalCustomMusicFolder("music");
@@ -1025,6 +1065,7 @@ export function AgentEditor() {
 
   // Narrative Director agent — one-shot story push setting
   const isDirectorAgent = agentDetailId === "director" || dbConfig?.type === "director";
+  const isEchoChamberAgent = agentDetailId === "echo-chamber" || dbConfig?.type === "echo-chamber";
 
   // Illustrator agent — run interval setting
   const isIllustratorAgent = agentDetailId === "illustrator" || dbConfig?.type === "illustrator";
@@ -1137,7 +1178,7 @@ export function AgentEditor() {
       | undefined) ?? [];
 
   const llmConnections = allConnections.filter(
-    (conn) => conn.provider !== "image_generation" && conn.provider !== "video_generation",
+    (conn) => conn.provider !== "image_generation" && conn.provider !== "video_generation" && conn.provider !== "audio",
   );
   const imageConnections = allConnections.filter((conn) => conn.provider === "image_generation");
 
@@ -1145,6 +1186,7 @@ export function AgentEditor() {
     (c) =>
       c.provider !== "image_generation" &&
       c.provider !== "video_generation" &&
+      c.provider !== "audio" &&
       (c.defaultForAgents === true || c.defaultForAgents === "true"),
   );
 
@@ -1186,6 +1228,9 @@ export function AgentEditor() {
     const writableLorebookId = localWritableLorebookId.trim();
     const lorebookWriterEnabled =
       isEditingCustomAgent && localLorebookWriteEnabled && customCapabilities.edit_lorebooks === true;
+    const lorebookReadBehindEnabled =
+      isEditingCustomAgent &&
+      customLorebookReadBehindEnabled(savedPhase, lorebookWriterEnabled, localResultType, customCapabilities);
     if (lorebookWriterEnabled && !writableLorebookId) {
       setSaveError("Select a target lorebook before enabling lorebook writing for this agent.");
       return;
@@ -1251,6 +1296,7 @@ export function AgentEditor() {
         ...(!isDirectorAgent && !isStoryboardAgent && localRunInterval !== ""
           ? { runInterval: Number(localRunInterval) }
           : {}),
+        ...(isEchoChamberAgent ? { messageDelaySeconds: localEchoMessageDelaySeconds } : {}),
         ...(localInjectAsSection ? { injectAsSection: true } : {}),
         ...(isMusicAgent
           ? {
@@ -1264,8 +1310,13 @@ export function AgentEditor() {
           : {}),
         enabledTools: isMusicAgent && localMusicProvider !== "spotify" ? [] : effectiveEnabledTools,
         ...(lorebookWriterEnabled
-          ? { lorebookWriteEnabled: true, writableLorebookId, writableLorebookIds: [writableLorebookId] }
+          ? {
+              lorebookWriteEnabled: true,
+              writableLorebookId,
+              writableLorebookIds: [writableLorebookId],
+            }
           : {}),
+        ...(lorebookReadBehindEnabled ? { lorebookReadBehindMessages: localLorebookReadBehindMessages } : {}),
         ...(localSpotifyClientId ? { spotifyClientId: localSpotifyClientId } : {}),
         ...(isKnowledgeRetrievalAgent ||
         isKnowledgeRouterAgent ||
@@ -1352,12 +1403,14 @@ export function AgentEditor() {
     localContextSize,
     localMaxTokens,
     localRunInterval,
+    localEchoMessageDelaySeconds,
     localActivationKeywordsText,
     localActivationScanDepth,
     localInjectAsSection,
     localEnabledTools,
     localLorebookWriteEnabled,
     localWritableLorebookId,
+    localLorebookReadBehindMessages,
     localMusicProvider,
     localCustomMusicSource,
     localCustomMusicFolder,
@@ -1389,6 +1442,7 @@ export function AgentEditor() {
     isContinuityAgent,
     isHtmlAgent,
     isDirectorAgent,
+    isEchoChamberAgent,
     isMusicAgent,
     isKnowledgeRetrievalAgent,
     isKnowledgeRouterAgent,
@@ -1422,6 +1476,9 @@ export function AgentEditor() {
     const writableLorebookId = localWritableLorebookId.trim();
     const lorebookWriterEnabled =
       isEditingCustomAgent && localLorebookWriteEnabled && customCapabilities.edit_lorebooks === true;
+    const lorebookReadBehindEnabled =
+      isEditingCustomAgent &&
+      customLorebookReadBehindEnabled(savedPhase, lorebookWriterEnabled, localResultType, customCapabilities);
     const effectiveEnabledTools = Array.from(
       new Set(
         lorebookWriterEnabled
@@ -1447,6 +1504,7 @@ export function AgentEditor() {
       ...(!isDirectorAgent && !isStoryboardAgent && localRunInterval !== ""
         ? { runInterval: Number(localRunInterval) }
         : {}),
+      ...(isEchoChamberAgent ? { messageDelaySeconds: localEchoMessageDelaySeconds } : {}),
       ...(localInjectAsSection ? { injectAsSection: true } : {}),
       ...(exportingMusicAgent
         ? {
@@ -1460,8 +1518,13 @@ export function AgentEditor() {
         : {}),
       enabledTools: exportingMusicAgent && localMusicProvider !== "spotify" ? [] : effectiveEnabledTools,
       ...(lorebookWriterEnabled
-        ? { lorebookWriteEnabled: true, writableLorebookId, writableLorebookIds: [writableLorebookId] }
+        ? {
+            lorebookWriteEnabled: true,
+            writableLorebookId,
+            writableLorebookIds: [writableLorebookId],
+          }
         : {}),
+      ...(lorebookReadBehindEnabled ? { lorebookReadBehindMessages: localLorebookReadBehindMessages } : {}),
       ...(localSpotifyClientId ? { spotifyClientId: localSpotifyClientId } : {}),
       ...(isKnowledgeRetrievalAgent ||
       isKnowledgeRouterAgent ||
@@ -1672,6 +1735,12 @@ export function AgentEditor() {
       ? "post_processing"
       : normalizedLocalPhase;
   const showTurnDataAccess = (isCustomAgent || isNewCustomAgent) && effectivePhase === "post_processing";
+  const canConfigureLorebookReadBehind = customLorebookReadBehindEnabled(
+    effectivePhase,
+    localLorebookWriteEnabled && localCustomCapabilities.edit_lorebooks === true,
+    localResultType,
+    localCustomCapabilities,
+  );
   const visibleBuiltInTools = useMemo(
     () =>
       BUILT_IN_TOOLS.filter(
@@ -2116,6 +2185,28 @@ export function AgentEditor() {
                     </p>
                   )}
                 </div>
+
+                <label className="flex min-w-0 flex-col gap-1.5 text-[0.6875rem] text-[var(--muted-foreground)]">
+                  <span className="font-medium text-[var(--foreground)]">
+                    {localizeUi("ui.chat.agentaddsetupfields.readBehind")}
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={MAX_LOREBOOK_READ_BEHIND_MESSAGES}
+                    step={1}
+                    value={localLorebookReadBehindMessages}
+                    disabled={!canConfigureLorebookReadBehind}
+                    onChange={(event) => {
+                      setLocalLorebookReadBehindMessages(normalizeLorebookReadBehindMessages(event.target.value));
+                      markDirty();
+                    }}
+                    className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm text-[var(--foreground)] ring-1 ring-[var(--border)] disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                  />
+                  <span className="text-[0.625rem] leading-relaxed">
+                    {localizeUi("ui.agents.agenteditor.customLorebookReadBehindDescription")}
+                  </span>
+                </label>
               </div>
             </FieldGroup>
           )}
@@ -2599,6 +2690,35 @@ export function AgentEditor() {
               </div>
               <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
                 {localizeUi("ui.agents.agenteditor.leaveKeywordsEmptyToRunThisCustomAgentOn")}
+              </p>
+            </FieldGroup>
+          )}
+
+          {isEchoChamberAgent && (
+            <FieldGroup
+              label={localizeUi("ui.agents.agenteditor.messageDelay")}
+              icon={<Clock size="0.875rem" className="text-[var(--primary)]" />}
+              help={localizeUi("ui.agents.agenteditor.howLongEchoChamberWaitsBetweenMessages")}
+            >
+              <div className="flex items-center gap-3">
+                <input
+                  type="number"
+                  aria-label={localizeUi("ui.agents.agenteditor.messageDelay")}
+                  min={MIN_ECHO_CHAMBER_MESSAGE_DELAY_SECONDS}
+                  max={MAX_ECHO_CHAMBER_MESSAGE_DELAY_SECONDS}
+                  value={localEchoMessageDelaySeconds}
+                  onChange={(event) => {
+                    setLocalEchoMessageDelaySeconds(normalizeEchoChamberMessageDelaySeconds(event.target.value));
+                    markDirty();
+                  }}
+                  className="w-28 rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm tabular-nums ring-1 ring-[var(--border)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                />
+                <span className="text-[0.6875rem] text-[var(--muted-foreground)]">
+                  {localizeUi("ui.agents.agenteditor.seconds")}
+                </span>
+              </div>
+              <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
+                {localizeUi("ui.agents.agenteditor.echoChamberMessagesAppearOneAtATime")}
               </p>
             </FieldGroup>
           )}

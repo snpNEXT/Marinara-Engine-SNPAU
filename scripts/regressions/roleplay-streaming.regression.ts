@@ -24,10 +24,10 @@ import { getAgentBatchLane, type ResolvedAgent } from "../../packages/server/src
 import { mergePairedBuiltInRewriteAgents } from "../../packages/server/src/services/generation/prose-guardian-settings.js";
 import { estimateAgentLoadCost } from "../../packages/shared/src/utils/agent-cost.js";
 import {
-  ECHO_CHAMBER_MESSAGE_INTERVAL_MAX_MS,
-  ECHO_CHAMBER_MESSAGE_INTERVAL_MIN_MS,
+  DEFAULT_ECHO_CHAMBER_MESSAGE_DELAY_SECONDS,
   enqueueEchoChamberMessages,
   getEchoChamberMessageInterval,
+  normalizeEchoChamberMessageDelaySeconds,
   resolveEchoChamberPersistedBaseline,
 } from "../../packages/client/src/lib/echo-chamber-queue.js";
 import { useAgentStore } from "../../packages/client/src/stores/agent.store.js";
@@ -187,8 +187,14 @@ assert.equal(
   reconciledMessages.find((message) => message.id === "durable-matching")?.content,
   "Literal durable server content",
 );
-assert.equal(reconciledMessages.some((message) => message.id === "__optimistic_matching"), false);
-assert.equal(reconciledMessages.some((message) => message.id === "__optimistic_unmatched"), true);
+assert.equal(
+  reconciledMessages.some((message) => message.id === "__optimistic_matching"),
+  false,
+);
+assert.equal(
+  reconciledMessages.some((message) => message.id === "__optimistic_unmatched"),
+  true,
+);
 
 const duplicateIncoming: Parameters<typeof reconcilePersistedMessages>[1] = [
   {
@@ -414,8 +420,8 @@ const spatialTransitionEventSource =
   useGenerateSource.match(/case "spatial_transition_committed": \{[\s\S]*?case "token":/u)?.[0] ?? "";
 assert.match(
   spatialTransitionEventSource,
-  /dispatchCapabilityClientEvent\(\{[\s\S]*?packageId: "hierarchical-maps",[\s\S]*?type: event\.type,[\s\S]*?chatId: params\.chatId,[\s\S]*?data: event\.data,[\s\S]*?\}\)/u,
-  "the spatial transition SSE should immediately notify the downloaded Maps client cache",
+  /dispatchSpatialCapabilityEvent\(getGameExperiencePackageId\(qc, params\.chatId\), \{[\s\S]*?type: event\.type,[\s\S]*?chatId: params\.chatId,[\s\S]*?data: event\.data,[\s\S]*?\}\)/u,
+  "the spatial transition SSE should immediately notify the downloaded Maps client cache and the owning Experience",
 );
 assert.match(
   spatialTransitionEventSource,
@@ -431,8 +437,8 @@ const missedSpatialRefreshBlock =
 assert.notEqual(missedSpatialRefreshBlock, "", "generation cleanup should contain the missed spatial refresh block");
 assert.match(
   missedSpatialRefreshBlock,
-  /dispatchCapabilityClientEvent\(\{[\s\S]*?packageId: "hierarchical-maps",[\s\S]*?type: "spatial_context_refresh",[\s\S]*?chatId: params\.chatId,[\s\S]*?data: null,[\s\S]*?\}\)/u,
-  "missed spatial transition cleanup should notify the downloaded Maps client cache",
+  /dispatchSpatialCapabilityEvent\(getGameExperiencePackageId\(qc, params\.chatId\), \{[\s\S]*?type: "spatial_context_refresh",[\s\S]*?chatId: params\.chatId,[\s\S]*?data: null,[\s\S]*?\}\)/u,
+  "missed spatial transition cleanup should notify the downloaded Maps client cache and the owning Experience",
 );
 assert.match(
   missedSpatialRefreshBlock,
@@ -449,6 +455,39 @@ assert.match(
 assert.ok(
   generationCleanupSource.indexOf(missedSpatialRefreshBlock) < generationCleanupSource.indexOf(ownerCleanupBlock),
   "spatial reconciliation should be dispatched before generation-owner cleanup",
+);
+const capabilityClientEventsSource = readSourceText(
+  new URL("../../packages/client/src/lib/capability-client-events.ts", import.meta.url),
+  "utf8",
+);
+assert.match(
+  capabilityClientEventsSource,
+  /dispatchCapabilityClientEvent\(\{ packageId: "hierarchical-maps", \.\.\.detail \}\);\s*if \(experiencePackageId\) dispatchCapabilityClientEvent\(\{ packageId: experiencePackageId, \.\.\.detail \}\);/u,
+  "spatial capability events must dual-dispatch to World Maps and the game-owning Experience (capability API 1.12)",
+);
+assert.match(
+  useGenerateSource,
+  /setPendingSpatialTransitionStatus\(params\.chatId, "needs_review"\);[\s\S]{0,1400}?dispatchSpatialCapabilityEvent\(getGameExperiencePackageId\(qc, params\.chatId\), \{[\s\S]{0,200}?type: "spatial_transition_rejected",/u,
+  "an HTTP-rejected owner-turn transition must synthesize spatial_transition_rejected to BOTH audiences",
+);
+assert.match(
+  useGenerateSource,
+  /spatialErrorCode\?\.startsWith\("spatial_"\) && spatialErrorCode !== "spatial_transition_already_applied"/u,
+  "the synthesized reject must fire only on definitive evidence — never for already_applied or codeless failures",
+);
+const useSpatialContextSource = readSourceText(
+  new URL("../../packages/client/src/hooks/use-spatial-context.ts", import.meta.url),
+  "utf8",
+);
+assert.match(
+  useSpatialContextSource,
+  /rejectCode !== "spatial_transition_already_applied";[\s\S]{0,700}?dispatchSpatialCapabilityEvent\(getGameExperiencePackageId\(queryClient, variables\.chatId\), \{[\s\S]{0,200}?type: "spatial_transition_rejected",/u,
+  "the REST owner-turn commit must synthesize its reject to BOTH audiences, gated on definitive evidence",
+);
+assert.match(
+  useSpatialContextSource,
+  /type: "spatial_context_refresh",[\s\S]{0,120}?chatId: variables\.chatId,/u,
+  "inconclusive REST commit failures must fall back to the untyped refresh nudge",
 );
 assert.match(
   useGenerateSource,
@@ -1450,10 +1489,12 @@ const queuedEchoBatch = enqueueEchoChamberMessages(
 assert.equal(queuedEchoBatch.messages.length, 4);
 assert.equal(queuedEchoBatch.visibleCount, 1, "a fresh Echo result must remain behind the reveal cursor");
 assert.equal(queuedEchoBatch.baseline, 1);
-assert.equal(getEchoChamberMessageInterval(0), ECHO_CHAMBER_MESSAGE_INTERVAL_MIN_MS);
-assert.equal(getEchoChamberMessageInterval(0.5), 20_000);
-assert.ok(getEchoChamberMessageInterval(0.999999) < ECHO_CHAMBER_MESSAGE_INTERVAL_MAX_MS);
-assert.equal(getEchoChamberMessageInterval(1), ECHO_CHAMBER_MESSAGE_INTERVAL_MAX_MS);
+assert.equal(getEchoChamberMessageInterval(12), 12_000);
+assert.equal(normalizeEchoChamberMessageDelaySeconds(undefined), DEFAULT_ECHO_CHAMBER_MESSAGE_DELAY_SECONDS);
+assert.equal(normalizeEchoChamberMessageDelaySeconds(null), DEFAULT_ECHO_CHAMBER_MESSAGE_DELAY_SECONDS);
+assert.equal(normalizeEchoChamberMessageDelaySeconds("  "), DEFAULT_ECHO_CHAMBER_MESSAGE_DELAY_SECONDS);
+assert.equal(normalizeEchoChamberMessageDelaySeconds(0), 1);
+assert.equal(normalizeEchoChamberMessageDelaySeconds(999), 300);
 
 const staleEchoCursor = enqueueEchoChamberMessages(
   { messages: [], visibleCount: 99, baseline: 99 },
