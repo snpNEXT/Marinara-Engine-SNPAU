@@ -25,6 +25,7 @@ import {
   coerceGameStateTextValue,
   normalizeWorldCustomFields,
   normalizeTrackerFieldLocks,
+  normalizeInventoryTrackerPlayerStats,
   normalizeTrackerHiddenFields,
   HOME_FEED_SPRITE_EXPRESSION_MAX_LENGTH,
   parseTrackerFieldLocks,
@@ -57,6 +58,7 @@ import {
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
+import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createLorebooksStorage } from "../services/storage/lorebooks.storage.js";
 import { createGameStateStorage, type GameStateVisibleAnchor } from "../services/storage/game-state.storage.js";
 import {
@@ -120,6 +122,7 @@ import {
 import { applyRegexScriptsToPromptMessages } from "../services/regex/regex-application.js";
 import { npcAvatarSlug, sanitizeGameNpcAvatarUrls } from "../services/game/npc-avatar-utils.js";
 import { buildCommittedTrackerContextBlock } from "../services/generation/committed-tracker-context.js";
+import { normalizeBeholderState } from "../services/agents/beholder-state.js";
 import { parseLorebookWriteApprovalText } from "./generate/agent-write-approval.js";
 import { persistLorebookKeeperUpdates } from "./generate/lorebook-keeper-utils.js";
 import {
@@ -352,7 +355,8 @@ async function loadLatestChatGameSnapshot(
 
 function formatPeekTrackerContextBlock(args: {
   wrapFormat: TrackerWrapFormat;
-  snap: typeof gameStateSnapshots.$inferSelect;
+  snap: typeof gameStateSnapshots.$inferSelect | null;
+  beholderState?: unknown;
   chatMeta: Record<string, unknown>;
   chatEnableAgents: boolean;
   activeAgentIds: string[];
@@ -361,6 +365,7 @@ function formatPeekTrackerContextBlock(args: {
     chatEnableAgents: args.chatEnableAgents,
     activeAgentIds: args.activeAgentIds,
     latestGameState: args.snap,
+    beholderState: args.beholderState,
     chatMetadata: args.chatMeta,
     wrapFormat: args.wrapFormat,
   });
@@ -2337,7 +2342,20 @@ export async function chatsRoutes(app: FastifyInstance) {
     if (body.worldCustomFields !== undefined)
       fields.worldCustomFields = normalizeWorldCustomFields(body.worldCustomFields);
     if (body.presentCharacters !== undefined) fields.presentCharacters = body.presentCharacters as any[];
-    if (body.playerStats !== undefined) fields.playerStats = body.playerStats;
+    // Repair the Inventory Tracker arrays on the way in. Without this the agent
+    // apply path is the only writer that enforces row shape, quantity bounds, and
+    // the equipped/carried split — an older client, a direct API call, or the
+    // Agent Suite editor could persist rows the agent itself could never produce.
+    //
+    // The normalizer only repairs the three tracker arrays and hands anything that is
+    // not an object straight back, so the shape of `playerStats` itself is checked here.
+    // `null` stays allowed: that is how a caller clears the stats.
+    if (body.playerStats !== undefined) {
+      if (body.playerStats !== null && !isRecord(body.playerStats)) {
+        return reply.status(400).send({ error: "playerStats must be an object or null" });
+      }
+      fields.playerStats = normalizeInventoryTrackerPlayerStats(body.playerStats);
+    }
     if (body.personaStats !== undefined) fields.personaStats = body.personaStats as any[];
     if (body.fieldLocks !== undefined) fields.fieldLocks = normalizeTrackerFieldLocks(body.fieldLocks);
     if (body.hiddenTrackerFields !== undefined)
@@ -3086,13 +3104,21 @@ export async function chatsRoutes(app: FastifyInstance) {
             impersonateBlockAgents: false,
           });
           if (chatEnableAgents && activeAgentIds.length > 0) {
-            const snap = projectGameSnapshotLocation(
-              await loadLatestChatGameSnapshot(app, req.params.id, visibleGameStateAnchor),
-              ownerSpatialProjection,
-            );
-            const contextBlock = snap
-              ? formatPeekTrackerContextBlock({ wrapFormat, snap, chatMeta, chatEnableAgents, activeAgentIds })
-              : null;
+            const [gameSnapshot, beholderRun] = await Promise.all([
+              loadLatestChatGameSnapshot(app, req.params.id, visibleGameStateAnchor),
+              activeAgentIds.includes("beholder")
+                ? createAgentsStorage(app.db).getLastSuccessfulRunByType("beholder", req.params.id)
+                : Promise.resolve(null),
+            ]);
+            const snap = projectGameSnapshotLocation(gameSnapshot, ownerSpatialProjection);
+            const contextBlock = formatPeekTrackerContextBlock({
+              wrapFormat,
+              snap,
+              beholderState: normalizeBeholderState(beholderRun?.resultData),
+              chatMeta,
+              chatEnableAgents,
+              activeAgentIds,
+            });
 
             if (contextBlock) {
               assembled.messages.splice(findTrackerContextInsertIndex(assembled.messages), 0, {
@@ -4003,11 +4029,7 @@ export async function chatsRoutes(app: FastifyInstance) {
             if (gameEngineStore) {
               // One anchor can hold a row per gameType writer (a turn-game AND an
               // Experience, #5102) — branching must copy every one, not limit(1).
-              const engineSnapshots = await gameEngineStore.listByChatAndMessage(
-                req.params.id,
-                srcMsg.id,
-                swipeIndex,
-              );
+              const engineSnapshots = await gameEngineStore.listByChatAndMessage(req.params.id, srcMsg.id, swipeIndex);
               // Reads are newest-first; replay oldest-first so the source-effective row wins dedupe.
               for (const engineSnapshot of engineSnapshots.reverse()) {
                 await copyEngineSnapshot(engineSnapshot, branchedMsgId, swipeIndex);
