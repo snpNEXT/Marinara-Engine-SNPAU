@@ -28,6 +28,7 @@ import {
   isAgentAvailableInChatMode,
   isAgentConfigDeleted,
   isExternallyImportedAgent,
+  normalizeAgentPhaseValue,
   normalizeAgentPromptTemplateSelectionMap,
   normalizeManualTrackerAgentTypes,
   normalizeThinkingTagPairs,
@@ -264,6 +265,7 @@ import {
   normalizePromptWrapFormat,
   parseExtra,
   parseJsonField,
+  parseStoredGenerationParameters,
   parseGameStateRow,
   parseSnapshotPlayerStats,
   isRoleplaySummaryMode,
@@ -271,6 +273,7 @@ import {
   prefixGroupIndividualHistorySpeakers,
   readPersonaSnapshotName,
   resolveActiveCharacterIds,
+  resolveCharacterActivityUpdate,
   resolveActivePersonaCandidate,
   resolveBaseUrl,
   resolveGroupGenerationMode,
@@ -280,11 +283,12 @@ import {
   resolvePromptCharacterIdsForTarget,
   resolveRegenerationGameStateFallbackMessageIds,
   resolveRegenerationGameStateAnchor,
-  resolveRoleplayChatSummary,
+  resolveRoleplayChatSummaryForPrompt,
   resolveUserRegenerationPersistentAttachments,
   resolveVisibleGameStateAnchor,
   resolveKnowledgeSourceLorebookIds,
   shouldPreferLatestVisibleGameState,
+  shouldRunCharacterActivityAgents,
   shouldAbortOnPassiveGenerationDisconnect,
   shouldEnableAgentsForGeneration,
   shouldInjectIdentityFallback,
@@ -349,6 +353,7 @@ import {
   customAgentUsesLorebookReadBehind,
   customLorebookReadBehindRunKey,
   getCustomLorebookReadBehindMessages,
+  getLorebookNamingScheme,
   getLorebookKeeperAutomaticTarget,
   getLorebookKeeperSettings,
   loadLorebookKeeperExistingEntries,
@@ -358,7 +363,7 @@ import {
 } from "./generate/lorebook-keeper-utils.js";
 import { registerDryRunRoute } from "./generate/dry-run-route.js";
 import { registerRawRoute } from "./generate/raw-route.js";
-import { registerRetryAgentsRoute } from "./generate/retry-agents-route.js";
+import { registerRetryAgentsRoute, type ActiveAgentRun } from "./generate/retry-agents-route.js";
 import { fingerprintChatSummary } from "../services/prompt/chat-summary-fingerprint.js";
 import { isSseReplyWritable, sendSseEvent, startSseKeepalive, startSseReply } from "./generate/sse.js";
 import {
@@ -519,7 +524,7 @@ import {
   promptPreviewForAgents,
   resolveCustomWritableLorebookIds,
 } from "../services/generation/agent-prompt-runtime.js";
-import { resolveAgentPipelineAgents } from "../services/generation/agent-resolution.js";
+import { resolveAgentPipelineAgents, resolveEffectiveAgentSettings } from "../services/generation/agent-resolution.js";
 import { createReplyFallbackNotifier } from "./generate/fallback-notification.js";
 import {
   resolveGenerationTools,
@@ -778,13 +783,9 @@ export async function generateRoutes(app: FastifyInstance) {
   const personaGallery = createPersonaGalleryStorage(app.db);
   const appSettings = createAppSettingsStorage(app.db);
 
-  /**
-   * In-memory cache for OpenAI Responses API encrypted reasoning items.
-   * Keyed by chatId → opaque reasoning items from the last response.
-   * These are replayed on the next turn so the model can continue its reasoning chain.
-   */
-  const encryptedReasoningCache = new Map<string, unknown[]>();
-  const activeGenerations = new Map<string, { abortController: AbortController; backendUrl: string | null }>();
+  type ActiveGeneration = ActiveAgentRun;
+  const activeGenerations = new Map<string, ActiveGeneration>();
+  const activeAgentRuns = new Map<string, Set<ActiveGeneration>>();
   const activeCustomLorebookReadBehindRuns = new Set<string>();
 
   /**
@@ -915,11 +916,31 @@ export async function generateRoutes(app: FastifyInstance) {
     const abortController = new AbortController();
     const generationId = randomUUID();
     const customLorebookReadBehindRunKeys = new Set<string>();
-    activeGenerations.set(input.chatId, { abortController, backendUrl: null });
+    const activeGenerationRecord: ActiveGeneration = {
+      abortController,
+      backendUrl: null,
+      messageId: null,
+      swipeIndex: null,
+    };
+    activeGenerations.set(input.chatId, activeGenerationRecord);
     const releaseActiveGeneration = () => {
       if (activeGenerations.get(input.chatId)?.abortController === abortController) {
         activeGenerations.delete(input.chatId);
       }
+    };
+    const moveToActiveAgentRuns = (messageId: string, swipeIndex: number) => {
+      activeGenerationRecord.messageId = messageId;
+      activeGenerationRecord.swipeIndex = swipeIndex;
+      releaseActiveGeneration();
+      const runs = activeAgentRuns.get(input.chatId) ?? new Set<ActiveGeneration>();
+      runs.add(activeGenerationRecord);
+      activeAgentRuns.set(input.chatId, runs);
+    };
+    const releaseActiveAgentRun = () => {
+      const runs = activeAgentRuns.get(input.chatId);
+      if (!runs) return;
+      runs.delete(activeGenerationRecord);
+      if (runs.size === 0) activeAgentRuns.delete(input.chatId);
     };
     const releaseActiveGenerationAndRethrow = (err: unknown): never => {
       releaseActiveGeneration();
@@ -965,6 +986,21 @@ export async function generateRoutes(app: FastifyInstance) {
       // This ensures swipes/regens always use the state from the user's accepted turn.
       let spatialGameStateSnapshotId: string | null = null;
       const preMessages = await chats.listMessages(input.chatId).catch(releaseActiveGenerationAndRethrow);
+      if (requestChatMode === "roleplay") {
+        const messagesById = new Map(preMessages.map((message) => [message.id, message]));
+        for (const run of activeAgentRuns.get(input.chatId) ?? []) {
+          if (!run.messageId || run.swipeIndex === null) continue;
+          const anchor = messagesById.get(run.messageId);
+          if (!anchor || (anchor.activeSwipeIndex ?? 0) !== run.swipeIndex) {
+            logger.info(
+              "[agents] Cancelling work for abandoned swipe %s:%d before committing the next turn",
+              run.messageId,
+              run.swipeIndex,
+            );
+            run.abortController.abort();
+          }
+        }
+      }
       for (let i = preMessages.length - 1; i >= 0; i--) {
         if (preMessages[i]!.role === "assistant") {
           const lastAsstMsg = preMessages[i]!;
@@ -1156,6 +1192,7 @@ export async function generateRoutes(app: FastifyInstance) {
         : null;
     const promptNow = toZonedWallClockDate(new Date(), promptTimeZone);
     const excludePastReasoning = chatMeta.excludePastReasoning !== false;
+    let encryptedReasoningItems: unknown[] | undefined;
     const imageCaptioningRuntime: ImageCaptioningRuntime = await resolveImageCaptioningRuntime({
       chatMeta,
       fallbackConnectionId: connId,
@@ -1366,6 +1403,26 @@ export async function generateRoutes(app: FastifyInstance) {
         chatMessages = chatMessages.filter((m: any) => m.id !== input.regenerateMessageId);
         lorebookKeeperMessages = lorebookKeeperMessages.filter((m: any) => m.id !== input.regenerateMessageId);
       }
+
+      // OpenAI Responses API uses encrypted reasoning items for multi-turn continuity.
+      // Recover them before choosing the tool or streaming provider path. Hidden command
+      // anchors remain eligible, while a regenerated response cannot seed its replacement.
+      if (!excludePastReasoning) {
+        const reasoningMessages = input.regenerateMessageId
+          ? scopedMessages.filter((message: any) => message.id !== input.regenerateMessageId)
+          : scopedMessages;
+        for (let i = reasoningMessages.length - 1; i >= 0; i--) {
+          const message = reasoningMessages[i]!;
+          if (message.role === "assistant") {
+            const extra = parseExtra(message.extra);
+            if (Array.isArray(extra.encryptedReasoning) && extra.encryptedReasoning.length > 0) {
+              encryptedReasoningItems = extra.encryptedReasoning;
+            }
+            break;
+          }
+        }
+      }
+
       const regenerateContextCutoff =
         input.regenerateMessageId && typeof regenMsg?.createdAt === "string" ? regenMsg.createdAt : null;
       const promptLastGenerationType = resolvePromptLastGenerationType(input);
@@ -1411,6 +1468,92 @@ export async function generateRoutes(app: FastifyInstance) {
       if (contextMessageLimit && contextMessageLimit > 0 && chatMessages.length > contextMessageLimit) {
         chatMessages = chatMessages.slice(-contextMessageLimit);
       }
+
+      // Agent activation is request-scoped. Resolve the configured set once so
+      // character routers can run before prompt assembly and every later pass
+      // uses the same visible Agent list.
+      logger.info("[generate] chatId=%s, chatMode=%s", input.chatId, chatMode);
+      const activeMusicPlayerSource =
+        input.musicPlayerEnabled === false
+          ? null
+          : input.musicPlayerSource === "youtube" || input.musicPlayerSource === "custom"
+            ? input.musicPlayerSource
+            : "spotify";
+      const chatEnableAgents = shouldEnableAgentsForGeneration({
+        chatEnableAgents: chatMeta.enableAgents === true,
+        impersonate: input.impersonate,
+        impersonateBlockAgents: input.impersonateBlockAgents,
+      });
+      const persistedChatActiveAgentIds: string[] = Array.isArray(chatMeta.activeAgentIds)
+        ? (chatMeta.activeAgentIds as string[])
+        : [];
+      const gameMusicDjEnabled =
+        chatMode === "game" &&
+        (chatMeta.gameUseMusicDj === true ||
+          chatMeta.gameUseSpotifyMusic === true ||
+          persistedChatActiveAgentIds.includes("youtube"));
+      const gameSpotifyMusicEnabled = gameMusicDjEnabled && activeMusicPlayerSource === "spotify";
+      const normalizedPersistedChatActiveAgentIds = persistedChatActiveAgentIds.map((agentId) =>
+        agentId === "youtube" ? "spotify" : agentId,
+      );
+      if (gameMusicDjEnabled && !normalizedPersistedChatActiveAgentIds.includes("spotify")) {
+        normalizedPersistedChatActiveAgentIds.push("spotify");
+      }
+      const rawChatActiveAgentIds: string[] = filterGameInternalAgentIds(
+        chatMode,
+        normalizedPersistedChatActiveAgentIds,
+      )
+        .filter((agentId) => isAgentAvailableInChatMode(chatMode, agentId))
+        .filter((agentId) => !(gameSpotifyMusicEnabled && agentId === "spotify"));
+      const customAgentImportsEnabled = (await getCustomAgentImportPolicy(app.db)).enabled;
+      const allConfiguredPromptAgents =
+        chatEnableAgents && rawChatActiveAgentIds.length > 0 ? await agentsStore.list() : [];
+      const skippedImportedPromptAgents = customAgentImportsEnabled
+        ? []
+        : allConfiguredPromptAgents.filter((agent) => isExternallyImportedAgent(agent.type, agent.settings));
+      if (skippedImportedPromptAgents.length > 0) {
+        logger.debug(
+          "[agents] Skipping %d externally imported Agent configurations because custom imports are disabled",
+          skippedImportedPromptAgents.length,
+        );
+      }
+      const configuredPromptAgents = allConfiguredPromptAgents.filter(
+        (agent) => !isExternallyImportedAgent(agent.type, agent.settings) || customAgentImportsEnabled,
+      );
+      const deletedBuiltInAgentTypes = new Set(
+        configuredPromptAgents
+          .filter((agent) => BUILT_IN_AGENTS.some((builtIn) => builtIn.id === agent.type))
+          .filter((agent) => isAgentConfigDeleted(agent.settings))
+          .map((agent) => agent.type as string),
+      );
+      const chatActiveAgentIds = rawChatActiveAgentIds.filter((agentId) => !deletedBuiltInAgentTypes.has(agentId));
+      const agentPromptTemplateSelections = normalizeAgentPromptTemplateSelectionMap(chatMeta.agentPromptTemplateIds);
+      const hasPerChatAgentList = chatActiveAgentIds.length > 0;
+      const perChatAgentSet = new Set(chatActiveAgentIds);
+      const effectiveAgentSettingsById = new Map<string, Record<string, unknown>>();
+      const characterActivityAgentConfigs: typeof configuredPromptAgents = [];
+      const pipelineConfiguredPromptAgents: typeof configuredPromptAgents = [];
+      for (const agent of configuredPromptAgents) {
+        const settings = resolveEffectiveAgentSettings({
+          agentType: agent.type,
+          settings: agent.settings,
+          activeMusicPlayerSource,
+          chatMetadata: chatMeta,
+        });
+        effectiveAgentSettingsById.set(agent.id, settings);
+        const isCharacterActivityAgent =
+          !BUILT_IN_AGENTS.some((builtIn) => builtIn.id === agent.type) &&
+          normalizeAgentPhaseValue(agent.phase) === "pre_generation" &&
+          settings.resultType === "character_activity_update" &&
+          customAgentHasCapability(settings, "manage_chat_characters");
+        (isCharacterActivityAgent ? characterActivityAgentConfigs : pipelineConfiguredPromptAgents).push(agent);
+      }
+      const activeAgentOrder = new Map(chatActiveAgentIds.map((agentId, index) => [agentId, index]));
+      characterActivityAgentConfigs.sort(
+        (left, right) =>
+          (activeAgentOrder.get(left.type) ?? Number.MAX_SAFE_INTEGER) -
+          (activeAgentOrder.get(right.type) ?? Number.MAX_SAFE_INTEGER),
+      );
 
       const isGoogleProvider = conn.provider === "google" || conn.provider === "google_vertex";
       const persistPromptAttachmentCaptions = async (
@@ -1515,15 +1658,12 @@ export async function generateRoutes(app: FastifyInstance) {
       }
 
       const allCharacterIds: string[] = JSON.parse(chat.characterIds as string);
-      const characterIds = resolveActiveCharacterIds(allCharacterIds, chatMeta, {
+      let characterIds = resolveActiveCharacterIds(allCharacterIds, chatMeta, {
         mode: chatMode,
         allowEmpty: true,
       });
       const isHomeProfessorMariAssistantChat =
         chatMeta.internalAssistant === PROFESSOR_MARI_INTERNAL_CHAT_MARKER && characterIds.includes(PROFESSOR_MARI_ID);
-      if (allCharacterIds.length > 0 && characterIds.length === 0 && chatMode !== "game") {
-        throw new Error("All characters in this chat are disabled. Enable at least one character before generating.");
-      }
 
       // Resolve Persona — explicit selection always wins, while only
       // Conversation may fall back to the globally active Persona.
@@ -1615,6 +1755,242 @@ export async function generateRoutes(app: FastifyInstance) {
         presetDefaultChoices: resolvedPresetDefaultChoices,
         chatPresetChoices: (chatMeta.presetChoices ?? {}) as Record<string, string | string[]>,
       });
+
+      const eligibleCharacterActivityConfigs: typeof characterActivityAgentConfigs = [];
+      if (
+        shouldRunCharacterActivityAgents({
+          mode: chatMode,
+          impersonate: input.impersonate,
+          regenerateMessageId: input.regenerateMessageId,
+          continueMessageId: input.continueMessageId,
+        })
+      ) {
+        for (const config of characterActivityAgentConfigs) {
+          if (!perChatAgentSet.has(config.type)) continue;
+          const settings = effectiveAgentSettingsById.get(config.id)!;
+          const activation = matchCustomAgentActivation(settings, chatMessages);
+          if (activation.configured && !activation.matched) continue;
+
+          const runInterval = Number(settings.runInterval ?? 0);
+          if (
+            Number.isFinite(runInterval) &&
+            runInterval > 1 &&
+            (await shouldSkipAgentByMessageInterval({
+              agentsStore,
+              chatId: input.chatId,
+              agentType: config.type,
+              settings,
+              fallbackInterval: runInterval,
+              messages: allChatMessages,
+              countUpcomingAssistantMessage: false,
+            }))
+          ) {
+            continue;
+          }
+          eligibleCharacterActivityConfigs.push(config);
+        }
+      }
+
+      if (eligibleCharacterActivityConfigs.length > 0) {
+        sendProgress("agents");
+        const storedParameters = parseStoredGenerationParameters(conn.defaultParameters);
+        const routingModelPolicy = resolveModelAccessPolicy({
+          provider: conn.provider,
+          model: conn.model,
+          maxContext: conn.maxContext,
+        });
+        const routingKnownModel = findKnownModel(conn.provider as APIProvider, conn.model.trim());
+        const routingChatProvider = withConnectionFallbackProvider({
+          primary: createLLMProvider(
+            conn.provider,
+            baseUrl,
+            conn.apiKey,
+            conn.maxContext,
+            conn.openrouterProvider,
+            conn.maxTokensOverride,
+            conn.claudeFastMode === "true",
+            conn.treatAsLocalEndpoint === "true",
+            conn.defaultParameters,
+          ),
+          primaryConnectionId: connId ?? conn.id,
+          fallbackConnection: mainFallbackConnection,
+          fallbackBaseUrl: mainFallbackBaseUrl,
+          category: "main",
+          onFallback,
+        });
+        const routingAgentTypes = new Set(eligibleCharacterActivityConfigs.map((config) => config.type));
+        const { resolvedAgents: characterActivityAgents, agentConnectionWarnings } = await resolveAgentPipelineAgents({
+          connections,
+          configuredAgents: eligibleCharacterActivityConfigs,
+          chatId: input.chatId,
+          chatEnableAgents,
+          hasPerChatAgentList: true,
+          perChatAgentSet: routingAgentTypes,
+          agentPromptTemplateSelections,
+          chatProvider: routingChatProvider,
+          chatConnectionId: connId ?? conn.id,
+          chatModel: conn.model,
+          chatCustomParameters: storedParameters?.customParameters ?? {},
+          chatTemperature: storedParameters?.temperature,
+          chatEnabledParameters: storedParameters?.enabledParameters,
+          chatSuppressModelParameters: routingModelPolicy.suppressModelParameters,
+          chatMaxOutputTokens:
+            routingKnownModel?.maxOutput && routingKnownModel.maxOutput > 0
+              ? Math.floor(routingKnownModel.maxOutput)
+              : null,
+          chatMaxParallelJobs: Number(conn.maxParallelJobs) || 1,
+          chatEnableCaching: conn.enableCaching === "true",
+          chatAnthropicExtendedCacheTtl: conn.anthropicExtendedCacheTtl === "true",
+          chatCachingAtDepth: conn.cachingAtDepth ?? 5,
+          activeMusicPlayerSource,
+          chatMetadata: chatMeta,
+          onFallback,
+          resolveBaseUrl,
+        });
+
+        for (const warning of agentConnectionWarnings) {
+          sendSseEvent(reply, { type: "agent_warning", data: warning });
+        }
+
+        if (characterActivityAgents.length > 0) {
+          const routingCharacterInfo = await loadCharacterPromptInfo({
+            chars,
+            characterIds: allCharacterIds,
+            chatMode,
+          });
+          const characterInfoById = new Map(routingCharacterInfo.map((character) => [character.id, character]));
+          const activeCharacterSet = new Set(characterIds);
+          const routingContextSize = Math.max(
+            ...characterActivityAgents.map((agent) => normalizeAgentContextSize(agent.settings.contextSize)),
+          );
+          const routingContext: AgentContext = {
+            chatId: input.chatId,
+            chatMode,
+            wrapFormat: normalizePromptWrapFormat(resolvedPreset?.wrapFormat),
+            recentMessages: chatMessages.slice(-routingContextSize).map((message: any) => ({
+              id: typeof message.id === "string" ? message.id : undefined,
+              role: message.role as string,
+              content: conversationPromptHistoryContent(message, chatMode),
+              characterId:
+                typeof message.characterId === "string" && message.characterId ? message.characterId : undefined,
+            })),
+            mainResponse: null,
+            gameState: null,
+            characters: routingCharacterInfo,
+            chatCharacters: allCharacterIds.map((id) => ({
+              id,
+              name: characterInfoById.get(id)?.name ?? id,
+              active: activeCharacterSet.has(id),
+            })),
+            persona:
+              personaName !== "User"
+                ? {
+                    name: personaName,
+                    description: personaDescription,
+                    personality: personaFields.personality,
+                    backstory: personaFields.backstory,
+                    appearance: personaFields.appearance,
+                    scenario: personaFields.scenario,
+                  }
+                : null,
+            memory: {},
+            writableLorebookIds: null,
+            chatSummary: null,
+            authorNotes: typeof chatMeta.authorNotes === "string" ? chatMeta.authorNotes : null,
+            streaming: input.streaming,
+            ...(requestDebug
+              ? {
+                  agentDebug: (event: AgentCallDebugEvent) => {
+                    sendSseEvent(reply, { type: "agent_debug", data: event });
+                  },
+                }
+              : {}),
+            signal: abortController.signal,
+          };
+          const latestUserMessage = [...allChatMessages].reverse().find((message: any) => message.role === "user");
+          const routingEvents = createAgentEventDispatcher({
+            resolvedAgents: characterActivityAgents,
+            sendEvent: (payload) => sendSseEvent(reply, payload),
+            getOwnership: () => ({
+              chatId: input.chatId,
+              messageId: typeof latestUserMessage?.id === "string" ? latestUserMessage.id : null,
+              swipeIndex: null,
+              generationId,
+            }),
+          });
+          sendSseEvent(reply, { type: "agent_start", data: { phase: "pre_generation" } });
+          const routingPipeline = createAgentPipeline(
+            characterActivityAgents,
+            routingContext,
+            routingEvents.sendAgentEvent,
+          );
+          await routingPipeline.preGenerate();
+
+          let selectedActivity: ReturnType<typeof resolveCharacterActivityUpdate> = null;
+          let selectedByAgent: ResolvedAgent | null = null;
+          for (const agent of characterActivityAgents) {
+            const result = routingPipeline.results.find((candidate) => candidate.agentId === agent.id);
+            if (!result?.success || result.type !== "character_activity_update") continue;
+            if (!customAgentHasCapability(agent.settings, "manage_chat_characters")) continue;
+            const activity = resolveCharacterActivityUpdate(result.data, allCharacterIds);
+            if (!activity) {
+              logger.warn("[custom-agent] Ignoring invalid character activity output from %s", agent.type);
+              continue;
+            }
+            selectedActivity = activity;
+            selectedByAgent = agent;
+            break;
+          }
+
+          if (typeof latestUserMessage?.id === "string") {
+            for (const result of routingPipeline.results) {
+              try {
+                await agentsStore.saveRun({
+                  agentConfigId: result.agentId,
+                  chatId: input.chatId,
+                  messageId: latestUserMessage.id,
+                  result,
+                });
+              } catch (error) {
+                // Cadence bookkeeping must not block the main response.
+                logger.debug(
+                  error,
+                  "[custom-agent] Could not save character activity cadence bookkeeping for %s",
+                  result.agentType,
+                );
+              }
+            }
+          }
+
+          if (selectedActivity) {
+            characterIds = selectedActivity.activeCharacterIds;
+            const updatedChat = await chats.patchMetadata(
+              input.chatId,
+              (current) => ({
+                ...current,
+                inactiveCharacterIds: selectedActivity!.inactiveCharacterIds,
+              }),
+              { touchUpdatedAt: false },
+            );
+            if (updatedChat) chatMeta = parseExtra(updatedChat.metadata) as Record<string, unknown>;
+            sendSseEvent(reply, {
+              type: "metadata_patch",
+              data: { inactiveCharacterIds: selectedActivity.inactiveCharacterIds },
+            });
+            logger.info(
+              "[custom-agent] %s selected %d of %d active chat character(s)",
+              selectedByAgent?.type ?? "character activity agent",
+              selectedActivity.activeCharacterIds.length,
+              allCharacterIds.length,
+            );
+          }
+        }
+      }
+
+      if (allCharacterIds.length > 0 && characterIds.length === 0 && chatMode !== "game") {
+        throw new Error("All characters in this chat are disabled. Enable at least one character before generating.");
+      }
+
       let groupHistoryCharacterNamesByIdPromise: Promise<Map<string, string>> | null = null;
       const getGroupHistoryCharacterNamesById = () => {
         groupHistoryCharacterNamesByIdPromise ??= resolveCharacterNameMap(allCharacterIds, (id) => chars.getById(id));
@@ -1755,74 +2131,22 @@ export async function generateRoutes(app: FastifyInstance) {
         const { suppressModelParameters, connectionMaxContext } = modelAccessPolicy;
         let effectiveMaxContext = modelAccessPolicy.effectiveMaxContext;
 
-        // Determine whether agents are enabled for this chat (needed by assembler + agent pipeline).
-        // Mode policy filters which agents may run for Conversation, Roleplay, and Game chats.
-        logger.info("[generate] chatId=%s, chatMode=%s", input.chatId, chatMode);
-        const activeMusicPlayerSource =
-          input.musicPlayerEnabled === false
-            ? null
-            : input.musicPlayerSource === "youtube" || input.musicPlayerSource === "custom"
-              ? input.musicPlayerSource
-              : "spotify";
-        const chatEnableAgents = shouldEnableAgentsForGeneration({
-          chatEnableAgents: chatMeta.enableAgents === true,
-          impersonate: input.impersonate,
-          impersonateBlockAgents: input.impersonateBlockAgents,
-        });
-        const persistedChatActiveAgentIds: string[] = Array.isArray(chatMeta.activeAgentIds)
-          ? (chatMeta.activeAgentIds as string[])
-          : [];
-        const gameMusicDjEnabled =
-          chatMode === "game" &&
-          (chatMeta.gameUseMusicDj === true ||
-            chatMeta.gameUseSpotifyMusic === true ||
-            persistedChatActiveAgentIds.includes("youtube"));
-        const gameSpotifyMusicEnabled = gameMusicDjEnabled && activeMusicPlayerSource === "spotify";
-        const normalizedPersistedChatActiveAgentIds = persistedChatActiveAgentIds.map((agentId) =>
-          agentId === "youtube" ? "spotify" : agentId,
-        );
-        if (gameMusicDjEnabled && !normalizedPersistedChatActiveAgentIds.includes("spotify")) {
-          normalizedPersistedChatActiveAgentIds.push("spotify");
-        }
-        const rawChatActiveAgentIds: string[] = filterGameInternalAgentIds(
+        const activeChatSummary = await resolveRoleplayChatSummaryForPrompt({
           chatMode,
-          normalizedPersistedChatActiveAgentIds,
-        )
-          .filter((agentId) => isAgentAvailableInChatMode(chatMode, agentId))
-          .filter((agentId) => !(gameSpotifyMusicEnabled && agentId === "spotify"));
-        const customAgentImportsEnabled = (await getCustomAgentImportPolicy(app.db)).enabled;
-        const allConfiguredPromptAgents =
-          chatEnableAgents && rawChatActiveAgentIds.length > 0 ? await agentsStore.list() : [];
-        const skippedImportedPromptAgents = customAgentImportsEnabled
-          ? []
-          : allConfiguredPromptAgents.filter((agent) => isExternallyImportedAgent(agent.type, agent.settings));
-        if (skippedImportedPromptAgents.length > 0) {
-          logger.debug(
-            "[agents] Skipping %d externally imported Agent configurations because custom imports are disabled",
-            skippedImportedPromptAgents.length,
-          );
-        }
-        const configuredPromptAgents = allConfiguredPromptAgents.filter(
-          (agent) => !isExternallyImportedAgent(agent.type, agent.settings) || customAgentImportsEnabled,
-        );
-        const deletedBuiltInAgentTypes = new Set(
-          configuredPromptAgents
-            .filter((agent) => BUILT_IN_AGENTS.some((builtIn) => builtIn.id === agent.type))
-            .filter((agent) => isAgentConfigDeleted(agent.settings))
-            .map((agent) => agent.type as string),
-        );
-        const chatActiveAgentIds = rawChatActiveAgentIds.filter((agentId) => !deletedBuiltInAgentTypes.has(agentId));
-        const agentPromptTemplateSelections = normalizeAgentPromptTemplateSelectionMap(chatMeta.agentPromptTemplateIds);
-        const hasPerChatAgentList = chatActiveAgentIds.length > 0;
-        const perChatAgentSet = new Set(chatActiveAgentIds);
-        const activeChatSummary = resolveRoleplayChatSummary(chatMode, chatMeta, {
+          chatMetadata: chatMeta,
+          messages: currentInputMessages(),
           excludeMessageIds: input.regenerateMessageId ? [input.regenerateMessageId] : undefined,
+          vectorizerAvailable: memoryRecallVectorizerAvailable,
+          embeddingOptions: {
+            embeddingSource: memoryRecallEmbeddingSource,
+            signal: abortController.signal,
+          },
         });
         const runtimeSectionEligibleAgentTypes = buildRuntimeAgentSectionEligibleTypes({
           enableAgents: chatEnableAgents,
           activeAgentIds: chatActiveAgentIds,
           chatMode,
-          configuredAgents: configuredPromptAgents.map((agent) => ({
+          configuredAgents: pipelineConfiguredPromptAgents.map((agent) => ({
             type: agent.type,
             phase: agent.phase,
             settings: agent.settings,
@@ -2407,6 +2731,11 @@ export async function generateRoutes(app: FastifyInstance) {
             baseUrl,
             fallbackConnection: conversationSummaryFallback,
             fallbackBaseUrl: conversationSummaryFallback ? resolveBaseUrl(conversationSummaryFallback) : "",
+            summaryEmbeddingOptions: {
+              embeddingSource: memoryRecallEmbeddingSource,
+              signal: abortController.signal,
+            },
+            summaryVectorizerAvailable: memoryRecallVectorizerAvailable,
           });
           finalMessages = preparedHistory.finalMessages;
 
@@ -2973,7 +3302,7 @@ export async function generateRoutes(app: FastifyInstance) {
             : null;
         const { enabledConfigs, resolvedAgents, agentConnectionWarnings } = await resolveAgentPipelineAgents({
           connections,
-          configuredAgents: configuredPromptAgents,
+          configuredAgents: pipelineConfiguredPromptAgents,
           chatId: input.chatId,
           chatEnableAgents,
           hasPerChatAgentList,
@@ -3869,7 +4198,9 @@ export async function generateRoutes(app: FastifyInstance) {
         }
 
         const illustratorAgentForInterval = resolvedAgents.find((a) => a.type === "illustrator");
-        const storyboardAgentConfig = configuredPromptAgents.find((agent) => agent.type === STORYBOARD_AGENT_ID);
+        const storyboardAgentConfig = pipelineConfiguredPromptAgents.find(
+          (agent) => agent.type === STORYBOARD_AGENT_ID,
+        );
         const storyboardAgentSettings = normalizeStoryboardAgentSettings(
           mergeBuiltInAgentSettings(STORYBOARD_AGENT_ID, storyboardAgentConfig?.settings),
         );
@@ -3918,15 +4249,17 @@ export async function generateRoutes(app: FastifyInstance) {
 
         // Populate writable lorebook IDs for the lorebook-keeper agent
         if (resolvedAgents.some((a) => a.type === "lorebook-keeper")) {
-          const { writableLorebookIds, targetLorebookId, targetLorebookName } = await resolveLorebookKeeperTarget({
-            lorebooksStore,
-            chatId: input.chatId,
-            characterIds,
-            personaId,
-            activeLorebookIds: chatActiveLorebookIds,
-            preferredTargetLorebookId: lorebookKeeperSettings.targetLorebookId,
-          });
+          const { writableLorebookIds, writableLorebooks, targetLorebookId, targetLorebookName } =
+            await resolveLorebookKeeperTarget({
+              lorebooksStore,
+              chatId: input.chatId,
+              characterIds,
+              personaId,
+              activeLorebookIds: chatActiveLorebookIds,
+              preferredTargetLorebookId: lorebookKeeperSettings.targetLorebookId,
+            });
           agentContext.writableLorebookIds = writableLorebookIds;
+          agentContext.memory._writableLorebooks = writableLorebooks;
           if (targetLorebookId) {
             agentContext.memory._lorebookKeeperTargetLorebookId = targetLorebookId;
           }
@@ -4402,6 +4735,11 @@ export async function generateRoutes(app: FastifyInstance) {
                 updates,
                 preferredTargetLorebookId,
                 writableLorebookIds,
+                writableLorebooks: Array.isArray(agentContext.memory._writableLorebooks)
+                  ? (agentContext.memory._writableLorebooks as Array<{ id: string; name: string }>)
+                  : undefined,
+                lorebookNamingScheme: getLorebookNamingScheme(resultAgent?.settings),
+                worldName: agentContext.characters[0]?.world ?? chat.name,
                 existingEntries,
               }),
             },
@@ -6100,31 +6438,6 @@ export async function generateRoutes(app: FastifyInstance) {
           if (enableChatTools && provider.chatComplete) {
             const maxToolRounds = getMaxToolRounds();
             let loopMessages: ChatMessage[] = initialProviderMessages;
-            // ── Seed encrypted reasoning cache from DB ──
-            // OpenAI Responses API uses encrypted reasoning items for multi-turn continuity.
-            // These must be replayed on each request. If the in-memory cache was lost (e.g. server
-            // restart), recover from the last assistant message's persisted extra.
-            // On regens/swipes: clear the cache so we re-derive from the filtered chatMessages
-            // (which excludes the message being regenerated). Otherwise we'd replay the reasoning
-            // from the discarded response instead of the turn before it.
-            if (input.regenerateMessageId) {
-              encryptedReasoningCache.delete(input.chatId);
-            }
-            if (excludePastReasoning) {
-              encryptedReasoningCache.delete(input.chatId);
-            } else if (!encryptedReasoningCache.has(input.chatId)) {
-              for (let i = chatMessages.length - 1; i >= 0; i--) {
-                const msg = chatMessages[i]!;
-                if (msg.role === "assistant") {
-                  const ex = parseExtra(msg.extra);
-                  if (Array.isArray(ex.encryptedReasoning) && ex.encryptedReasoning.length > 0) {
-                    encryptedReasoningCache.set(input.chatId, ex.encryptedReasoning);
-                  }
-                  break;
-                }
-              }
-            }
-
             // Stream tokens in real-time via onToken callback.
             // Some providers (e.g. Gemini with thinking) return the entire response
             // in one chunk. Break large chunks into small pieces so the client sees
@@ -6185,12 +6498,12 @@ export async function generateRoutes(app: FastifyInstance) {
                     onToken: input.streaming ? onToken : undefined,
                     openrouterProvider: conn.openrouterProvider ?? undefined,
                     signal: abortController.signal,
-                    encryptedReasoningItems: excludePastReasoning
-                      ? undefined
-                      : encryptedReasoningCache.get(input.chatId),
+                    encryptedReasoningItems: excludePastReasoning ? undefined : encryptedReasoningItems,
                     onEncryptedReasoning: excludePastReasoning
                       ? undefined
-                      : (items) => encryptedReasoningCache.set(input.chatId, items),
+                      : (items) => {
+                          encryptedReasoningItems = items;
+                        },
                     onChatCompletionsReasoning: rememberChatCompletionsReasoning,
                   }),
                 );
@@ -6405,12 +6718,12 @@ export async function generateRoutes(app: FastifyInstance) {
                     onToken: input.streaming ? onToken : undefined,
                     openrouterProvider: conn.openrouterProvider ?? undefined,
                     signal: abortController.signal,
-                    encryptedReasoningItems: excludePastReasoning
-                      ? undefined
-                      : encryptedReasoningCache.get(input.chatId),
+                    encryptedReasoningItems: excludePastReasoning ? undefined : encryptedReasoningItems,
                     onEncryptedReasoning: excludePastReasoning
                       ? undefined
-                      : (items) => encryptedReasoningCache.set(input.chatId, items),
+                      : (items) => {
+                          encryptedReasoningItems = items;
+                        },
                     onChatCompletionsReasoning: rememberChatCompletionsReasoning,
                   }),
                 );
@@ -6469,10 +6782,12 @@ export async function generateRoutes(app: FastifyInstance) {
                 geminiResponseParts = parts;
               },
               signal: abortController.signal,
-              encryptedReasoningItems: excludePastReasoning ? undefined : encryptedReasoningCache.get(input.chatId),
+              encryptedReasoningItems: excludePastReasoning ? undefined : encryptedReasoningItems,
               onEncryptedReasoning: excludePastReasoning
                 ? undefined
-                : (items) => encryptedReasoningCache.set(input.chatId, items),
+                : (items) => {
+                    encryptedReasoningItems = items;
+                  },
               onChatCompletionsReasoning: rememberChatCompletionsReasoning,
             });
             try {
@@ -6987,6 +7302,7 @@ export async function generateRoutes(app: FastifyInstance) {
                     commandOnly: true,
                     conversationCommandContent: conversationCommandContent ?? null,
                     isGenerated: true,
+                    encryptedReasoning: encryptedReasoningItems?.length ? encryptedReasoningItems : null,
                   })
                 : savedMsg;
               if (
@@ -7112,7 +7428,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   if (!recoveredMessage) throw error;
                   recoveredAlreadyAppliedSpatialTurn = true;
                   recoveredAlreadyAppliedOwnerTurn = true;
-                  encryptedReasoningCache.delete(input.chatId);
+                  encryptedReasoningItems = undefined;
                   savedMsg = recoveredMessage;
                   savedSwipeIndex = recovered.swipeIndex;
                   fullResponse = recoveredMessage.content;
@@ -7234,8 +7550,7 @@ export async function generateRoutes(app: FastifyInstance) {
             if (chatCompletionsReasoning) extraUpdate.chatCompletionsReasoning = chatCompletionsReasoning;
             else extraUpdate.chatCompletionsReasoning = null;
             // Store OpenAI Responses API encrypted reasoning items for multi-turn continuity
-            const cachedReasoning = encryptedReasoningCache.get(input.chatId);
-            if (cachedReasoning?.length) extraUpdate.encryptedReasoning = cachedReasoning;
+            if (encryptedReasoningItems?.length) extraUpdate.encryptedReasoning = encryptedReasoningItems;
             else extraUpdate.encryptedReasoning = null;
             // Cache the exact prompt injections used for this swipe so future
             // regenerations and swipe switches replay the same guidance.
@@ -7735,7 +8050,12 @@ export async function generateRoutes(app: FastifyInstance) {
           await sendAssistantMessageReady(currentIterationSavedMsg);
           // Roleplay post-processing is anchored to the saved message/swipe
           // below, so it no longer needs to hold the chat-wide generation slot.
-          if (chatMode === "roleplay" && assistantMessageReadySent) releaseActiveGeneration();
+          if (chatMode === "roleplay" && assistantMessageReadySent) {
+            moveToActiveAgentRuns(
+              currentIterationSavedMsg!.id,
+              lastSavedSwipeIndex ?? currentIterationSavedMsg!.activeSwipeIndex ?? 0,
+            );
+          }
         }
 
         // ────────────────────────────────────────
@@ -9178,6 +9498,11 @@ export async function generateRoutes(app: FastifyInstance) {
                     chatName: chat.name,
                     preferredTargetLorebookId,
                     writableLorebookIds,
+                    writableLorebooks: Array.isArray(agentContext.memory._writableLorebooks)
+                      ? (agentContext.memory._writableLorebooks as Array<{ id: string; name: string }>)
+                      : undefined,
+                    lorebookNamingScheme: getLorebookNamingScheme(resultAgent?.settings),
+                    worldName: agentContext.characters[0]?.world ?? chat.name,
                     updates,
                     revectorizeEntry: memoryRecallVectorizerAvailable
                       ? async (entry) => {
@@ -10002,7 +10327,12 @@ export async function generateRoutes(app: FastifyInstance) {
         // persisted edit (or no-op result) before releasing TTS.
         if (activatedTextRewriteRunAgents.length > 0) {
           await sendAssistantMessageReady();
-          if (chatMode === "roleplay" && assistantMessageReadySent) releaseActiveGeneration();
+          if (chatMode === "roleplay" && assistantMessageReadySent) {
+            moveToActiveAgentRuns(
+              currentIterationSavedMsg!.id,
+              lastSavedSwipeIndex ?? currentIterationSavedMsg!.activeSwipeIndex ?? 0,
+            );
+          }
         }
 
         if (!recoveredAlreadyAppliedOwnerTurn && !abortController.signal.aborted) {
@@ -10411,6 +10741,7 @@ export async function generateRoutes(app: FastifyInstance) {
       stopSseKeepalive();
       reply.raw.off("close", onClose);
       releaseActiveGeneration();
+      releaseActiveAgentRun();
       if (!clientDisconnected && isSseReplyWritable(reply)) {
         reply.raw.end();
       }
@@ -10427,7 +10758,7 @@ export async function generateRoutes(app: FastifyInstance) {
    * waiting until the server-side generation has finished saving.
    */
   app.get<{ Params: { chatId: string } }>("/status/:chatId", async (req) => ({
-    active: activeGenerations.has(req.params.chatId),
+    active: activeGenerations.has(req.params.chatId) || (activeAgentRuns.get(req.params.chatId)?.size ?? 0) > 0,
   }));
 
   /**
@@ -10435,19 +10766,23 @@ export async function generateRoutes(app: FastifyInstance) {
    * Explicitly abort an in-progress generation for a given chat.
    */
   app.post("/abort", async (req, reply) => {
-    const body = req.body as { chatId?: string };
+    const body = req.body as { chatId?: string; agentsOnly?: boolean };
     const chatId = body?.chatId;
     if (!chatId) return reply.status(400).send({ error: "chatId is required" });
 
-    const gen = activeGenerations.get(chatId);
-    if (!gen) return reply.send({ aborted: false, reason: "No active generation for this chat" });
+    const agentRuns = [...(activeAgentRuns.get(chatId) ?? [])];
+    const activeGeneration = activeGenerations.get(chatId);
+    const targets =
+      body.agentsOnly === true ? agentRuns : [...(activeGeneration ? [activeGeneration] : []), ...agentRuns];
+    if (targets.length === 0) return reply.send({ aborted: false, reason: "No active generation for this chat" });
 
-    logger.info("[abort] Explicit abort requested for chat: %s", chatId);
-    gen.abortController.abort();
+    logger.info("[abort] Explicit abort requested for %d run(s) in chat: %s", targets.length, chatId);
+    for (const target of targets) target.abortController.abort();
 
-    // Send abort to backend (KoboldCPP etc.)
-    if (gen.backendUrl) {
-      const backendRoot = gen.backendUrl.replace(/\/v1\/?$/, "");
+    // An agent tail may overlap a newer reply on the same backend. Its scoped
+    // AbortSignal is safe; a backend-wide abort endpoint is not.
+    if (body.agentsOnly !== true && activeGeneration?.backendUrl) {
+      const backendRoot = activeGeneration.backendUrl.replace(/\/v1\/?$/, "");
       const abortUrl = backendRoot + "/api/extra/abort";
       logger.info("[abort] Sending abort to backend: %s", abortUrl);
       try {
@@ -10461,10 +10796,10 @@ export async function generateRoutes(app: FastifyInstance) {
     // Keep the entry registered until the generation route reaches its
     // identity-checked finally block. Deleting here opens a same-chat race where
     // a replacement request can register before the aborted request has unwound.
-    return reply.send({ aborted: true });
+    return reply.send({ aborted: true, count: targets.length });
   });
 
   await registerDryRunRoute(app);
   await registerRawRoute(app);
-  await registerRetryAgentsRoute(app, activeCustomLorebookReadBehindRuns);
+  await registerRetryAgentsRoute(app, activeCustomLorebookReadBehindRuns, activeAgentRuns);
 }

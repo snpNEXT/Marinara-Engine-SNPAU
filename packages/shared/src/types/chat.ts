@@ -264,6 +264,8 @@ export interface ChatMetadata {
   summaryRunInterval?: number;
   /** Whether the Chat Summary popover should automatically generate rolling Roleplay summaries. */
   automaticSummaryEnabled?: boolean;
+  /** Keep recent automatic summaries in context while retrieving relevant older Conversation weeks or Roleplay entries. */
+  semanticSummaryRetrievalEnabled?: boolean;
   /** Last assistant message ID processed by the automatic Roleplay summary updater. */
   lastAutomaticSummaryMessageId?: string | null;
   /** Chat-scoped manual summary prompt templates. Missing or empty uses the built-in default. */

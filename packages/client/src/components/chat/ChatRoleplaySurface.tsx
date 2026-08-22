@@ -53,6 +53,7 @@ import {
 } from "../../lib/chat-floating-ui-events";
 import { getConnectedChatDisplayName } from "../../lib/chat-display";
 import { playConfiguredNotificationPing } from "../../lib/notification-sound";
+import { rememberBoundedSetValue } from "../../lib/bounded-set";
 import { messageHasPendingPostProcessing } from "../../lib/chat-message-extra";
 import { isMessageHiddenFromUser } from "../../lib/chat-message-visibility";
 import { getTranscriptRenderWindow, TRANSCRIPT_RENDER_WINDOW_STEP } from "../../lib/transcript-render-window";
@@ -149,6 +150,7 @@ const ActiveLorebookEntriesContent = lazy(async () => {
 });
 
 const roleplayNotificationSeenKeys = new Set<string>();
+const MAX_ROLEPLAY_NOTIFICATION_SEEN_KEYS = 5_000;
 const MOBILE_FLOATING_PANEL_PADDING = 8;
 
 type MobileFloatingPanelFrame = {
@@ -430,6 +432,8 @@ function RegeneratingMessageContent({
         <RoleplayLiveStreamText chatId={msg.chatId} emptyLabel={t("chat.message.thinking")} renderText={renderText} />
       )}
       {...rest}
+      storyboard={null}
+      storyboardGenerating={false}
     />
   );
 }
@@ -568,7 +572,10 @@ function ActiveContextLinksButton({
 
   useEffect(() => {
     if (!open) return;
-    const handleDismiss = () => setOpen(false);
+    const handleDismiss = () => {
+      if (document.querySelector("[data-macro-modal]")) return;
+      setOpen(false);
+    };
     window.addEventListener(CHAT_FLOATING_UI_DISMISS_EVENT, handleDismiss);
     return () => window.removeEventListener(CHAT_FLOATING_UI_DISMISS_EVENT, handleDismiss);
   }, [open]);
@@ -759,6 +766,7 @@ function SummaryButton({
   summaryConnectionId,
   summaryMaxTokens,
   automaticSummaryEnabled,
+  semanticSummaryRetrievalEnabled,
   activeAgentIds,
   summaryRunInterval,
   hideSummarisedMessages,
@@ -777,6 +785,7 @@ function SummaryButton({
   summaryConnectionId?: string | null;
   summaryMaxTokens?: number;
   automaticSummaryEnabled: boolean;
+  semanticSummaryRetrievalEnabled: boolean;
   activeAgentIds: string[];
   summaryRunInterval?: number;
   hideSummarisedMessages?: boolean;
@@ -875,6 +884,7 @@ function SummaryButton({
         ref={buttonRef}
         data-chat-toolbar-panel-action="summary"
         onClick={() => {
+          if (open && document.querySelector("[data-macro-modal]")) return;
           setAnchor(readSummaryAnchor());
           setOpen(!open);
         }}
@@ -906,6 +916,7 @@ function SummaryButton({
             summaryConnectionId={summaryConnectionId}
             summaryMaxTokens={summaryMaxTokens}
             automaticSummaryEnabled={automaticSummaryEnabled}
+            semanticSummaryRetrievalEnabled={semanticSummaryRetrievalEnabled}
             activeAgentIds={activeAgentIds}
             summaryRunInterval={summaryRunInterval}
             hideSummarisedMessages={hideSummarisedMessages}
@@ -1578,7 +1589,9 @@ export function ChatRoleplaySurface({
         prevMessageKeysRef.current = currentKeys;
         for (const message of messages) {
           const key = `${activeChatId}:${message.id}`;
-          if (!pendingPostProcessingKeys.has(key)) seenMessageKeysRef.current.add(key);
+          if (!pendingPostProcessingKeys.has(key)) {
+            rememberBoundedSetValue(seenMessageKeysRef.current, key, MAX_ROLEPLAY_NOTIFICATION_SEEN_KEYS);
+          }
         }
         pendingPostProcessingKeysRef.current = pendingPostProcessingKeys;
         initialLoadSettledRef.current = true;
@@ -1608,7 +1621,9 @@ export function ChatRoleplaySurface({
 
     for (const message of messages) {
       const key = `${activeChatId}:${message.id}`;
-      if (!pendingPostProcessingKeys.has(key)) seenKeys.add(key);
+      if (!pendingPostProcessingKeys.has(key)) {
+        rememberBoundedSetValue(seenKeys, key, MAX_ROLEPLAY_NOTIFICATION_SEEN_KEYS);
+      }
     }
     prevMessageKeysRef.current = currentKeys;
     pendingPostProcessingKeysRef.current = pendingPostProcessingKeys;
@@ -1636,6 +1651,7 @@ export function ChatRoleplaySurface({
   const automaticSummaryEnabled =
     chatMeta.automaticSummaryEnabled === true ||
     (chatMeta.enableAgents === true && summaryActiveAgentIds.includes("chat-summary"));
+  const semanticSummaryRetrievalEnabled = chatMeta.semanticSummaryRetrievalEnabled === true;
   const summaryRunInterval =
     typeof chatMeta.summaryRunInterval === "number" && Number.isFinite(chatMeta.summaryRunInterval)
       ? chatMeta.summaryRunInterval
@@ -1867,6 +1883,7 @@ export function ChatRoleplaySurface({
                       }
                       summaryMaxTokens={summaryMaxTokens}
                       automaticSummaryEnabled={automaticSummaryEnabled}
+                      semanticSummaryRetrievalEnabled={semanticSummaryRetrievalEnabled}
                       activeAgentIds={summaryActiveAgentIds}
                       summaryRunInterval={summaryRunInterval}
                       hideSummarisedMessages={hideSummarisedMessages}
@@ -1995,6 +2012,7 @@ export function ChatRoleplaySurface({
                           }
                           summaryMaxTokens={summaryMaxTokens}
                           automaticSummaryEnabled={automaticSummaryEnabled}
+                          semanticSummaryRetrievalEnabled={semanticSummaryRetrievalEnabled}
                           activeAgentIds={summaryActiveAgentIds}
                           summaryRunInterval={summaryRunInterval}
                           hideSummarisedMessages={hideSummarisedMessages}
@@ -2078,6 +2096,7 @@ export function ChatRoleplaySurface({
                         }
                         summaryMaxTokens={summaryMaxTokens}
                         automaticSummaryEnabled={automaticSummaryEnabled}
+                        semanticSummaryRetrievalEnabled={semanticSummaryRetrievalEnabled}
                         activeAgentIds={summaryActiveAgentIds}
                         summaryRunInterval={summaryRunInterval}
                         hideSummarisedMessages={hideSummarisedMessages}
@@ -2291,7 +2310,7 @@ export function ChatRoleplaySurface({
                   buttonClassName="border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] text-[var(--marinara-chat-chrome-button-text-active)] hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)]"
                 />
 
-                {!isStreaming && <CyoaChoices messages={visibleMessages} />}
+                {!isStreaming && <CyoaChoices messages={messages} />}
 
                 {hasLiveStream && !regenerateMessageId && (
                   <StreamingIndicator

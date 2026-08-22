@@ -94,6 +94,7 @@ export interface FloatingWidgetPosition {
   x: number;
   y: number;
 }
+export const DEFAULT_MOBILE_MUSIC_WIDGET_POSITION = { x: 16, y: 144 } as const;
 export interface SummaryPopoverSettings {
   sourceMode: SummaryPopoverSourceMode;
   contextSize: number | null;
@@ -747,6 +748,10 @@ interface UIState {
   messagesPerPage: number;
   /** Bold quoted dialogue in chat messages; color highlighting can still remain when this is off */
   boldDialogue: boolean;
+  /** When true, character names and aliases are colored in chat prose using the character's nameColor. */
+  colorInlineNames: boolean;
+  /** When true, inline name coloring uses the first solid color from gradients instead of rendering the gradient. */
+  disableInlineNameGradients: boolean;
   /** Preferred quote style applied to AI output and user input. */
   quoteFormat: QuoteFormat;
   /** When true, common LaTeX symbol commands render as plain Unicode symbols in chat text. */
@@ -1069,6 +1074,8 @@ interface UIState {
   setIncludeReasoningInExports: (v: boolean) => void;
   setMessagesPerPage: (n: number) => void;
   setBoldDialogue: (v: boolean) => void;
+  setColorInlineNames: (v: boolean) => void;
+  setDisableInlineNameGradients: (v: boolean) => void;
   setQuoteFormat: (v: QuoteFormat) => void;
   setConvertLatexSymbols: (v: boolean) => void;
   setTrimIncompleteModelOutput: (v: boolean) => void;
@@ -1282,6 +1289,8 @@ export function pickSyncedSettings(state: UIState) {
     includeReasoningInExports: state.includeReasoningInExports,
     messagesPerPage: state.messagesPerPage,
     boldDialogue: state.boldDialogue,
+    colorInlineNames: state.colorInlineNames,
+    disableInlineNameGradients: state.disableInlineNameGradients,
     quoteFormat: state.quoteFormat,
     convertLatexSymbols: state.convertLatexSymbols,
     trimIncompleteModelOutput: state.trimIncompleteModelOutput,
@@ -1488,6 +1497,8 @@ export const useUIStore = create<UIState>()(
       includeReasoningInExports: false,
       messagesPerPage: 20,
       boldDialogue: true,
+      colorInlineNames: false,
+      disableInlineNameGradients: false,
       quoteFormat: "straight" as QuoteFormat,
       convertLatexSymbols: true,
       trimIncompleteModelOutput: false,
@@ -1505,7 +1516,7 @@ export const useUIStore = create<UIState>()(
       conversationCallVoiceVolume: 100,
       conversationCallVoiceMuted: false,
       spotifyMobileWidgetCollapsed: true,
-      spotifyMobileWidgetPosition: { x: 16, y: 96 },
+      spotifyMobileWidgetPosition: { ...DEFAULT_MOBILE_MUSIC_WIDGET_POSITION },
       intuitiveSwipeNavigation: false,
       intuitiveSwipeRerollLatest: false,
       editLastMessageOnArrowUp: true,
@@ -2275,6 +2286,8 @@ export const useUIStore = create<UIState>()(
       setIncludeReasoningInExports: (v) => set({ includeReasoningInExports: v }),
       setMessagesPerPage: (n) => set({ messagesPerPage: n }),
       setBoldDialogue: (v) => set({ boldDialogue: v }),
+      setColorInlineNames: (v) => set({ colorInlineNames: v }),
+      setDisableInlineNameGradients: (v) => set({ disableInlineNameGradients: v }),
       setQuoteFormat: (v) => set({ quoteFormat: normalizeQuoteFormat(v) }),
       setConvertLatexSymbols: (v) => set({ convertLatexSymbols: v }),
       setTrimIncompleteModelOutput: (v) => set({ trimIncompleteModelOutput: v }),
@@ -2304,8 +2317,12 @@ export const useUIStore = create<UIState>()(
       setSpotifyMobileWidgetPosition: (position) =>
         set({
           spotifyMobileWidgetPosition: {
-            x: Number.isFinite(position.x) ? Math.max(8, Math.round(position.x)) : 16,
-            y: Number.isFinite(position.y) ? Math.max(8, Math.round(position.y)) : 96,
+            x: Number.isFinite(position.x)
+              ? Math.max(8, Math.round(position.x))
+              : DEFAULT_MOBILE_MUSIC_WIDGET_POSITION.x,
+            y: Number.isFinite(position.y)
+              ? Math.max(8, Math.round(position.y))
+              : DEFAULT_MOBILE_MUSIC_WIDGET_POSITION.y,
           },
         }),
       setIntuitiveSwipeNavigation: (v) => set({ intuitiveSwipeNavigation: v }),
@@ -2514,12 +2531,9 @@ export const useUIStore = create<UIState>()(
     }),
     {
       name: "marinara-engine-ui",
-      // v93 -> v94: add the Inventory tracker-panel section. The bump matters:
-      // `migrate` re-normalizes `trackerPanelSectionOrder`, and it only runs when
-      // the persisted version changes. Without it an existing user's saved order
-      // never gains "inventory" and the section stays invisible until they
-      // reorder the panel by hand.
-      version: 94,
+      // v94 -> v95: move only the untouched mobile music-player default below Home bookmarks.
+      // The version bump ensures existing stores run the exact-coordinate migration below.
+      version: 95,
       // Debounce localStorage writes to avoid sync I/O on every state change
       storage: createJSONStorage(() => {
         let timer: ReturnType<typeof setTimeout> | null = null;
@@ -2711,7 +2725,7 @@ export const useUIStore = create<UIState>()(
         if (version <= 19) {
           if (persisted.spotifyMobileWidgetCollapsed === undefined) persisted.spotifyMobileWidgetCollapsed = true;
           if (persisted.spotifyMobileWidgetPosition === undefined) {
-            persisted.spotifyMobileWidgetPosition = { x: 16, y: 96 };
+            persisted.spotifyMobileWidgetPosition = { ...DEFAULT_MOBILE_MUSIC_WIDGET_POSITION };
           }
         }
         // v20 -> v21: remember Game setup free-text fields and learned preference chips.
@@ -3084,6 +3098,15 @@ export const useUIStore = create<UIState>()(
         if (version <= 90 && persisted.professorMariNavigationEnabled === undefined) {
           persisted.professorMariNavigationEnabled = true;
         }
+        // v94 -> v95: existing custom positions stay untouched; the exact legacy
+        // default is the only reliable indication that the widget was never moved.
+        if (
+          version <= 94 &&
+          persisted.spotifyMobileWidgetPosition?.x === 16 &&
+          persisted.spotifyMobileWidgetPosition?.y === 96
+        ) {
+          persisted.spotifyMobileWidgetPosition = { ...DEFAULT_MOBILE_MUSIC_WIDGET_POSITION };
+        }
         // v84 -> v85: keep the historical blank-line behavior for /continue by default.
         if (version <= 84 && persisted.continueAddsNewline === undefined) {
           persisted.continueAddsNewline = true;
@@ -3216,6 +3239,8 @@ export const useUIStore = create<UIState>()(
         includeReasoningInExports: state.includeReasoningInExports,
         messagesPerPage: state.messagesPerPage,
         boldDialogue: state.boldDialogue,
+        colorInlineNames: state.colorInlineNames,
+        disableInlineNameGradients: state.disableInlineNameGradients,
         quoteFormat: state.quoteFormat,
         convertLatexSymbols: state.convertLatexSymbols,
         trimIncompleteModelOutput: state.trimIncompleteModelOutput,

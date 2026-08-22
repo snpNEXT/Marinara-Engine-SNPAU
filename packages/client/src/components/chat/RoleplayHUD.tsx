@@ -28,6 +28,7 @@ import { WorldClockIcon, WorldThermometerIcon } from "../ui/WorldStateInstrument
 import { useGameStateStore } from "../../stores/game-state.store";
 import { useAgentStore, EMPTY_AGENT_TYPES, EMPTY_AGENT_FAILURES } from "../../stores/agent.store";
 import { useAgentConfigs, useCustomAgentRuns, type AgentConfigRow } from "../../hooks/use-agents";
+import { useUpdateMessageExtra } from "../../hooks/use-chats";
 import { discardPendingGameStatePatch, useGameStatePatcher } from "../../hooks/use-game-state-patcher";
 import { useUIStore } from "../../stores/ui.store";
 import { useReducedAmbientEffects } from "../../hooks/use-reduced-ambient-effects";
@@ -149,6 +150,7 @@ export function RoleplayHUD({
   const dismissThoughtBubble = useAgentStore((s) => s.dismissThoughtBubble);
   const clearThoughtBubbles = useAgentStore((s) => s.clearThoughtBubbles);
   const resetAgentStore = useAgentStore((s) => s.reset);
+  const updateMessageExtra = useUpdateMessageExtra(chatId);
   const trackerPanelEnabled = useUIStore((s) => s.trackerPanelEnabled);
   const trackerPanelOpen = useUIStore((s) => s.trackerPanelOpen);
   const trackerPanelHideHudWidgets = useUIStore((s) => s.trackerPanelHideHudWidgets);
@@ -220,8 +222,18 @@ export function RoleplayHUD({
     api.patch(`/chats/${chatId}/game-state`, { ...cleared, manual: true, clearOverrides: true }).catch(() => {});
     // Clear committed agent runs & memory from DB + reset client state
     api.delete(`/agents/runs/${chatId}`).catch(() => {});
+    const latestAssistantMessage = [...(injectionSourceMessages ?? [])]
+      .reverse()
+      .find((message) => message.role === "assistant");
+    if (latestAssistantMessage) {
+      updateMessageExtra.mutate({ messageId: latestAssistantMessage.id, extra: { cyoaChoices: [] } });
+    }
     resetAgentStore();
-  }, [chatId, setGameState, resetAgentStore]);
+  }, [chatId, injectionSourceMessages, resetAgentStore, setGameState, updateMessageExtra]);
+  const stopAgents = useCallback(
+    () => api.post("/generate/abort", { chatId, agentsOnly: true }).then(() => undefined),
+    [chatId],
+  );
 
   const date = gameState?.date ?? null;
   const time = gameState?.time ?? null;
@@ -316,6 +328,7 @@ export function RoleplayHUD({
           clearGameState={clearGameState}
           onRetriggerTrackers={onRetriggerTrackers}
           onRetryFailedAgents={onRetryFailedAgents}
+          onStopAgents={stopAgents}
           failedAgentTypes={failedAgentTypes}
           failedAgentFailures={failedAgentFailures}
           showInjectionsTab={showInjectionsTab}
@@ -569,6 +582,7 @@ interface ActionsGroupProps {
   clearGameState: () => void;
   onRetriggerTrackers?: () => void;
   onRetryFailedAgents?: () => void;
+  onStopAgents?: () => Promise<void>;
   failedAgentTypes: string[];
   failedAgentFailures: AgentFailure[];
   showInjectionsTab?: boolean;
@@ -589,6 +603,7 @@ function ActionsGroup({
   clearGameState,
   onRetriggerTrackers,
   onRetryFailedAgents,
+  onStopAgents,
   failedAgentTypes,
   failedAgentFailures,
   showInjectionsTab,
@@ -692,6 +707,7 @@ function ActionsGroup({
             clearGameState={clearGameState}
             onRetriggerTrackers={onRetriggerTrackers}
             onRetryFailedAgents={onRetryFailedAgents}
+            onStopAgents={onStopAgents}
             failedAgentTypes={failedAgentTypes}
             failedAgentFailures={failedAgentFailures}
             onClose={() => setAgentsOpen(false)}

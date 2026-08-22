@@ -778,6 +778,22 @@ const SETTINGS_SEARCHABLE_CONTROLS: readonly SettingsSearchableControlMeta[] = [
     kind: "Button group",
   },
   {
+    id: "color-inline-names",
+    sectionId: "text-rules",
+    label: "Color Character Names in Text",
+    description: "Color character names and aliases inline in message text.",
+    aliases: ["names", "aliases", "color", "gradient", "characters"],
+    kind: "Toggle",
+  },
+  {
+    id: "disable-inline-name-gradients",
+    sectionId: "text-rules",
+    label: "Force Solid Colors for Inline Names",
+    description: "Replace gradient name colors with the brightest solid color inline.",
+    aliases: ["gradient", "solid", "names", "readability"],
+    kind: "Toggle",
+  },
+  {
     id: "game-instant-text-reveal",
     sectionId: "game-playback",
     label: "Instantly reveal game text",
@@ -1222,6 +1238,14 @@ const SETTINGS_SEARCHABLE_CONTROLS: readonly SettingsSearchableControlMeta[] = [
     kind: "Select",
   },
   {
+    id: "restart-server",
+    sectionId: "admin-access",
+    label: "Restart Server",
+    description: "Gracefully restart the Marinara server from this browser.",
+    aliases: ["server", "restart", "maintenance", "remote"],
+    kind: "Button group",
+  },
+  {
     id: "copy-support-diagnostics",
     sectionId: "support-diagnostics",
     label: "Copy Diagnostics",
@@ -1592,23 +1616,6 @@ const EXPUNGE_SCOPE_OPTIONS: Array<{ id: ExpungeScope; label: string; descriptio
     description: "Backgrounds, avatars, sprites, gallery items, fonts, and knowledge-source files.",
   },
 ];
-
-async function readSettingsResponseError(res: Response, fallback: string) {
-  const contentType = res.headers.get("content-type") ?? "";
-
-  try {
-    if (contentType.includes("application/json")) {
-      const payload = (await res.json()) as { error?: unknown; message?: unknown };
-      const message = typeof payload.message === "string" ? payload.message : payload.error;
-      return typeof message === "string" && message.trim() ? message : fallback;
-    }
-
-    const text = (await res.text()).trim();
-    return text ? text.slice(0, 500) : fallback;
-  } catch {
-    return fallback;
-  }
-}
 
 function formatStorageBytes(bytes: number): string {
   const safeBytes = Math.max(0, Number.isFinite(bytes) ? bytes : 0);
@@ -3335,6 +3342,10 @@ function GeneralSettings() {
   const { t: localizeUi } = useUiTranslation();
   const { t, i18n: localization } = useTranslation();
   const localize = useLocalizedUiText();
+  const { data: installedCapabilities = [] } = useInstalledCapabilityPackages();
+  const musicDjInstalled = installedCapabilities.some(
+    (capability) => capability.id === "spotify" && capability.status === "active",
+  );
   const language = useUIStore((s) => s.language);
   const setLanguage = useUIStore((s) => s.setLanguage);
   const enableStreaming = useUIStore((s) => s.enableStreaming);
@@ -3365,6 +3376,10 @@ function GeneralSettings() {
   const setMessagesPerPage = useUIStore((s) => s.setMessagesPerPage);
   const boldDialogue = useUIStore((s) => s.boldDialogue);
   const setBoldDialogue = useUIStore((s) => s.setBoldDialogue);
+  const colorInlineNames = useUIStore((s) => s.colorInlineNames);
+  const setColorInlineNames = useUIStore((s) => s.setColorInlineNames);
+  const disableInlineNameGradients = useUIStore((s) => s.disableInlineNameGradients);
+  const setDisableInlineNameGradients = useUIStore((s) => s.setDisableInlineNameGradients);
   const quoteFormat = useUIStore((s) => s.quoteFormat);
   const setQuoteFormat = useUIStore((s) => s.setQuoteFormat);
   const convertLatexSymbols = useUIStore((s) => s.convertLatexSymbols);
@@ -3444,9 +3459,12 @@ function GeneralSettings() {
           <ToggleSetting
             anchorId={getSettingsControlAnchorId("music-player")}
             label={localizeUi("settings.controls.musicPlayer.label")}
-            checked={musicPlayerEnabled}
+            checked={musicDjInstalled && musicPlayerEnabled}
             onChange={setMusicPlayerEnabled}
-            help={localizeUi("settings.controls.musicPlayer.help")}
+            help={localizeUi(
+              musicDjInstalled ? "settings.controls.musicPlayer.help" : "settings.controls.musicPlayer.requiresMusicDj",
+            )}
+            disabled={!musicDjInstalled}
           />
           <ToggleSetting
             anchorId={getSettingsControlAnchorId("mini-mari")}
@@ -3695,7 +3713,22 @@ function GeneralSettings() {
             onChange={setConvertLatexSymbols}
             help={localizeUi("ui.panels.generalsettings.turnsCommonModelWrittenLatexCommandsLikeRightarrowNeq")}
           />
-
+          <ToggleSetting
+            anchorId={getSettingsControlAnchorId("color-inline-names")}
+            label={localizeUi("settings.controls.colorInlineNames.label")}
+            checked={colorInlineNames ?? false}
+            onChange={setColorInlineNames}
+            help={localizeUi("settings.controls.colorInlineNames.help")}
+          />
+          {colorInlineNames && (
+            <ToggleSetting
+              anchorId={getSettingsControlAnchorId("disable-inline-name-gradients")}
+              label={localizeUi("settings.controls.disableInlineNameGradients.label")}
+              checked={disableInlineNameGradients ?? false}
+              onChange={setDisableInlineNameGradients}
+              help={localizeUi("settings.controls.disableInlineNameGradients.help")}
+            />
+          )}
           <div
             id={getSettingsControlAnchorId("quote-style")}
             className="flex scroll-mt-3 flex-col gap-1.5 rounded-lg p-1 transition-colors hover:bg-[var(--secondary)]/50"
@@ -7300,6 +7333,13 @@ function AdvancedSettings() {
   const [adminSecret, setAdminSecret] = useState(() => localStorage.getItem(ADMIN_SECRET_STORAGE_KEY) ?? "");
   const [chubApiKey, setChubApiKey] = useState("");
   const [isSavingChubApiKey, setIsSavingChubApiKey] = useState(false);
+  const restartServer = useMutation({
+    mutationFn: () => api.post<{ status: "restarting" }>("/admin/restart", { confirm: true }),
+    onSuccess: () => toast.success(localizeUi("settings.serverRestart.success")),
+    onError: (error) => {
+      toast.error(getPrivilegedActionErrorMessage(error, localizeUi("settings.serverRestart.error")));
+    },
+  });
   const { data: extensionPolicy, isLoading: extensionPolicyLoading } = usePersonalExtensionPolicy();
   const setExternalExtensionsEnabled = useSetExternalExtensionsEnabled();
   const { data: agentImportPolicy, isLoading: agentImportPolicyLoading } = useAgentImportPolicy();
@@ -7511,20 +7551,20 @@ function AdvancedSettings() {
   const [creatingBackup, setCreatingBackup] = useState(false);
 
   /**
-   * Download a full backup to a user-chosen location.
-   *
-   * Uses the File System Access API (`showSaveFilePicker`) when available so
-   * the browser opens a native "Save As" dialog — this is important on Android
-   * and iOS, where the server-side `data/backups/` folder isn't reachable
-   * without root. Falls back to an anchor-triggered download (which routes
-   * through the browser's default Downloads handling).
+   * Prepare a full backup, then hand its finished stream directly to the browser.
+   * Keeping the archive out of a page-held Blob lets Safari and memory-limited
+   * mobile browsers save large backups through their normal download handling.
    */
   const handleCreateBackup = async () => {
     setCreatingBackup(true);
     try {
       const started = await api.post<{ jobId: string; status: "preparing" }>("/backup/download/start");
       const deadline = Date.now() + 60 * 60 * 1_000;
-      let status: { status: "preparing" | "ready" | "failed"; error?: string } = { status: started.status };
+      let status: {
+        status: "preparing" | "ready" | "failed";
+        error?: string;
+        downloadUrl?: string;
+      } = { status: started.status };
       while (status.status === "preparing") {
         if (Date.now() >= deadline) {
           throw new Error(localizeUi("ui.panels.advancedsettings.backupPreparationTimedOut"));
@@ -7535,65 +7575,12 @@ function AdvancedSettings() {
       if (status.status === "failed") {
         throw new Error(status.error || localizeUi("ui.panels.advancedsettings.failedToCreateBackup"));
       }
-
-      const res = await api.raw(`/backup/download/file/${encodeURIComponent(started.jobId)}`);
-      if (!res.ok) {
-        throw new Error(
-          await readSettingsResponseError(res, localizeUi("ui.panels.advancedsettings.failedToCreateBackup")),
-        );
+      if (!status.downloadUrl) {
+        throw new Error(localizeUi("ui.panels.advancedsettings.failedToCreateBackup"));
       }
 
-      // Pull the filename from Content-Disposition if provided
-      const disposition = res.headers.get("content-disposition") ?? "";
-      const filenameMatch = disposition.match(/filename="?([^"]+)"?/i);
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
-      const suggestedName = filenameMatch?.[1] ?? `marinara-backup-${timestamp}.zip`;
-
-      const blob = await res.blob();
-
-      // Preferred path: native "Save As" dialog (Chromium desktop, some Android)
-      const w = window as typeof window & {
-        showSaveFilePicker?: (options: {
-          suggestedName?: string;
-          types?: Array<{ description?: string; accept: Record<string, string[]> }>;
-        }) => Promise<{
-          createWritable: () => Promise<{ write: (data: Blob) => Promise<void>; close: () => Promise<void> }>;
-        }>;
-      };
-      if (typeof w.showSaveFilePicker === "function") {
-        try {
-          const handle = await w.showSaveFilePicker({
-            suggestedName,
-            types: [
-              {
-                description: "Marinara backup archive",
-                accept: { "application/zip": [".zip"] },
-              },
-            ],
-          });
-          const writable = await handle.createWritable();
-          await writable.write(blob);
-          await writable.close();
-          toast.success(localizeUi("ui.panels.advancedsettings.backupSaved"));
-          qc.invalidateQueries({ queryKey: ["backups"] });
-          return;
-        } catch (err) {
-          // User cancelled the native picker — treat as a silent no-op
-          if (err instanceof DOMException && err.name === "AbortError") return;
-          // Any other failure falls through to the anchor fallback
-        }
-      }
-
-      // Fallback: anchor download. On Android Chrome this routes through the
-      // system Downloads handler (which typically prompts the user or drops
-      // the file in the Downloads folder, both of which are user-accessible).
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = suggestedName;
-      a.click();
-      URL.revokeObjectURL(url);
-      toast.success(localizeUi("ui.panels.advancedsettings.backupDownloaded"));
+      window.location.assign(status.downloadUrl);
+      toast.success(localizeUi("ui.panels.advancedsettings.backupDownloadStarted"));
       qc.invalidateQueries({ queryKey: ["backups"] });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : localizeUi("ui.panels.advancedsettings.failedToCreateBackup"));
@@ -7707,6 +7694,16 @@ function AdvancedSettings() {
     }
   }, [adminSecret, localizeUi]);
 
+  const handleRestartServer = useCallback(async () => {
+    const confirmed = await showConfirmDialog({
+      title: localizeUi("settings.serverRestart.confirm.title"),
+      message: localizeUi("settings.serverRestart.confirm.message"),
+      confirmLabel: localizeUi("settings.serverRestart.action"),
+      cancelLabel: localizeUi("chat.delete.dialog.cancel"),
+    });
+    if (confirmed) restartServer.mutate();
+  }, [localizeUi, restartServer]);
+
   type UpdateChannelId = "stable" | "staging";
   const [updateChannel, setUpdateChannel] = useState<UpdateChannelId | null>(null);
   const updateCheck = useQuery<{
@@ -7735,7 +7732,7 @@ function AdvancedSettings() {
     releaseTag?: string;
     dockerImage?: string;
     dockerImageTag?: string;
-    dockerLiteImageTag?: string;
+    dockerLiteImageTag?: string | null;
     installType: "git" | "docker" | "standalone";
     serverPlatform?: "windows" | "macos" | "linux" | "android-termux" | "unknown";
     clientPlatform?: "ios" | "android" | "desktop" | "unknown";
@@ -7881,6 +7878,26 @@ function AdvancedSettings() {
               {localizeUi("ui.noodle.noodlehome.save")}
             </span>
           </button>
+          <SearchableSettingTarget controlId="restart-server" className="flex flex-col gap-1.5">
+            <button
+              type="button"
+              onClick={() => void handleRestartServer()}
+              disabled={restartServer.isPending}
+              className={cn(SETTINGS_BUTTON_CLASS, "w-full justify-center gap-1.5 px-3 py-2 text-xs")}
+            >
+              {restartServer.isPending ? (
+                <Loader2 size="0.8125rem" className="animate-spin" />
+              ) : (
+                <Power size="0.8125rem" />
+              )}
+              {restartServer.isPending
+                ? localizeUi("settings.serverRestart.restarting")
+                : localizeUi("settings.serverRestart.action")}
+            </button>
+            <p className="text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
+              {localizeUi("settings.serverRestart.description")}
+            </p>
+          </SearchableSettingTarget>
         </div>
       </SettingsSection>
 
@@ -7994,15 +8011,19 @@ function AdvancedSettings() {
             <div className="flex flex-col gap-2 rounded-lg bg-[var(--secondary)] p-2.5 ring-1 ring-[var(--border)]">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium">
-                  {updateCheck.data.versionUpdate
-                    ? localizeUi("ui.panels.advancedsettings.vValue1Available", {
-                        value1: updateCheck.data.latestVersion,
+                  {updateCheck.data.channelSwitch
+                    ? localizeUi("ui.panels.advancedsettings.switchToValue1", {
+                        value1: updateCheck.data.channelLabel,
                       })
-                    : localizeUi("ui.panels.advancedsettings.value1CommitValue2BehindValue3", {
-                        value1: commitsBehind,
-                        value2: commitsBehind !== 1 ? localizeUi("ui.noodle.stageprofileview.s") : "",
-                        value3: updateCheck.data.targetRef ?? localizeUi("ui.panels.advancedsettings.originMain"),
-                      })}
+                    : updateCheck.data.versionUpdate
+                      ? localizeUi("ui.panels.advancedsettings.vValue1Available", {
+                          value1: updateCheck.data.latestVersion,
+                        })
+                      : localizeUi("ui.panels.advancedsettings.value1CommitValue2BehindValue3", {
+                          value1: commitsBehind,
+                          value2: commitsBehind !== 1 ? localizeUi("ui.noodle.stageprofileview.s") : "",
+                          value3: updateCheck.data.targetRef ?? localizeUi("ui.panels.advancedsettings.originMain"),
+                        })}
                 </span>
                 {updateCheck.data.versionUpdate && (
                   <a

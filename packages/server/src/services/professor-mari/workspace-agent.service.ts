@@ -194,6 +194,10 @@ const SKIPPED_DIRS = new Set([
   ".gradle",
 ]);
 
+export function professorMariWorkspaceResponseFormat(provider: string): ChatOptions["responseFormat"] | undefined {
+  return provider === "openrouter" ? { type: "json_object" } : undefined;
+}
+
 export const PROFESSOR_MARI_APP_DATA_ACTIONS = [
   "character.list",
   "character.get",
@@ -1584,7 +1588,7 @@ function visibleTextRequestsUserApproval(text: string): boolean {
   const normalized = text.toLowerCase().replace(/\s+/g, " ");
   return (
     /\b(say|reply|tell me)\b.{0,40}\b(apply it|apply|approve|approved|go ahead|yes|save it)\b/.test(normalized) ||
-    /\b(do you want me|should i|want me to)\b.{0,80}\b(apply|save|edit|update|patch|change|write|set|create|delete|remove|move|install)\b/.test(
+    /\b(do you want me|should i|want me to)\b.{0,80}\b(apply|save|edit|update|patch|change|fix|write|set|create|delete|remove|move|install)\b/.test(
       normalized,
     ) ||
     /\b(need|waiting for|wait for)\b.{0,40}\b(approval|confirmation|permission)\b/.test(normalized) ||
@@ -1658,7 +1662,27 @@ const DIRECT_MUTATION_AFTER_INFORMATION =
 const MUTATION_DENIAL =
   /\b(?:do\s+not|don't|never|no\s+changes?|read[- ]only|without\s+(?:changing|editing|saving|writing))\b/iu;
 const SHORT_MUTATION_CONFIRMATION =
-  /^(?:yes|yeah|yep|sure|ok(?:ay)?|go\s+ahead|do\s+it|please\s+do|proceed|apply\s+it|make\s+that\s+change)[.!\s]*$/iu;
+  /^(?:yes|yeah|yep|sure|ok(?:ay)?|go\s+ahead|do\s+it|please\s+do|proceed|apply\s+it|make\s+that\s+change|i\s+(?:authori[sz]e|approve)(?:\s+(?:it|this|that|this\s+change|that\s+change|the\s+changes?|these\s+changes))?)[,.!\s]*$/iu;
+const VAGUE_MUTATION_CONFIRMATION =
+  /^(?:(?:yes|yeah|yep|sure|ok(?:ay)?)[,.!\s]+)?(?:please\s+)?(?:just\s+)?(?:(?:go\s+ahead\s+and\s+)?(?:apply|change|do|edit|fix|handle|update)\s+(?:anything|everything|her|him|his|it|its|problem|something|stuff|that|their|them|these|things?|this|those|whatever))(?:(?:\s+for\s+me)|(?:,\s*|\s+)i\s+trust\s+you(?:\s+completely)?|\s+however\s+you\s+(?:think\s+is\s+best|see\s+fit|want)|\s+is\s+broken|\s+needs\s+to\s+be\s+done)?[,.!\s]*$/iu;
+const GENERIC_MUTATION_AUTHORIZATION = /\b(?:authori[sz]e|approve|grant\s+permission)\b/iu;
+const GENERIC_MUTATION_AUTHORIZATION_CLAUSE =
+  /\b(?:i\s+)?(?:authori[sz]e|approve|grant\s+permission)(?:\s+(?:it|this|that|this\s+change|that\s+change|the\s+changes?|these\s+changes))?\b[,.!;:\s-]*/iu;
+const EXPLICIT_MUTATION_CATEGORY_PATTERNS: Record<WorkspaceMutationCategory, RegExp> = {
+  create: /\b(?:create|generate|import)\b/iu,
+  update:
+    /\b(?:address|adjust|apply|assign|change|edit|enable|disable|ensure|fix|handle|implement|link|modify|patch|rename|replace|reword|save(?:\s+(?:(?:this|that)\s+change|(?:the|these|those)\s+changes?|changes?))|set|tweak|unlink|update|write)\b/iu,
+  delete: /\b(?:delete|erase|forget|remove|uninstall)\b/iu,
+  move: /\b(?:move|relocate)\b/iu,
+  copy: /\b(?:clone|copy|duplicate)\b/iu,
+  install: /\b(?:install|upgrade)\b/iu,
+};
+
+function explicitlyRequestedMutationCategories(text: string): WorkspaceMutationCategory[] {
+  return (Object.entries(EXPLICIT_MUTATION_CATEGORY_PATTERNS) as Array<[WorkspaceMutationCategory, RegExp]>)
+    .filter(([, pattern]) => pattern.test(text))
+    .map(([category]) => category);
+}
 
 function normalizeAuthorizationText(value: string): string {
   return value.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase();
@@ -1728,6 +1752,19 @@ function explicitlyNamedMutationEntities(text: string): Set<string> {
   return entities;
 }
 
+function authorizesLorebookEntrySplit(
+  text: string,
+  entity: string | null,
+  category: WorkspaceMutationCategory,
+): boolean {
+  return (
+    entity === "lorebook" &&
+    (category === "create" || category === "update") &&
+    /\bsplit\b/iu.test(text) &&
+    /\blorebooks?(?:\s+entries?)?\b/iu.test(text)
+  );
+}
+
 export function workspaceMutationAuthorizationIssue(
   command: WorkspaceCommandCall,
   context: { directUserText: string; previousAssistantText?: string | null },
@@ -1736,35 +1773,57 @@ export function workspaceMutationAuthorizationIssue(
 
   const directUserText = normalizeAuthorizationText(context.directUserText);
   const authorization = normalizeAuthorizationText(command.authorization ?? "");
-  if (!authorization || !directUserText.includes(authorization)) {
-    return "Mutation blocked before execution: authorization must quote a verbatim instruction from the active user message, not attached or fetched content.";
-  }
   if (MUTATION_DENIAL.test(directUserText)) {
     return "Mutation blocked before execution: the active user message explicitly requests no workspace changes.";
   }
 
   const category = workspaceMutationCategory(command);
-  if (SHORT_MUTATION_CONFIRMATION.test(directUserText)) {
+  const commandEntity = appDataMutationEntity(command);
+  const vagueMutationConfirmation =
+    VAGUE_MUTATION_CONFIRMATION.test(directUserText) && explicitlyNamedMutationEntities(directUserText).size === 0;
+  if (SHORT_MUTATION_CONFIRMATION.test(directUserText) || vagueMutationConfirmation) {
     const previousAssistantText = normalizeAuthorizationText(context.previousAssistantText ?? "");
+    const previousCategories = explicitlyRequestedMutationCategories(previousAssistantText);
     if (
       previousAssistantText &&
       visibleTextRequestsUserApproval(previousAssistantText) &&
-      MUTATION_INTENT_PATTERNS[category].test(previousAssistantText)
+      MUTATION_INTENT_PATTERNS[category].test(previousAssistantText) &&
+      previousCategories.includes(category)
     ) {
       return null;
     }
     return "Mutation blocked before execution: a short confirmation must answer the immediately preceding visible proposal for the same kind of change.";
   }
 
-  if (INFORMATIONAL_REQUEST_START.test(directUserText) && !DIRECT_MUTATION_AFTER_INFORMATION.test(directUserText)) {
+  // The model-supplied quote is a hint, not a trust boundary. Small local models
+  // sometimes omit or paraphrase it, so fall back to the direct user message that
+  // the server already separated from attachments and fetched content.
+  const authorizationSource = authorization && directUserText.includes(authorization) ? authorization : directUserText;
+  const genericAuthorization = GENERIC_MUTATION_AUTHORIZATION.test(authorizationSource);
+  const authorizationScope = genericAuthorization
+    ? directUserText.replace(GENERIC_MUTATION_AUTHORIZATION_CLAUSE, "").trim()
+    : authorizationSource;
+  const lorebookEntrySplit = authorizesLorebookEntrySplit(authorizationScope, commandEntity, category);
+  if (
+    INFORMATIONAL_REQUEST_START.test(authorizationScope) &&
+    !DIRECT_MUTATION_AFTER_INFORMATION.test(authorizationScope)
+  ) {
     return "Mutation blocked before execution: informational and how-to requests do not authorize workspace changes.";
   }
-  if (!MUTATION_INTENT_PATTERNS[category].test(authorization)) {
-    return `Mutation blocked before execution: the quoted user instruction does not authorize a ${category} operation.`;
+  if (!MUTATION_INTENT_PATTERNS[category].test(authorizationScope) && !lorebookEntrySplit) {
+    return `Mutation blocked before execution: the active user instruction does not authorize a ${category} operation.`;
+  }
+  if (genericAuthorization) {
+    const explicitCategories = explicitlyRequestedMutationCategories(authorizationScope);
+    const splitOnlyAddsTheImpliedCreate = lorebookEntrySplit && explicitCategories.every((entry) => entry === "update");
+    if (!splitOnlyAddsTheImpliedCreate && (explicitCategories.length !== 1 || explicitCategories[0] !== category)) {
+      const requestedCategories =
+        explicitCategories.length > 0 ? explicitCategories.join(" and ") : "no single explicit operation";
+      return `Mutation blocked before execution: the active user message authorizes ${requestedCategories}, not ${category}.`;
+    }
   }
 
-  const commandEntity = appDataMutationEntity(command);
-  const namedEntities = explicitlyNamedMutationEntities(authorization);
+  const namedEntities = explicitlyNamedMutationEntities(authorizationScope);
   if (commandEntity && namedEntities.size > 0 && !namedEntities.has(commandEntity)) {
     return `Mutation blocked before execution: the user named ${Array.from(namedEntities).join(", ")}, not ${commandEntity}.`;
   }
@@ -2604,6 +2663,7 @@ ${sections.join("\n\n")}
       cachingAtDepth: connection.cachingAtDepth ?? 5,
       serviceTier: normalizeServiceTier(defaultParameters?.serviceTier),
       openrouterProvider: connection.openrouterProvider,
+      responseFormat: professorMariWorkspaceResponseFormat(connection.provider),
       customParameters: mergeCustomParameters(customParameters, null),
       enabledParameters: normalizeGenerationParameterSendMap(defaultParameters?.enabledParameters),
       reasoningEffort,

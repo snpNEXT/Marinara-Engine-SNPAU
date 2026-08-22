@@ -113,7 +113,7 @@ import { SpriteFrameEditor } from "../ui/SpriteFrameEditor";
 import { SpriteWandCleanupEditor } from "../ui/SpriteWandCleanupEditor";
 import { ExportFormatDialog, type ExportFormatChoice } from "../ui/ExportFormatDialog";
 import { Modal } from "../ui/Modal";
-import { EditorTabRail } from "../ui/EditorTabRail";
+import { EditorTabNavigation } from "../ui/EditorTabNavigation";
 import { EditorSectionAnchor, EditorSectionJumps } from "../ui/EditorSectionJumps";
 import { SettingsSwitch } from "../panels/settings/SettingControls";
 import {
@@ -1861,7 +1861,7 @@ export function PersonaEditor() {
 
   const headerActionButtonClass = "mari-editor-action inline-flex";
   const saveDisabled = !dirty || mutationBusy;
-  const saveLabel = saving ? "Saving…" : "Save";
+  const saveLabel = localizeUi(saving ? "editor.save.saving" : "editor.save.action");
   const saveButtonClass = cn(
     "mari-editor-action mari-editor-action--primary mari-editor-action--save inline-flex",
     saveDisabled && "cursor-not-allowed opacity-50",
@@ -1966,8 +1966,8 @@ export function PersonaEditor() {
       />
 
       {/* ── Header ── */}
-      <div className="mari-editor-header">
-        <div className="mari-editor-header-main max-md:min-w-full">
+      <div className="mari-editor-header mari-editor-header--with-nav">
+        <div className="mari-editor-header-main mari-editor-header-main--identity">
           <button
             type="button"
             onClick={handleClose}
@@ -2049,10 +2049,19 @@ export function PersonaEditor() {
           </div>
         </div>
 
+        <EditorTabNavigation tabs={TABS} activeId={activeTab} onChange={setActiveTab} />
+
         <div className="mari-editor-actions flex">
-          <button type="button" onClick={handleSave} disabled={saveDisabled} className={saveButtonClass}>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saveDisabled}
+            className={saveButtonClass}
+            aria-label={saveLabel}
+            title={saveLabel}
+          >
             <Save size="0.9375rem" />
-            <span>{saveLabel}</span>
+            <span className="mari-editor-save-label">{saveLabel}</span>
           </button>
           {headerActions}
         </div>
@@ -2093,10 +2102,8 @@ export function PersonaEditor() {
         </div>
       )}
 
-      {/* ── Body: Tabs + Content ── */}
-      <div className="mari-editor-body @max-5xl:flex-col">
-        <EditorTabRail tabs={TABS} activeId={activeTab} onChange={setActiveTab} />
-
+      {/* ── Body ── */}
+      <div className="mari-editor-body">
         {/* Tab Content */}
         <div className="mari-editor-content @max-5xl:p-4">
           <div className="mari-editor-content-inner">
@@ -3676,36 +3683,20 @@ function PersonaMetadataTab({
                 )}
               />
             </span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={formData.versioningEnabled}
-              onClick={() => {
-                updateField("versioningEnabled", !formData.versioningEnabled);
-                if (!formData.versioningEnabled && !formData.personaVersion.trim()) {
+            <SettingsSwitch
+              checked={formData.versioningEnabled}
+              onChange={(enabled) => {
+                updateField("versioningEnabled", enabled);
+                if (enabled && !formData.personaVersion.trim()) {
                   updateField("personaVersion", "1.0");
                 }
               }}
-              className="inline-flex min-h-11 items-center gap-2 rounded-md px-1 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/40"
+              label={localizeUi("ui.cardversionhistory.automaticVersioning")}
+              labelPosition="end"
               title={localizeUi("ui.cardversionhistory.automaticVersioningDescription")}
-            >
-              <span
-                className={cn(
-                  "relative h-5 w-9 rounded-full border transition-colors",
-                  formData.versioningEnabled
-                    ? "border-[var(--primary)] bg-[var(--primary)]"
-                    : "border-[var(--border)] bg-[var(--secondary)]",
-                )}
-              >
-                <span
-                  className={cn(
-                    "absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-[var(--background)] shadow-sm transition-transform",
-                    formData.versioningEnabled && "translate-x-4",
-                  )}
-                />
-              </span>
-              {localizeUi("ui.cardversionhistory.automaticVersioning")}
-            </button>
+              className="min-h-11 gap-2 rounded-md px-1 py-0"
+              labelClassName="text-xs font-medium text-[var(--muted-foreground)]"
+            />
           </div>
           <input
             value={formData.personaVersion}

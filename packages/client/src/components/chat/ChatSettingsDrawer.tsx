@@ -837,6 +837,9 @@ export function ChatSettingsDrawer({
   const debugMode = useUIStore((s) => s.debugMode);
   const setEditorDirty = useUIStore((s) => s.setEditorDirty);
   const openLorebookDetail = useUIStore((s) => s.openLorebookDetail);
+  const callsSettingsMenuId = getAgentSettingsMenuId(chat.id, "conversation-calls");
+  const callsSettingsOpen = useUIStore((s) => s.chatSettingsExpandedSections[callsSettingsMenuId] ?? false);
+  const setChatSettingsSectionExpanded = useUIStore((s) => s.setChatSettingsSectionExpanded);
 
   const { data: allCharacters } = useCharacters({ includeBuiltIn: true });
   const { data: characterGroups } = useCharacterGroups();
@@ -4605,6 +4608,7 @@ export function ChatSettingsDrawer({
 
           <div style={{ order: CHAT_SETTINGS_ORDER.chatName }}>
             <ChatNameSection
+              chatId={chat.id}
               chatName={chat.name}
               editingName={editingName}
               nameValue={nameVal}
@@ -6153,81 +6157,76 @@ export function ChatSettingsDrawer({
               <div className="space-y-3">
                 {hasConversationCommands && (
                   <div className="space-y-3">
-                    <SettingsSwitch
-                      label={localizeUi("ui.chat.chatsettingsdrawer.commands")}
+                    <AgentSettingsCard
+                      id={getAgentSettingsMenuId(chat.id, "conversation-commands")}
+                      icon={<Puzzle size="0.75rem" className="mt-0.5 text-[var(--primary)]" />}
+                      title={localizeUi("ui.chat.chatsettingsdrawer.commands")}
                       description={localizeUi(
                         "ui.chat.chatsettingsdrawer.allowModelsToInteractWithYouThroughInstalledCommands",
                       )}
-                      checked={conversationCommandsEnabled}
-                      onChange={(enabled) => updateMeta.mutate({ id: chat.id, characterCommands: enabled })}
-                      labelPosition="start"
-                      className={cn(
-                        "justify-between rounded-lg px-3 py-2.5 text-left",
-                        conversationCommandsEnabled
-                          ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
-                          : cn(AGENT_SETTINGS_SURFACE_CLASS, "hover:bg-[var(--accent)]"),
-                      )}
-                      labelClassName="text-xs font-medium"
-                    />
+                      initialOpen={false}
+                    >
+                      <SettingsSwitch
+                        label={localizeUi("ui.chat.chatsettingsdrawer.commands")}
+                        description={localizeUi(
+                          "ui.chat.chatsettingsdrawer.allowModelsToInteractWithYouThroughInstalledCommands",
+                        )}
+                        checked={conversationCommandsEnabled}
+                        onChange={(enabled) => updateMeta.mutate({ id: chat.id, characterCommands: enabled })}
+                        labelPosition="start"
+                        className={cn(
+                          "justify-between rounded-lg px-3 py-2.5 text-left",
+                          conversationCommandsEnabled
+                            ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
+                            : "bg-[var(--background)]/75 ring-1 ring-[var(--border)] hover:bg-[var(--accent)]",
+                        )}
+                        labelClassName="text-xs font-medium"
+                      />
 
-                    {conversationCommandsEnabled && (
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        {availableConversationCommandOptions.map((command) => {
-                          const enabled = isConversationCommandToggleEnabled(conversationCommandToggles, command.id);
-                          return (
-                            <SettingsSwitch
-                              key={command.id}
-                              label={command.label}
-                              description={command.description}
-                              checked={enabled}
-                              onChange={(nextEnabled) =>
-                                updateMeta.mutate({
-                                  id: chat.id,
-                                  conversationCommandToggles: {
-                                    ...conversationCommandToggles,
-                                    [command.id]: nextEnabled,
-                                  },
-                                })
-                              }
-                              labelPosition="start"
-                              className={cn(
-                                "h-full min-h-[4.125rem] items-center justify-between rounded-lg px-3 py-2.5 text-left",
-                                enabled
-                                  ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
-                                  : cn(AGENT_SETTINGS_SURFACE_CLASS, "hover:bg-[var(--accent)]"),
-                              )}
-                              labelClassName="text-[0.6875rem] font-medium"
-                            />
-                          );
-                        })}
-                      </div>
-                    )}
+                      {conversationCommandsEnabled && (
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          {availableConversationCommandOptions.map((command) => {
+                            const enabled = isConversationCommandToggleEnabled(conversationCommandToggles, command.id);
+                            return (
+                              <SettingsSwitch
+                                key={command.id}
+                                label={command.label}
+                                description={command.description}
+                                checked={enabled}
+                                onChange={(nextEnabled) =>
+                                  updateMeta.mutate({
+                                    id: chat.id,
+                                    conversationCommandToggles: {
+                                      ...conversationCommandToggles,
+                                      [command.id]: nextEnabled,
+                                    },
+                                  })
+                                }
+                                labelPosition="start"
+                                className={cn(
+                                  "h-full min-h-[4.125rem] items-center justify-between rounded-lg px-3 py-2.5 text-left",
+                                  enabled
+                                    ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
+                                    : "bg-[var(--background)]/75 ring-1 ring-[var(--border)] hover:bg-[var(--accent)]",
+                                )}
+                                labelClassName="text-[0.6875rem] font-medium"
+                              />
+                            );
+                          })}
+                        </div>
+                      )}
+                    </AgentSettingsCard>
 
                     {illustratorInstalled && (
-                      <div
-                        className={cn(
-                          "space-y-3 rounded-xl px-3 py-2.5 transition-all",
-                          selfieFeatureEnabled
-                            ? "border border-[var(--primary)]/30 bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
-                            : AGENT_SETTINGS_SURFACE_CLASS,
+                      <AgentSettingsCard
+                        id={getAgentSettingsMenuId(chat.id, "illustrator")}
+                        icon={<Image size="0.75rem" className="mt-0.5 text-[var(--primary)]" />}
+                        title={localizeUi("ui.chat.chatsettingsdrawer.illustratorSettings")}
+                        description={localizeUi(
+                          "ui.chat.chatsettingsdrawer.configureIllustratorSSelfieCommandImageConnectionPromptModel",
                         )}
+                        initialOpen={false}
                       >
-                        <div className="flex items-start gap-2">
-                          <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--secondary)] text-[var(--muted-foreground)]">
-                            <Image size="0.875rem" />
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <span className="block text-xs font-medium text-[var(--foreground)]">
-                              {localizeUi("ui.chat.chatsettingsdrawer.illustratorSettings")}
-                            </span>
-                            <p className="text-[0.625rem] leading-snug text-[var(--muted-foreground)]">
-                              {localizeUi(
-                                "ui.chat.chatsettingsdrawer.configureIllustratorSSelfieCommandImageConnectionPromptModel",
-                              )}
-                            </p>
-                          </div>
-                        </div>
-
                         <GenerationSettingsLink
                           onClick={openGenerationSettings}
                           title={localizeUi("ui.chat.chatsettingsdrawer.openSettingsGenerations")}
@@ -6363,24 +6362,25 @@ export function ChatSettingsDrawer({
                             {localizeUi("ui.chat.chatsettingsdrawer.turnOnSelfiesToRevealConnectionPromptModelImage")}
                           </p>
                         )}
-                      </div>
+                      </AgentSettingsCard>
                     )}
 
                     {callsPackage ? (
-                      <div className="min-w-0">
-                        <CapabilityElement
-                          packageId={callsPackage.id}
-                          view="settings"
-                          capabilityProps={{
-                            chatId: chat.id,
-                            metadata,
-                            connections: textConnectionsList,
-                            updateMetadata: (patch: Record<string, unknown>) =>
-                              updateMeta.mutate({ id: chat.id, ...patch }),
-                          }}
-                          className="block"
-                        />
-                      </div>
+                      <CapabilityElement
+                        packageId={callsPackage.id}
+                        view="settings"
+                        capabilityProps={{
+                          chatId: chat.id,
+                          metadata,
+                          connections: textConnectionsList,
+                          expanded: callsSettingsOpen,
+                          onExpandedChange: (expanded: boolean) =>
+                            setChatSettingsSectionExpanded(callsSettingsMenuId, expanded),
+                          updateMetadata: (patch: Record<string, unknown>) =>
+                            updateMeta.mutate({ id: chat.id, ...patch }),
+                        }}
+                        className="block"
+                      />
                     ) : null}
 
                     {ltmPackage ? (
@@ -7093,7 +7093,7 @@ export function ChatSettingsDrawer({
                       type="button"
                       onClick={() => void handleStopActiveGeneration()}
                       disabled={stoppingGeneration}
-                      className="flex min-h-10 w-full items-center justify-between gap-3 rounded-lg bg-red-500/10 px-3 py-2.5 text-left text-red-300 ring-1 ring-red-500/25 transition-colors hover:bg-red-500/15 disabled:cursor-not-allowed disabled:opacity-60"
+                      className="flex min-h-10 w-full items-center justify-between gap-3 rounded-lg bg-[var(--secondary)] px-3 py-2.5 text-left transition-colors hover:bg-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <div className="min-w-0 flex-1">
                         <span className="text-[0.6875rem] font-medium">
@@ -7101,14 +7101,14 @@ export function ChatSettingsDrawer({
                             ? localizeUi("ui.chat.chatsettingsdrawer.stoppingGeneration")
                             : localizeUi("ui.chat.chatsettingsdrawer.stopActiveGeneration")}
                         </span>
-                        <p className="text-[0.625rem] leading-relaxed text-red-200/70">
+                        <p className="text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
                           {localizeUi("ui.chat.chatsettingsdrawer.stopActiveGenerationDescription")}
                         </p>
                       </div>
                       {stoppingGeneration ? (
-                        <Loader2 size="0.8125rem" className="shrink-0 animate-spin" />
+                        <Loader2 size="0.8125rem" className="shrink-0 animate-spin text-[var(--muted-foreground)]" />
                       ) : (
-                        <X size="0.8125rem" className="shrink-0" />
+                        <X size="0.8125rem" className="shrink-0 text-[var(--muted-foreground)]" />
                       )}
                     </button>
                   )}
@@ -9014,6 +9014,27 @@ export function ChatSettingsDrawer({
                   </div>
                   <Pencil size="0.875rem" className="shrink-0 text-[var(--muted-foreground)]" />
                 </button>
+
+                {import.meta.env.VITE_MARINARA_LITE !== "true" && (
+                  <SettingsSwitch
+                    label={localizeUi("ui.chat.chatsettingsdrawer.semanticSummaryRetrieval")}
+                    description={localizeUi(
+                      "ui.chat.chatsettingsdrawer.keepRecentSummariesInContextAndRetrieveOnlyRelevantOlder",
+                    )}
+                    checked={metadata.semanticSummaryRetrievalEnabled === true}
+                    onChange={(semanticSummaryRetrievalEnabled) =>
+                      updateMeta.mutate({ id: chat.id, semanticSummaryRetrievalEnabled })
+                    }
+                    labelPosition="start"
+                    className={cn(
+                      "justify-between rounded-lg px-3 py-2.5 text-left",
+                      metadata.semanticSummaryRetrievalEnabled === true
+                        ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
+                        : cn(AGENT_SETTINGS_SURFACE_CLASS, "hover:bg-[var(--accent)]"),
+                    )}
+                    labelClassName="text-xs font-medium"
+                  />
+                )}
 
                 <div className="space-y-2 rounded-lg border border-[var(--border)] bg-[var(--secondary)]/35 p-2.5">
                   <div className="space-y-1.5">

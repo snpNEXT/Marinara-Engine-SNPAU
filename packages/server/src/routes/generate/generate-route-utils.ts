@@ -3,10 +3,8 @@ import {
   GENERATION_PARAMETER_SEND_KEYS,
   SUMMARY_TAIL_MESSAGES,
   applyTrackerFieldLocksToGameStatePatch,
-  compileChatSummaryEntries,
   generationParametersSchema,
   normalizeInventoryTrackerRows,
-  normalizeChatSummaryEntries,
   normalizeTextForMatch,
   normalizeSummaryTailMessages,
   normalizeWorldCustomFields,
@@ -41,6 +39,10 @@ export {
   createLocalSidecarGenerationConnection,
   type LocalSidecarGenerationConnection,
 } from "../../services/generation/local-sidecar-generation-connection.js";
+export {
+  resolveRoleplayChatSummary,
+  resolveRoleplayChatSummaryForPrompt,
+} from "../../services/generation/roleplay-summary-retrieval.js";
 export {
   appendReadableAttachmentsToContent,
   buildReadableAttachmentBlocks,
@@ -831,27 +833,6 @@ export function selectRollingSummaryMessages<T extends { id: string; extra?: unk
   return visible.slice(-Math.max(size, sinceBoundary));
 }
 
-export function resolveRoleplayChatSummary(
-  chatMode: string,
-  chatMetadata: Record<string, unknown>,
-  options: { excludeMessageIds?: readonly string[] } = {},
-): string | null {
-  if (!isRoleplaySummaryMode(chatMode)) return null;
-  const summary = ((chatMetadata.summary as string) ?? "").trim() || null;
-  const excludedMessageIds = new Set((options.excludeMessageIds ?? []).filter(Boolean));
-  if (excludedMessageIds.size === 0) return summary;
-
-  const entries = normalizeChatSummaryEntries(chatMetadata.summaryEntries);
-  // Legacy summaries have no per-message provenance, so they cannot be
-  // safely retained while regenerating a historical message.
-  if (entries.length === 0) return null;
-  const retainedEntries = entries.filter((entry) => {
-    const coveredMessageIds = [...(entry.messageIds ?? []), ...(entry.hiddenMessageIds ?? [])];
-    return !coveredMessageIds.some((messageId) => excludedMessageIds.has(messageId));
-  });
-  return retainedEntries.length === entries.length ? summary : compileChatSummaryEntries(retainedEntries);
-}
-
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -1082,6 +1063,43 @@ export function resolveActiveCharacterIds(
 
   if (activeIds.length > 0 || options.allowEmpty) return activeIds;
   return characterIds;
+}
+
+export function resolveCharacterActivityUpdate(
+  data: unknown,
+  chatCharacterIds: string[],
+): { activeCharacterIds: string[]; inactiveCharacterIds: string[] } | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const requestedIds = (data as Record<string, unknown>).activeCharacterIds;
+  if (!Array.isArray(requestedIds) || requestedIds.length === 0) return null;
+
+  const allowedIds = new Set(chatCharacterIds);
+  const selectedIds = new Set<string>();
+  for (const id of requestedIds) {
+    if (typeof id !== "string" || !allowedIds.has(id)) return null;
+    selectedIds.add(id);
+  }
+
+  const activeCharacterIds = chatCharacterIds.filter((id) => selectedIds.has(id));
+  if (activeCharacterIds.length === 0) return null;
+  return {
+    activeCharacterIds,
+    inactiveCharacterIds: chatCharacterIds.filter((id) => !selectedIds.has(id)),
+  };
+}
+
+export function shouldRunCharacterActivityAgents(options: {
+  mode: string;
+  impersonate: boolean;
+  regenerateMessageId?: string | null;
+  continueMessageId?: string | null;
+}): boolean {
+  return (
+    (options.mode === "conversation" || options.mode === "roleplay") &&
+    !options.impersonate &&
+    !options.regenerateMessageId &&
+    !options.continueMessageId
+  );
 }
 
 export type GroupGenerationMode = "merged" | "individual";

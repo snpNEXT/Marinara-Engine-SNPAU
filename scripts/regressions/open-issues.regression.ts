@@ -33,7 +33,16 @@ import {
   CUSTOM_AGENT_RESULT_TYPE_IDS,
 } from "../../packages/client/src/lib/custom-agent-result-examples.js";
 import { estimateGameSessionHistoryTokens } from "../../packages/client/src/lib/game-session-history.js";
-import { validateCharacterGalleryReferences } from "../../packages/server/src/routes/characters.routes.js";
+import { MAX_FILE_SIZES } from "../../packages/shared/src/constants/defaults.js";
+import {
+  buildCompatibleCharacterExport,
+  validateCharacterGalleryReferences,
+} from "../../packages/server/src/routes/characters.routes.js";
+import {
+  embeddedSpriteSizesAreWithinLimits,
+  MAX_EMBEDDED_SPRITE_COUNT,
+} from "../../packages/server/src/services/import/marinara.importer.js";
+import { takeEmbeddedMarinaraSprites } from "../../packages/server/src/services/import/st-character.importer.js";
 import {
   orderConversationRespondersByDelay,
   remainingConversationPresenceDelay,
@@ -133,7 +142,11 @@ import {
   isBundledGameAssetFolderPath,
   isBundledGameAssetPath,
 } from "../../packages/server/src/services/game/native-game-assets.js";
-import { isGitUpdateApplyAllowed } from "../../packages/server/src/services/updates/update-apply-policy.js";
+import {
+  isGitUpdateApplyAllowed,
+  isUpdateChannelSwitch,
+  resolveDockerChannelImageTags,
+} from "../../packages/server/src/services/updates/update-apply-policy.js";
 import { parseNoodleAvatarCrop } from "../../packages/server/src/services/storage/noodle.storage.js";
 import { sanitizeExampleDialoguePromptLeaf } from "../../packages/server/src/services/prompt/prompt-escaping.js";
 import {
@@ -174,6 +187,8 @@ import {
   searchStandardEmojiShortcodes,
 } from "../../packages/client/src/lib/emoji-shortcodes.js";
 import { persistGeneratedImageToEntityGalleries } from "../../packages/server/src/services/image/generated-image-entity-gallery.js";
+import { withGalleryFileLifecycleLock } from "../../packages/server/src/services/image/gallery-file-lifecycle.js";
+import { runRetrySetupPhase } from "../../packages/server/src/routes/generate/retry-agents-route.js";
 import {
   parseImageGenerationUserSettings,
   resolveIllustratorImageSize,
@@ -213,8 +228,13 @@ import {
   mergeLorebookKeeperUpdateContent,
   persistLorebookKeeperUpdates,
   readLorebookKeeperUpdateOrder,
+  resolveLorebookKeeperTarget,
   tryClaimCustomLorebookReadBehindRun,
 } from "../../packages/server/src/routes/generate/lorebook-keeper-utils.js";
+import {
+  SPRITE_DISPLAY_OPACITY_MIN,
+  SPRITE_DISPLAY_OPACITY_PERCENT_MIN,
+} from "../../packages/client/src/components/chat/sprite-display-modes.js";
 import { runImageGenerationRequest } from "../../packages/server/src/services/image/image-generation-queue.js";
 import {
   buildSwarmUiGenerationBody,
@@ -258,7 +278,10 @@ import { characterOverrideDb } from "../../packages/server/src/services/professo
 import { createLorebooksStorage } from "../../packages/server/src/services/storage/lorebooks.storage.js";
 import { createNoodleStorage } from "../../packages/server/src/services/storage/noodle.storage.js";
 import { createChatPresetsStorage } from "../../packages/server/src/services/storage/chat-presets.storage.js";
-import { buildGoogleModelsPageUrl } from "../../packages/server/src/routes/connections.routes.js";
+import {
+  buildConnectionTestCatalogUrl,
+  buildGoogleModelsPageUrl,
+} from "../../packages/server/src/routes/connections.routes.js";
 import { normalizeGoogleGenerativeLanguageBaseUrl } from "../../packages/server/src/services/llm/providers/google.provider.js";
 import {
   buildReferencedCharacterContext,
@@ -472,6 +495,72 @@ const characterRoutesSource = readFileSync(
   join(REPOSITORY_ROOT, "packages/server/src/routes/characters.routes.ts"),
   "utf8",
 );
+const stCharacterImporterSource = readFileSync(
+  join(REPOSITORY_ROOT, "packages/server/src/services/import/st-character.importer.ts"),
+  "utf8",
+);
+const portableSprites = [
+  { filename: "happy.png", data: "data:image/png;base64,iVBORw0KGgo=" },
+  { filename: "full_idle.webp", data: "data:image/webp;base64,UklGRg==" },
+];
+const compatibleSpriteSource = {
+  name: "Portable Sprite Card",
+  extensions: {
+    characterSheetImageId: "local-gallery-id",
+    useCharacterSheetAsReference: true,
+    marinara: { retained: true },
+  },
+};
+const compatibleSpriteCard = buildCompatibleCharacterExport(compatibleSpriteSource, portableSprites);
+assert.equal(
+  compatibleSpriteSource.extensions.characterSheetImageId,
+  "local-gallery-id",
+  "compatible export must not mutate local-only source extensions",
+);
+assert.equal(compatibleSpriteSource.extensions.useCharacterSheetAsReference, true);
+assert.deepEqual(
+  (compatibleSpriteCard.data.extensions.marinara as Record<string, unknown>).sprites,
+  portableSprites,
+  "compatible PNG metadata must carry the character sprite set",
+);
+const importedSpriteCard = structuredClone(compatibleSpriteCard) as unknown as Record<string, unknown>;
+assert.deepEqual(
+  takeEmbeddedMarinaraSprites(importedSpriteCard),
+  portableSprites,
+  "Marinara must recover its embedded sprite set from a compatible PNG card",
+);
+const importedSpriteExtensions = (importedSpriteCard.data as Record<string, unknown>).extensions as Record<
+  string,
+  unknown
+>;
+assert.equal(
+  Object.hasOwn(importedSpriteExtensions.marinara as Record<string, unknown>, "sprites"),
+  false,
+  "embedded sprite binaries must be removed before character metadata is stored",
+);
+assert.match(
+  characterRoutesSource,
+  /const sprites = await readSpritesForId\(char\.id, true\);[\s\S]*if \(!sprites\)[\s\S]*status\(413\)[\s\S]*buildCompatibleCharacterExport\(charData, sprites\)/u,
+  "PNG export must reject sprite collections that cannot round-trip before building the card envelope",
+);
+assert.match(
+  characterRoutesSource,
+  /if \(enforcePortableLimits\)[\s\S]*await stat[\s\S]*embeddedSpriteSizesAreWithinLimits[\s\S]*return null;[\s\S]*readImageAsDataUrl/u,
+  "compatible PNG export must stop reading sprites as soon as a portable size limit is exceeded",
+);
+assert.match(
+  stCharacterImporterSource,
+  /await restoreSprites\(embeddedMarinaraSprites, charId\)/u,
+  "PNG import must restore embedded sprites under the newly imported character ID",
+);
+assert.equal(embeddedSpriteSizesAreWithinLimits([MAX_FILE_SIZES.SPRITE]), true);
+assert.equal(embeddedSpriteSizesAreWithinLimits([MAX_FILE_SIZES.SPRITE + 1]), false);
+assert.equal(
+  embeddedSpriteSizesAreWithinLimits(Array(4).fill(MAX_FILE_SIZES.SPRITE)),
+  false,
+  "aggregate sprite bytes must be limited independently of the per-sprite ceiling",
+);
+assert.equal(embeddedSpriteSizesAreWithinLimits(Array(MAX_EMBEDDED_SPRITE_COUNT + 1).fill(0)), false);
 const ownedGalleryUpdate = {
   extensions: { characterSheetImageId: "owned-image", useCharacterSheetAsReference: true },
 };
@@ -1027,6 +1116,20 @@ assert.match(
   /gitInstall \? await getCurrentBranch\(root\)\.catch\(\(\) => null\) : getBuildBranch\(\)/u,
 );
 assert.match(updatesRouteSource, /const currentChannel = await getUpdateChannelForCheckout\(root, currentBranch\)/u);
+assert.equal(isUpdateChannelSwitch("docker", "stable", "staging"), true);
+assert.equal(isUpdateChannelSwitch("docker", "staging", "staging"), false);
+assert.equal(isUpdateChannelSwitch("git", "stable", "staging"), true);
+assert.equal(isUpdateChannelSwitch("standalone", "stable", "staging"), false);
+assert.deepEqual(resolveDockerChannelImageTags("ghcr.io/pasta-devs/marinara-engine", "2.4.3", "stable"), {
+  dockerImage: "ghcr.io/pasta-devs/marinara-engine",
+  dockerImageTag: "ghcr.io/pasta-devs/marinara-engine:2.4.3",
+  dockerLiteImageTag: "ghcr.io/pasta-devs/marinara-engine:2.4.3-lite",
+});
+assert.deepEqual(resolveDockerChannelImageTags("ghcr.io/pasta-devs/marinara-engine", "2.4.3", "staging"), {
+  dockerImage: "ghcr.io/pasta-devs/marinara-engine",
+  dockerImageTag: "ghcr.io/pasta-devs/marinara-engine:staging",
+  dockerLiteImageTag: null,
+});
 for (const dockerfile of ["Dockerfile", "Dockerfile.lite"]) {
   const dockerSource = readFileSync(join(REPOSITORY_ROOT, dockerfile), "utf8");
   assert.match(dockerSource, /^ARG BUILD_BRANCH$/mu, `${dockerfile} must accept the source ref as build metadata`);
@@ -3710,6 +3813,21 @@ const googleModelsPageUrl = buildGoogleModelsPageUrl(
   "next page/token",
 );
 assert.equal(
+  buildConnectionTestCatalogUrl("https://api.elevenlabs.io/", "audio", "/models", "elevenlabs"),
+  "https://api.elevenlabs.io/v1/models",
+  "ElevenLabs audio connection tests must normalize a trailing slash and use the versioned models endpoint",
+);
+assert.equal(
+  buildConnectionTestCatalogUrl("https://api.elevenlabs.io/v1/", "audio", "/models", "elevenlabs"),
+  "https://api.elevenlabs.io/v1/models",
+  "An explicitly versioned ElevenLabs URL with a trailing slash must not duplicate the API version",
+);
+assert.equal(
+  buildConnectionTestCatalogUrl("https://api.openai.com/v1", "audio", "/models", "openai"),
+  "https://api.openai.com/v1/models",
+  "Other audio sources keep their configured models endpoint",
+);
+assert.equal(
   normalizeGoogleGenerativeLanguageBaseUrl("https://generativelanguage.googleapis.com/v1"),
   "https://generativelanguage.googleapis.com/v1beta",
   "Legacy Gemini v1 connection URLs must use the supported v1beta endpoint",
@@ -3936,17 +4054,20 @@ assert.equal(orLogicLorebookEntry.selectiveLogic, "or");
       name: "Ordered Memory",
       keys: ["memory"],
       tag: "event",
+      targetLorebook: "world",
       order: 200,
       content: "A durable memory.",
     },
   ]);
   assert.match(approvalText, /\nOrder: 200\n/u);
+  assert.match(approvalText, /\nLorebook: world\n/u);
   assert.deepEqual(parseLorebookWriteApprovalText(approvalText), [
     {
       action: "append",
       name: "Ordered Memory",
       keys: ["memory"],
       tag: "event",
+      targetLorebook: "world",
       order: 200,
       content: "A durable memory.",
     },
@@ -3998,6 +4119,83 @@ assert.equal(orLogicLorebookEntry.selectiveLogic, "or");
   assert.equal(updatedEntries[0]?.changes.order, 200);
   assert.equal(createdEntries[0]?.order, 300);
   assert.equal(Object.hasOwn(createdEntries[1] ?? {}, "order"), false);
+
+  const cancelledPersistence = new AbortController();
+  let cancelledEntryWrites = 0;
+  await assert.rejects(
+    persistLorebookKeeperUpdates({
+      lorebooksStore: {
+        listEntries: async () => {
+          cancelledPersistence.abort();
+          return [];
+        },
+        createEntry: async () => {
+          cancelledEntryWrites += 1;
+          return null;
+        },
+      } as any,
+      chatId: "chat-cancelled",
+      chatName: "Cancelled proof",
+      preferredTargetLorebookId: "book-cancelled",
+      writableLorebookIds: ["book-cancelled"],
+      updates: [{ entryName: "Must not persist", content: "Cancelled fact." }],
+      signal: cancelledPersistence.signal,
+    }),
+    /aborted/iu,
+  );
+  assert.equal(cancelledEntryWrites, 0, "Cancellation after an awaited read must stop the following lorebook write");
+
+  const routedEntries: Array<Record<string, unknown>> = [];
+  const createdBooks: Array<Record<string, unknown>> = [];
+  const routedBooks: Array<Record<string, unknown>> = [{ id: "book-world", name: "My World — World Lore" }];
+  const routedStore = {
+    list: async () => routedBooks,
+    create: async (input: Record<string, unknown>) => {
+      createdBooks.push(input);
+      const created = { id: "book-scene", ...input };
+      routedBooks.push(created);
+      return created;
+    },
+    listEntries: async () => [],
+    createEntry: async (input: Record<string, unknown>) => {
+      routedEntries.push(input);
+      return { id: `routed-${routedEntries.length}`, ...input };
+    },
+    updateEntry: async () => null,
+  };
+  await persistLorebookKeeperUpdates({
+    lorebooksStore: routedStore as any,
+    chatId: "chat-439",
+    chatName: "Campaign",
+    preferredTargetLorebookId: "book-world",
+    writableLorebookIds: ["book-world"],
+    writableLorebooks: [{ id: "book-world", name: "My World — World Lore" }],
+    lorebookNamingScheme: { scene: "[WorldName] — Scene Log" },
+    worldName: "Campaign",
+    updates: [
+      { targetLorebook: "My World — World Lore", entryName: "Magic", content: "World fact." },
+      { targetLorebook: "scene", entryName: "Tavern", content: "Scene fact." },
+      { entryName: "Fallback", content: "Default-book fact." },
+    ],
+  });
+  assert.deepEqual(
+    routedEntries.map((entry) => entry.lorebookId),
+    ["book-world", "book-scene", "book-world"],
+    "exact names and aliases route independently while omitted targets retain the default book",
+  );
+  assert.equal(createdBooks[0]?.name, "Campaign — Scene Log", "a missing configured alias creates its named book");
+  assert.equal(createdBooks[0]?.chatId, "chat-439", "auto-created routing books link to the active chat");
+  const nextRunTarget = await resolveLorebookKeeperTarget({
+    lorebooksStore: routedStore as any,
+    chatId: "chat-439",
+    characterIds: [],
+    activeLorebookIds: [],
+    preferredTargetLorebookId: "book-world",
+  });
+  assert.ok(
+    nextRunTarget.writableLorebookIds.includes("book-scene"),
+    "a routing book created for one run must remain writable on the next run instead of being duplicated",
+  );
 }
 
 assert.equal(
@@ -5028,6 +5226,18 @@ const roleplayHudSource = readFileSync(
   new URL("../../packages/client/src/components/chat/RoleplayHUD.tsx", import.meta.url),
   "utf8",
 );
+const cyoaChoicesSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/CyoaChoices.tsx", import.meta.url),
+  "utf8",
+);
+const spriteOverlaySource = readFileSync(
+  new URL("../../packages/client/src/components/chat/SpriteOverlay.tsx", import.meta.url),
+  "utf8",
+);
+const spritesRoutesSource = readFileSync(
+  new URL("../../packages/server/src/routes/sprites.routes.ts", import.meta.url),
+  "utf8",
+);
 const narratorUiStoreSource = readFileSync(
   new URL("../../packages/client/src/stores/ui.store.ts", import.meta.url),
   "utf8",
@@ -5115,6 +5325,33 @@ assert.equal(
   roleplayHudSource.match(/!reduceAmbientEffects && "animate-\[inventory-cycle_0\.4s_ease-out\]"/gu)?.length,
   2,
   "Roleplay tracker and inventory widgets must suppress mount animations with reduced ambient effects",
+);
+assert.match(
+  roleplayHudSource,
+  /latestAssistantMessage[\s\S]{0,240}extra: \{ cyoaChoices: \[\] \}/u,
+  "clearing Roleplay tracker state must also clear the persisted active CYOA prompt",
+);
+assert.match(
+  cyoaChoicesSource,
+  /extra: \{ cyoaChoices: \[\] \}[\s\S]{0,900}if \(impersonated\)[\s\S]{0,160}connectionId: null/u,
+  "selecting a CYOA prompt must consume it permanently and follow impersonation with a character reply",
+);
+assert.match(
+  spriteOverlaySource,
+  /const stageZIndexClass = editing \? "z-\[35\]" : "z-\[5\]"/u,
+  "non-editing sprites must remain below the Roleplay transcript and its CYOA controls",
+);
+assert.equal(SPRITE_DISPLAY_OPACITY_MIN, 0, "sprite opacity must support a fully transparent endpoint");
+assert.equal(SPRITE_DISPLAY_OPACITY_PERCENT_MIN, 0, "sprite opacity controls must expose zero percent");
+assert.match(
+  assignedSweepChatAreaSource,
+  /savedUrl \?\? \(chat\.mode === "roleplay" \? useUIStore\.getState\(\)\.defaultRoleplayBackground : null\)/u,
+  "new Roleplay chats must inherit the explicitly selected default background",
+);
+assert.match(
+  spritesRoutesSource,
+  /const backupDir = join\(dir, "\.cleanup-backups", backupId\)[\s\S]{0,1800}copyFile\(inputPath, join\(backupDir, filename\)\)[\s\S]{0,500}writeFile\(outputPath, output\.buffer\)/u,
+  "sprite cleanup must keep the original outside the active sprite set while the cleaned file becomes active",
 );
 assert.match(
   chatMessageSource,
@@ -5400,6 +5637,14 @@ const personaEditorSource = readFileSync(
   new URL("../../packages/client/src/components/personas/PersonaEditor.tsx", import.meta.url),
   "utf8",
 );
+const chatSetupWizardSource = readFileSync(
+  new URL("../../packages/client/src/components/chat/ChatSetupWizard.tsx", import.meta.url),
+  "utf8",
+);
+const setupGenerationParametersStart = chatSetupWizardSource.indexOf("function SetupGenerationParametersPanel");
+const chatSetupWizardEnd = chatSetupWizardSource.indexOf("export function ChatSetupWizard");
+assert.ok(setupGenerationParametersStart >= 0 && chatSetupWizardEnd > setupGenerationParametersStart);
+const setupGenerationParametersSource = chatSetupWizardSource.slice(setupGenerationParametersStart, chatSetupWizardEnd);
 const convoProfileFieldsSource = readFileSync(
   new URL("../../packages/client/src/components/characters/ConvoProfileFields.tsx", import.meta.url),
   "utf8",
@@ -5439,14 +5684,27 @@ const androidMainActivitySource = readFileSync(
   new URL("../../android/app/src/main/java/com/marinara/engine/MainActivity.java", import.meta.url),
   "utf8",
 );
+const configureWebViewStart = androidMainActivitySource.indexOf("private void configureWebView()");
+const configureWebViewEnd = androidMainActivitySource.indexOf("private void tryConnect()", configureWebViewStart);
+assert.ok(configureWebViewStart >= 0 && configureWebViewEnd > configureWebViewStart);
+const configureWebViewSource = androidMainActivitySource.slice(configureWebViewStart, configureWebViewEnd);
 const gameJournalSource = readFileSync(
   new URL("../../packages/client/src/components/game/GameJournal.tsx", import.meta.url),
+  "utf8",
+);
+const choiceSelectionModalSource = readFileSync(
+  new URL("../../packages/client/src/components/presets/ChoiceSelectionModal.tsx", import.meta.url),
   "utf8",
 );
 const gameSurfaceSource = readFileSync(
   new URL("../../packages/client/src/components/game/GameSurface.tsx", import.meta.url),
   "utf8",
 );
+const gameNarrationSource = readFileSync(
+  new URL("../../packages/client/src/components/game/GameNarration.tsx", import.meta.url),
+  "utf8",
+);
+const gameAudioSource = readFileSync(new URL("../../packages/client/src/lib/game-audio.ts", import.meta.url), "utf8");
 const gameSetupWizardSource = readFileSync(
   new URL("../../packages/client/src/components/game/GameSetupWizard.tsx", import.meta.url),
   "utf8",
@@ -5726,6 +5984,26 @@ assert.match(
 );
 assert.match(androidMainActivitySource, /MediaStore\.Images\.Media\.getContentUri/u);
 assert.match(
+  configureWebViewSource,
+  /settings\.setTextZoom\(100\);/u,
+  "The Android wrapper must not inherit oversized WebView text zoom",
+);
+assert.match(
+  characterEditorSource,
+  /<SettingsSwitch\s+checked=\{formData\.extensions\.versioningEnabled !== false\}/u,
+  "Character versioning must use the shared aligned settings switch",
+);
+assert.match(
+  personaEditorSource,
+  /<SettingsSwitch\s+checked=\{formData\.versioningEnabled\}/u,
+  "Persona versioning must use the shared aligned settings switch",
+);
+assert.match(
+  setupGenerationParametersSource,
+  /className="flex min-w-0 w-full items-center justify-between gap-3 text-left"[\s\S]*className="min-w-0 flex-1"[\s\S]*"h-5 w-9 shrink-0 rounded-full/u,
+  "The New Chat parameter toggle must stay within its card when Android enlarges text",
+);
+assert.match(
   characterEditorSource,
   /"mari-editor-avatar-tile group relative"/u,
   "The Metadata avatar preview must contain absolutely positioned saved crops",
@@ -5746,6 +6024,40 @@ assert.equal(
   "The Persona header avatar inside its upload target must not intercept page clicks",
 );
 assert.match(gameJournalSource, /data-game-journal-scroll/u);
+assert.match(gameJournalSource, /\/game\/\$\{chatId\}\/journal\/entries\/\$\{editingEntry\.index\}/u);
+assert.match(gameJournalSource, /<TimelineView entries=\{visibleEntries\} onEdit=\{beginEditingEntry\}/u);
+assert.match(
+  gameNarrationSource,
+  /const narrationKey = latestAssistant \? `\$\{latestAssistant\.id\}:\$\{latestAssistant\.activeSwipeIndex\}` : null/u,
+  "Game rerolls must reset narration when the saved swipe changes on the same message",
+);
+assert.match(gameAudioSource, /audio\.onended = \(\) => \{[\s\S]*remainingPlays -= 1/u);
+assert.match(
+  gameAudioSource,
+  /const fallbackPlays = remainingPlays;[\s\S]*index < fallbackPlays[\s\S]*proceduralSfxTimers\.add\(timer\)/u,
+  "Procedural SFX fallback must preserve the bounded number of remaining sequential plays",
+);
+assert.match(
+  gameAudioSource,
+  /const generation = this\.sfxGeneration;[\s\S]*generation !== this\.sfxGeneration[\s\S]*proceduralSfxTimers\.add\(timer\)/u,
+  "Procedural SFX callbacks must stay scoped to the active Game audio generation",
+);
+assert.match(
+  gameAudioSource,
+  /dispose\(\): void \{[\s\S]*sfxGeneration \+= 1;[\s\S]*clearTimeout\(timer\);[\s\S]*el\.onerror = null;[\s\S]*el\.onended = null;/u,
+  "Disposing Game audio must invalidate late fallbacks, cancel timers, and detach SFX handlers",
+);
+assert.match(gameSurfaceSource, /audioManager\.playSfx\(resolved, assetMap, fx\.sfxLoopCount\)/u);
+assert.match(
+  choiceSelectionModalSource,
+  /presentedOptions\.length === 1[\s\S]*<SettingsSwitch[\s\S]*labelPosition="start"/u,
+  "Single-option preset variables must use the standard accessible settings switch",
+);
+assert.doesNotMatch(
+  choiceSelectionModalSource,
+  /inline-flex h-4 w-7 shrink-0 items-center rounded-full/u,
+  "Preset choices must not restore the undersized Android toggle",
+);
 assert.match(gameSurfaceSource, /h-\[min\(42rem,calc\(100dvh-6rem\)\)\]/u);
 assert.match(gameSetupWizardSource, /ui\.game\.gamesetupwizard\.adjustGameAssetsForThisGame/u);
 assert.match(gameSetupWizardSource, /selectFoldersByDefault/u);
@@ -5771,12 +6083,27 @@ assert.match(
   "New Game setup must preserve the selected custom place target in its post-setup map plan",
 );
 assert.match(
+  gameSetupWizardSource,
+  /setSpatialMapTargetLocationCount\(importedSpatialMapDraftOptions\.targetLocationCount\)/u,
+  "New Game setup imports must restore the saved World Maps place target",
+);
+assert.match(
+  gameSetupWizardSource,
+  /setSpatialMapGroundingMode\(config\.spatialMapGroundingMode \?\? "setup"\)/u,
+  "New Game setup imports must restore the saved World Maps grounding mode",
+);
+assert.match(
   gameSurfaceSource,
   /targetLocationCount:\s*plan\.targetLocationCount/u,
   "Game setup must send the custom place target to World Maps draft generation",
 );
 assert.match(gameTypesSource, /enableAgents\?: boolean;/u);
 assert.match(gameRoutesSource, /enableAgents: z\.boolean\(\)\.optional\(\)/u);
+assert.match(
+  gameRoutesSource,
+  /spatialMapTargetLocationCount: z\.number\(\)\.int\(\)\.min\(1\)\.max\(40\)\.optional\(\)/u,
+);
+assert.match(gameRoutesSource, /"\/:chatId\/journal\/entries\/:entryIndex"/u);
 assert.match(gameRoutesSource, /enableAgents: setupConfig\.enableAgents === true/u);
 assert.match(gameRoutesSource, /gameStoryboardsEnabled: setupConfig\.gameStoryboardsEnabled/u);
 assert.equal(
@@ -5818,7 +6145,12 @@ assert.match(backupRoutesSource, /PROFILE_IMPORT_MEMORY_WARNING_BYTES/u);
 assert.match(backupRoutesSource, /PROFILE_IMPORT_ARCHIVE_LIMIT_BYTES = 2 \* 1024 \* 1024 \* 1024/u);
 assert.match(backupRoutesSource, /PROFILE_ARCHIVE_TOTAL_UNCOMPRESSED_LIMIT_BYTES = 2 \* 1024 \* 1024 \* 1024/u);
 assert.match(backupRoutesSource, /PROFILE_ARCHIVE_CENTRAL_DIRECTORY_LIMIT_BYTES = 8 \* 1024 \* 1024/u);
-assert.match(backupRoutesSource, /PROFILE_ARCHIVE_ENTRY_COUNT_LIMIT = 8_192/u);
+assert.doesNotMatch(backupRoutesSource, /PROFILE_ARCHIVE_ENTRY_COUNT_LIMIT/u);
+assert.match(backupRoutesSource, /AUTOMATIC_BACKUP_OMISSION_HISTORY_LIMIT = 1_000/u);
+assert.match(
+  backupRoutesSource,
+  /lastOmittedEntries: limitAutomaticBackupOmissionHistory\(settings\.lastOmittedEntries\)/u,
+);
 assert.match(serverAppSource, /const clientIndex = resolve\(clientDist, "index\.html"\)/u);
 assert.match(serverAppSource, /if \(existsSync\(clientIndex\)\)/u);
 assert.match(
@@ -6122,7 +6454,7 @@ const replayMessages = [
       ],
       gameReplayCue: {
         background: "hall-night",
-        segmentEffects: [{ segment: 0, sfx: ["door-creak"] }],
+        segmentEffects: [{ segment: 0, sfx: ["door-creak"], sfxLoopCount: 3 }],
       },
     },
   },
@@ -6144,7 +6476,7 @@ assert.equal(replayTurns[0]?.presentation.background, "manor");
 assert.equal(replayTurns[1]?.playerMessage?.content, "Enter");
 assert.equal(replayTurns[1]?.recordedChoice?.label, "Wait");
 assert.equal(replayTurns[1]?.presentation.background, "hall-night");
-assert.deepEqual(replayTurns[1]?.presentation.segmentEffects, [{ segment: 0, sfx: ["door-creak"] }]);
+assert.deepEqual(replayTurns[1]?.presentation.segmentEffects, [{ segment: 0, sfx: ["door-creak"], sfxLoopCount: 3 }]);
 assert.equal(replayTurns[2]?.playerMessage?.content, "Wait for sunrise");
 
 const replayStoryboardFrames = [
@@ -6623,6 +6955,10 @@ const sharedGameSetupSource: GameSetupShareSource = {
     difficulty: "normal",
     combatStyle: "tactical",
     spatialMapInstructions: "Build a shifting tower with a market ward and flooded catacombs.",
+    gameWorldMapMode: "hierarchical",
+    spatialMapDraftSize: "large",
+    spatialMapTargetLocationCount: 10,
+    spatialMapGroundingMode: "lore_expand",
     rating: "nsfw",
     playerGoals: "Become an elite dungeon conqueror",
     gmMode: "standalone",
@@ -6685,6 +7021,9 @@ assert.match(sharedGameSetup, /Use clear progression and frequent loot rewards/u
 assert.match(sharedGameSetup, /Dungeon Lore/u);
 assert.match(sharedGameSetup, /Combat style: Tactical/u);
 assert.match(sharedGameSetup, /Build a shifting tower with a market ward and flooded catacombs\./u);
+assert.match(sharedGameSetup, /World map size: Medium/u);
+assert.match(sharedGameSetup, /World map place target: 10/u);
+assert.match(sharedGameSetup, /World map build from: Lore \+ AI/u);
 assert.match(sharedGameSetup, /"startingValue": 3/u);
 assert.doesNotMatch(
   sharedGameSetup,
@@ -6731,6 +7070,9 @@ assert.equal(
   resolvedGameSetup.config.spatialMapInstructions,
   "Build a shifting tower with a market ward and flooded catacombs.",
 );
+assert.equal(resolvedGameSetup.config.spatialMapDraftSize, "medium");
+assert.equal(resolvedGameSetup.config.spatialMapTargetLocationCount, 10);
+assert.equal(resolvedGameSetup.config.spatialMapGroundingMode, "lore_expand");
 assert.equal(resolvedGameSetup.gmConnectionId, "gm-connection-new-id");
 assert.equal(resolvedGameSetup.config.imageConnectionId, "image-connection-new-id");
 assert.equal(resolvedGameSetup.config.videoConnectionId, "video-connection-new-id");
@@ -6756,7 +7098,43 @@ assert.equal(unresolvedGameSetup.gmConnectionId, null);
 assert.deepEqual(unresolvedGameSetup.config.partyCharacterIds, []);
 assert.equal(unresolvedGameSetup.config.personaId, null);
 assert.deepEqual(unresolvedGameSetup.config.activeLorebookIds, []);
+assert.equal(unresolvedGameSetup.config.spatialMapGroundingMode, "setup");
+assert.ok(unresolvedGameSetup.warnings.some((warning) => /World map[\s\S]*Game setup/u.test(warning)));
 assert.ok(unresolvedGameSetup.warnings.length >= 5);
+
+for (const [size, targetLocationCount] of [
+  ["small", 8],
+  ["medium", 16],
+  ["large", 28],
+] as const) {
+  const presetMapSetup = parseGameSetupShareFileJson(
+    JSON.stringify(
+      buildGameSetupShareFile({
+        ...sharedGameSetupSource,
+        config: {
+          ...sharedGameSetupSource.config,
+          spatialMapDraftSize: size,
+          spatialMapTargetLocationCount: undefined,
+        },
+      }),
+    ),
+  );
+  assert.equal(presetMapSetup.setup.config.spatialMapDraftSize, size);
+  assert.equal(presetMapSetup.setup.config.spatialMapTargetLocationCount, targetLocationCount);
+}
+
+for (const groundingMode of ["setup", "lore_strict", "lore_expand"] as const) {
+  const groundedMapSetup = parseGameSetupShareFileJson(
+    JSON.stringify({
+      ...exportedGameSetup,
+      setup: {
+        ...exportedGameSetup.setup,
+        config: { ...exportedGameSetup.setup.config, spatialMapGroundingMode: groundingMode },
+      },
+    }),
+  );
+  assert.equal(groundedMapSetup.setup.config.spatialMapGroundingMode, groundingMode);
+}
 const providerOnlyGameSetup = resolveGameSetupImport(parsedGameSetup, {
   characters: [],
   personas: [],
@@ -6807,6 +7185,27 @@ assert.throws(
     ),
   /invalid Spatial Map Instructions value/u,
 );
+for (const invalidConfig of [
+  { spatialMapDraftSize: "enormous" },
+  { spatialMapTargetLocationCount: 0 },
+  { spatialMapTargetLocationCount: 41 },
+  { spatialMapTargetLocationCount: 10.5 },
+  { spatialMapGroundingMode: "internet" },
+]) {
+  assert.throws(
+    () =>
+      parseGameSetupShareFileJson(
+        JSON.stringify({
+          ...exportedGameSetup,
+          setup: {
+            ...exportedGameSetup.setup,
+            config: { ...exportedGameSetup.setup.config, ...invalidConfig },
+          },
+        }),
+      ),
+    /invalid (Spatial Map Draft Size|Spatial Map Target Location Count|Spatial Map Grounding Mode) value/u,
+  );
+}
 assert.throws(
   () =>
     parseGameSetupShareFileJson(
@@ -7128,9 +7527,134 @@ try {
   assert.equal(readFileSync(characterFile, "utf8"), "generated-image");
   assert.equal(readFileSync(personaFile, "utf8"), "generated-image");
   assert.equal(existsSync(join(sourceDir, "generated.png")), true);
+
+  const cancelledGalleryPersistence = new AbortController();
+  let cancelledCharacterWrites = 0;
+  let cancelledPersonaWrites = 0;
+  await assert.rejects(
+    persistGeneratedImageToEntityGalleries({
+      sourceFilePath: "chat-id/generated.png",
+      characterIds: ["character-cancelled"],
+      personaIds: ["persona-cancelled"],
+      characterGallery: {
+        create: async () => {
+          cancelledCharacterWrites += 1;
+          cancelledGalleryPersistence.abort();
+          return {};
+        },
+      },
+      personaGallery: {
+        create: async () => {
+          cancelledPersonaWrites += 1;
+          return {};
+        },
+      },
+      prompt: "Cancelled gallery propagation.",
+      provider: "image_generation",
+      model: "regression-image-model",
+      width: 1024,
+      height: 1024,
+      signal: cancelledGalleryPersistence.signal,
+      galleryRoot: entityGalleryRoot,
+    }),
+    /aborted/iu,
+  );
+  assert.equal(cancelledCharacterWrites, 1);
+  assert.equal(cancelledPersonaWrites, 0, "Cancellation must stop later generated-image gallery writes");
+
+  let releaseHeldGalleryLock: () => void = () => undefined;
+  let markGalleryLockEntered: () => void = () => undefined;
+  const galleryLockEntered = new Promise<void>((resolve) => {
+    markGalleryLockEntered = resolve;
+  });
+  const heldGalleryLock = withGalleryFileLifecycleLock(
+    "chat-id/generated.png",
+    async () => {
+      markGalleryLockEntered();
+      await new Promise<void>((resolve) => {
+        releaseHeldGalleryLock = resolve;
+      });
+    },
+    entityGalleryRoot,
+  );
+  await galleryLockEntered;
+
+  const waitingGalleryLockAbort = new AbortController();
+  let waitingGalleryOperationRan = false;
+  const waitingGalleryLock = withGalleryFileLifecycleLock(
+    "chat-id/generated.png",
+    () => {
+      waitingGalleryOperationRan = true;
+    },
+    entityGalleryRoot,
+    waitingGalleryLockAbort.signal,
+  );
+  waitingGalleryLockAbort.abort();
+  let galleryLockTimeout: ReturnType<typeof setTimeout> | undefined;
+  let followingGalleryOperationRan = false;
+  let followingGalleryLock: Promise<void> | undefined;
+  try {
+    await assert.rejects(
+      Promise.race([
+        waitingGalleryLock,
+        new Promise<never>((_, reject) => {
+          galleryLockTimeout = setTimeout(() => reject(new Error("Gallery lock abort timed out")), 500);
+        }),
+      ]),
+      /aborted/iu,
+    );
+    followingGalleryLock = withGalleryFileLifecycleLock(
+      "chat-id/generated.png",
+      () => {
+        followingGalleryOperationRan = true;
+      },
+      entityGalleryRoot,
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(followingGalleryOperationRan, false, "An aborted waiter must preserve the preceding gallery lock");
+  } finally {
+    if (galleryLockTimeout) clearTimeout(galleryLockTimeout);
+    releaseHeldGalleryLock();
+    await heldGalleryLock;
+    await followingGalleryLock;
+  }
+  assert.equal(waitingGalleryOperationRan, false, "An aborted gallery lock waiter must never run its operation");
+  assert.equal(followingGalleryOperationRan, true);
 } finally {
   rmSync(entityGalleryRoot, { recursive: true, force: true });
 }
+
+const preAbortedRetrySetup = new AbortController();
+preAbortedRetrySetup.abort();
+let preAbortedRetrySetupRan = false;
+await assert.rejects(
+  runRetrySetupPhase(preAbortedRetrySetup.signal, async () => {
+    preAbortedRetrySetupRan = true;
+  }),
+  /aborted/iu,
+);
+assert.equal(preAbortedRetrySetupRan, false, "A cancelled retry must not start another setup phase");
+
+let releaseRetrySetupPhase: () => void = () => undefined;
+let markRetrySetupPhaseStarted: () => void = () => undefined;
+const retrySetupPhaseStarted = new Promise<void>((resolve) => {
+  markRetrySetupPhaseStarted = resolve;
+});
+const inFlightRetrySetupAbort = new AbortController();
+const inFlightRetrySetup = runRetrySetupPhase(inFlightRetrySetupAbort.signal, async () => {
+  markRetrySetupPhaseStarted();
+  await new Promise<void>((resolve) => {
+    releaseRetrySetupPhase = resolve;
+  });
+});
+await retrySetupPhaseStarted;
+inFlightRetrySetupAbort.abort();
+releaseRetrySetupPhase();
+await assert.rejects(
+  inFlightRetrySetup,
+  /aborted/iu,
+  "A retry cancelled during setup must stop before the next write or event",
+);
 
 const nextEventLoopTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 const queuedImageEvents: string[] = [];
@@ -8197,7 +8721,7 @@ assert.equal(({} as { tags?: string[] }).tags, undefined, "Background metadata m
   );
   assert.match(
     connectionEditorSource,
-    /setRemoteModels\(\[\]\);\s*setRemoteLoras\(\[\]\);\s*setFetchError\(null\);/u,
+    /setRemoteModels\(\[\]\);[\s\S]{0,120}setRemoteLoras\(\[\]\);[\s\S]{0,120}setFetchError\(null\);/u,
     "Changing media providers must clear stale remote LoRA choices",
   );
   assert.match(
@@ -8329,6 +8853,8 @@ assert.equal(({} as { tags?: string[] }).tags, undefined, "Background metadata m
   };
   const prompt = buildSceneAnalyzerUserPrompt("Boots cross the wet stones.", undefined, generatedAudioContext);
   assert.match(prompt, /short sound description/u);
+  assert.match(prompt, /"sfxLoopCount": <1-5>/u);
+  assert.doesNotMatch(prompt, /"(?:sfxLoopCount|directions|background)"[^\n]*\/\//u);
   // #5161: music free-text prompts are retired — even with generateMusic on,
   // the analyzer is asked for genre/intensity hints, never a music prompt.
   assert.doesNotMatch(prompt, /concise instrumental scene music prompt/u);
@@ -8343,7 +8869,9 @@ assert.equal(({} as { tags?: string[] }).tags, undefined, "Background metadata m
       weather: null,
       timeOfDay: null,
       reputationChanges: [],
-      segmentEffects: [{ segment: 0, sfx: [" quiet footsteps <on> wet stone "], music: "low suspense pulse" }],
+      segmentEffects: [
+        { segment: 0, sfx: [" quiet footsteps <on> wet stone "], sfxLoopCount: 9, music: "low suspense pulse" },
+      ],
     },
     {
       availableBackgrounds: generatedAudioContext.availableBackgrounds,
@@ -8358,7 +8886,24 @@ assert.equal(({} as { tags?: string[] }).tags, undefined, "Background metadata m
   // downstream from the library (context tracks included). SFX unchanged.
   assert.equal(processed.music, null);
   assert.deepEqual(processed.segmentEffects?.[0]?.sfx, ["quiet footsteps on wet stone"]);
+  assert.equal(processed.segmentEffects?.[0]?.sfxLoopCount, 5);
   assert.equal(processed.segmentEffects?.[0]?.music, undefined);
+
+  const lowerBoundProcessed = postProcessSceneResult(
+    {
+      ...processed,
+      segmentEffects: [{ segment: 0, sfx: ["footsteps"], sfxLoopCount: 0 }],
+    },
+    {
+      availableBackgrounds: generatedAudioContext.availableBackgrounds,
+      availableSfx: [],
+      generateSoundEffects: true,
+      generateMusic: true,
+      validWidgetIds: new Set(),
+      characterNames: [],
+    },
+  );
+  assert.equal(lowerBoundProcessed.segmentEffects?.[0]?.sfxLoopCount, 1);
 
   const spotifyProcessed = postProcessSceneResult(
     {
@@ -9081,6 +9626,10 @@ assert.equal(({} as { tags?: string[] }).tags, undefined, "Background metadata m
     join(REPOSITORY_ROOT, "packages/server/src/routes/generate.routes.ts"),
     "utf8",
   );
+  const retryAgentsRouteSource = readFileSync(
+    join(REPOSITORY_ROOT, "packages/server/src/routes/generate/retry-agents-route.ts"),
+    "utf8",
+  );
   const turnGameBotRunnerSource = readFileSync(
     join(REPOSITORY_ROOT, "packages/server/src/services/turn-games/turn-game-bot-runner.service.ts"),
     "utf8",
@@ -9100,6 +9649,18 @@ assert.equal(({} as { tags?: string[] }).tags, undefined, "Background metadata m
   assert.match(settingsDrawerSource, /\/generate\/status\/\$\{encodeURIComponent\(chat\.id\)\}/u);
   assert.match(settingsDrawerSource, /isRoleplayMode && \(activeGeneration \|\| stoppingGeneration\)/u);
   assert.match(settingsDrawerSource, /await abortGenerationForChat\(chat\.id, controller\)/u);
+  const stopGenerationActionStart = settingsDrawerSource.indexOf(
+    "{isRoleplayMode && (activeGeneration || stoppingGeneration) && (",
+  );
+  const agentSuiteActionStart = settingsDrawerSource.indexOf(
+    "onClick={() => setShowAgentSuiteModal(true)}",
+    stopGenerationActionStart,
+  );
+  assert.ok(stopGenerationActionStart >= 0 && agentSuiteActionStart > stopGenerationActionStart);
+  const stopGenerationActionSource = settingsDrawerSource.slice(stopGenerationActionStart, agentSuiteActionStart);
+  assert.match(stopGenerationActionSource, /bg-\[var\(--secondary\)\][\s\S]*hover:bg-\[var\(--accent\)\]/u);
+  assert.match(stopGenerationActionSource, /text-\[var\(--muted-foreground\)\]/u);
+  assert.doesNotMatch(stopGenerationActionSource, /red-/u);
   assert.equal(
     (
       settingsDrawerSource.match(
@@ -9178,9 +9739,127 @@ assert.equal(({} as { tags?: string[] }).tags, undefined, "Background metadata m
     join(REPOSITORY_ROOT, "packages/server/src/routes/generate.routes.ts"),
     "utf8",
   );
+  const retryAgentsRouteSource = readFileSync(
+    join(REPOSITORY_ROOT, "packages/server/src/routes/generate/retry-agents-route.ts"),
+    "utf8",
+  );
+  const lorebookKeeperUtilsSource = readFileSync(
+    join(REPOSITORY_ROOT, "packages/server/src/routes/generate/lorebook-keeper-utils.ts"),
+    "utf8",
+  );
   assert.match(
     generateRouteSource,
-    /chatMode === "roleplay" && assistantMessageReadySent\) releaseActiveGeneration\(\)/u,
+    /chatMode === "roleplay" && assistantMessageReadySent\) \{[\s\S]{0,220}moveToActiveAgentRuns\([\s\S]{0,180}lastSavedSwipeIndex/u,
+    "A durable Roleplay reply must release the main generation slot while retaining its cancellable agent tail",
+  );
+  assert.match(generateRouteSource, /const activeAgentRuns = new Map<string, Set<ActiveGeneration>>\(\)/u);
+  assert.match(
+    generateRouteSource,
+    /registerRetryAgentsRoute\(app, activeCustomLorebookReadBehindRuns, activeAgentRuns\)/u,
+    "Forced Agent retries must join the same cancellable registry as automatic Agent tails",
+  );
+  assert.match(
+    generateRouteSource,
+    /active: activeGenerations\.has\(req\.params\.chatId\) \|\| \(activeAgentRuns\.get\(req\.params\.chatId\)\?\.size \?\? 0\) > 0/u,
+    "Generation status must preserve detached Agent activity across reconnects",
+  );
+  assert.match(
+    generateRouteSource,
+    /if \(body\.agentsOnly !== true && activeGeneration\?\.backendUrl\) \{[\s\S]{0,500}\/api\/extra\/abort/u,
+    "Stopping an old agent tail must not send a backend-wide abort that can kill a newer reply",
+  );
+  assert.doesNotMatch(generateRouteSource, /targets\.map\(\(target\) => target\.backendUrl\)/u);
+  assert.match(
+    retryAgentsRouteSource,
+    /for \(const result of results\) \{\s*if \(abortController\.signal\.aborted\) return;[\s\S]{0,500}sendSseEvent\(reply, \{\s*type: "agent_result"/u,
+    "Forced retries must stop emitting results as soon as their shared abort signal fires",
+  );
+  for (const phase of ["persistRetryResults", "applyRetryResultEffects"]) {
+    assert.match(
+      retryAgentsRouteSource,
+      new RegExp(`if \\(abortController\\.signal\\.aborted\\) return;\\s*await ${phase}\\(`, "u"),
+      `Forced retries must check cancellation immediately before ${phase}`,
+    );
+  }
+  assert.match(
+    retryAgentsRouteSource,
+    /if \(abortController\.signal\.aborted\) return;\s*sendSseEvent\(reply, \{ type: "done"/u,
+    "A cancelled retry must not emit its completion event",
+  );
+  assert.match(
+    retryAgentsRouteSource,
+    /assertRetrySetupActive\(\);\s*sendSseEvent\(reply, \{ type: "agent_start"/u,
+    "A cancelled retry must not emit agent_start after asynchronous setup",
+  );
+  assert.match(
+    retryAgentsRouteSource,
+    /signal\.throwIfAborted\(\);\s*return \{[\s\S]{0,220}macroVariables/u,
+    "Retry macro persistence must re-check cancellation when its queued write begins",
+  );
+  assert.match(
+    retryAgentsRouteSource,
+    /const assertRetryActive = \(\) => signal\.throwIfAborted\(\);[\s\S]{0,300}const sortedResults/u,
+    "Retry side effects must use the native abort guard across awaited writes and events",
+  );
+  assert.match(
+    retryAgentsRouteSource,
+    /const rawResult = await executeAgent\([\s\S]{0,350}if \(baseContext\.signal\?\.aborted\) return results;/u,
+    "Lorebook retries must stop after provider completion",
+  );
+  assert.match(
+    retryAgentsRouteSource,
+    /preferredTargetLorebookId = await persistLorebookKeeperUpdates\([\s\S]{0,700}signal: baseContext\.signal/u,
+    "Lorebook retry persistence must receive the shared cancellation signal",
+  );
+  assert.match(
+    lorebookKeeperUtilsSource,
+    /signal\?: AbortSignal/u,
+    "Lorebook Keeper persistence must accept a cancellation signal",
+  );
+  assert.match(
+    lorebookKeeperUtilsSource,
+    /signal\?\.throwIfAborted\(\);\s*const (?:created|updated) = await lorebooksStore\.(?:create|updateEntry|createEntry)/u,
+    "Lorebook persistence must honor retry cancellation before database writes",
+  );
+  assert.match(
+    retryAgentsRouteSource,
+    /const customWritableLorebookIds =\s*!isBuiltInLorebookAgent && resultAgent[\s\S]{0,220}resolveCustomWritableLorebookIds\(resultAgent\.settings\)[\s\S]{0,900}writableLorebooks/u,
+    "Custom-agent retry approvals must carry that agent's writable lorebook routing metadata",
+  );
+  assert.equal(
+    retryAgentsRouteSource.match(
+      /worldName: (?:retryContext|agentContext)\.characters\[0\]\?\.world \?\? (?:chatName|\(chat as any\)\.name)/gu,
+    )?.length,
+    3,
+    "Retry approval and persistence must expand [WorldName] from the persisted character world, then the chat name",
+  );
+  assert.equal(
+    generateRouteSource.match(/worldName: agentContext\.characters\[0\]\?\.world \?\? chat\.name/gu)?.length,
+    2,
+    "Normal approval and persistence must expand [WorldName] from the persisted character world, then the chat name",
+  );
+  const characterPromptContextSource = readFileSync(
+    join(REPOSITORY_ROOT, "packages/server/src/services/generation/character-prompt-context.ts"),
+    "utf8",
+  );
+  assert.match(characterPromptContextSource, /world: cardPromptText\(charData\.extensions\?\.world\) \|\| undefined/u);
+  assert.match(retryAgentsRouteSource, /world: cardPromptText\(extensions\.world\) \|\| undefined/u);
+  const roleplayActionsSource = readFileSync(
+    join(REPOSITORY_ROOT, "packages/client/src/components/chat/RoleplayHUDActionsMenu.tsx"),
+    "utf8",
+  );
+  assert.match(roleplayActionsSource, /showStopAgentsAction = isAgentProcessing && !!onStopAgents/u);
+  assert.match(roleplayActionsSource, /ui\.chat\.roleplayhudactionsmenu\.stopAgents/u);
+  assert.doesNotMatch(
+    roleplayActionsSource,
+    /stopAgents[\s\S]{0,700}text-\[var\(--destructive\)\]/u,
+    "Stop Agents should use the same neutral action styling as its neighboring controls",
+  );
+  const appSource = readFileSync(join(REPOSITORY_ROOT, "packages/client/src/App.tsx"), "utf8");
+  assert.doesNotMatch(
+    appSource,
+    /const paused = !\([\s\S]{0,220}!reduceAmbientEffects/u,
+    "Reduced ambient motion must not pause Desktop Mari's functional navigation callbacks",
   );
   assert.match(
     generateRouteSource,
@@ -9230,18 +9909,18 @@ assert.equal(({} as { tags?: string[] }).tags, undefined, "Background metadata m
   );
   assert.match(backupRoutesSource, /app\.post\("\/download\/start"/u);
   assert.match(backupRoutesSource, /app\.get<\{ Params: \{ jobId: string \} \}>\(\s*"\/download\/status\/:jobId"/u);
-  assert.match(backupRoutesSource, /app\.get<\{ Params: \{ jobId: string \} \}>\(\s*"\/download\/file\/:jobId"/u);
+  assert.match(
+    backupRoutesSource,
+    /app\.get<\{ Params: \{ jobId: string \}; Querystring: \{ token\?: string \} \}>\(\s*"\/download\/file\/:jobId"/u,
+  );
   assert.match(
     backupRoutesSource,
     /if \(job\?\.status === "preparing"\) return;/u,
     "backup cleanup cannot remove a temporary directory while its archive is still being written",
   );
   assert.match(settingsPanelSource, /\/backup\/download\/status\/\$\{encodeURIComponent\(started\.jobId\)\}/u);
+  assert.match(settingsPanelSource, /window\.location\.assign\(status\.downloadUrl\)/u);
 
-  const retryAgentsRouteSource = readFileSync(
-    join(REPOSITORY_ROOT, "packages/server/src/routes/generate/retry-agents-route.ts"),
-    "utf8",
-  );
   assert.match(
     retryAgentsRouteSource,
     /persistRetryMacroVariables\([\s\S]{0,240}agentContextResult\.macroVariables/u,
